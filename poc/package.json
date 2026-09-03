@@ -1,0 +1,23 @@
+{
+  "name": "otel-api-multi-instance-poc",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc --noEmit && vite build",
+    "dev": "vite",
+    "preview": "vite preview",
+    "test": "npm run build && playwright test",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@opentelemetry/api": "1.9.1",
+    "@opentelemetry/instrumentation-document-load": "0.66.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.62.1",
+    "@types/node": "24.3.0",
+    "typescript": "5.9.2",
+    "vite": "8.2.2"
+  }
+}
