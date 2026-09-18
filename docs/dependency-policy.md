@@ -6,13 +6,13 @@ OpenTelemetry dependencies use exact versions in the root `package.json`. Exact 
 because the logs SDK and browser instrumentation are pre-1.0 and may introduce breaking changes
 in a minor release.
 
-| Release cohort | Packages | Version |
-| --- | --- | --- |
-| API | `@opentelemetry/api` | `1.9.1` |
-| Stable SDK | `@opentelemetry/core`, `@opentelemetry/resources`, `@opentelemetry/sdk-trace-base`, `@opentelemetry/sdk-trace-web` | `2.11.0` |
-| Development SDK | `@opentelemetry/api-logs`, `@opentelemetry/exporter-logs-otlp-http`, `@opentelemetry/exporter-trace-otlp-http`, `@opentelemetry/instrumentation`, `@opentelemetry/sdk-logs` | `0.222.0` |
-| Browser instrumentation | `@opentelemetry/browser-instrumentation` | `0.8.1` |
-| Semantic conventions | `@opentelemetry/semantic-conventions` | `1.43.0` |
+| Release cohort          | Packages                                                                                                                                                                    | Version   |
+| ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- |
+| API                     | `@opentelemetry/api`                                                                                                                                                        | `1.9.1`   |
+| Stable SDK              | `@opentelemetry/core`, `@opentelemetry/resources`, `@opentelemetry/sdk-trace-base`, `@opentelemetry/sdk-trace-web`                                                          | `2.11.0`  |
+| Development SDK         | `@opentelemetry/api-logs`, `@opentelemetry/exporter-logs-otlp-http`, `@opentelemetry/exporter-trace-otlp-http`, `@opentelemetry/instrumentation`, `@opentelemetry/sdk-logs` | `0.222.0` |
+| Browser instrumentation | `@opentelemetry/browser-instrumentation`                                                                                                                                    | `0.8.1`   |
+| Semantic conventions    | `@opentelemetry/semantic-conventions`                                                                                                                                       | `1.43.0`  |
 
 The different version numbers are intentional. OpenTelemetry JavaScript publishes stable SDK,
 development SDK, and instrumentation packages on related but independently numbered release
