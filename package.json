@@ -58,9 +58,18 @@
     "check": "npm run format && npm run lint && npm run typecheck && npm run test:coverage && npm run build && npm run test:build && npm run test:integration && npm run api:check && npm run size && npm run size:report",
     "prepack": "npm run build"
   },
+  "dependencies": {
+    "@opentelemetry/resources": "2.11.0",
+    "@opentelemetry/sdk-logs": "0.222.0",
+    "@opentelemetry/sdk-trace-base": "2.11.0"
+  },
+  "peerDependencies": {
+    "@opentelemetry/api": "^1.9.1"
+  },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@microsoft/api-extractor": "^7.59.1",
+    "@opentelemetry/api": "1.9.1",
     "@rollup/plugin-commonjs": "^29.0.3",
     "@rollup/plugin-node-resolve": "^16.0.3",
     "@rollup/plugin-terser": "^1.0.0",

@@ -8,3 +8,19 @@ formatting. Do not replace the existing README with generated summaries or gener
 
 When README changes are explicitly requested, preserve its existing structure, voice, and content
 unless the requested change requires otherwise, and keep edits limited to the requested scope.
+
+## Browser bundle size
+
+Treat minified browser bundle size as a design constraint for every change, not a final cleanup.
+Optimize the emitted production JavaScript rather than source length:
+
+- Use type-only imports and exports for contracts so upstream SDK types add no runtime code.
+- Prefer tree-shakeable modules and supported, focused public dependency entry points. Keep optional
+  exporters and instrumentations out of unrelated bundles; avoid unnecessary runtime wrappers,
+  duplicate helpers, polyfills, and type-only concepts emitted as runtime objects.
+- Keep diagnostics concise and actionable. Do not sacrifice correctness, public API compatibility,
+  useful error reporting, or readable source through hand-minification or unsafe property mangling.
+- For runtime, dependency, or build changes, compare before/after sizes using the same production
+  build: `npm run build` followed by `npm run size`. Check minified, gzip, and Brotli output, not
+  unminified source size or summed dependency sizes. Investigate unexpected growth with
+  `reports/bundle-stats.html` and verify unused exports remain tree-shakeable.

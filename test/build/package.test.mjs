@@ -12,11 +12,13 @@ const browserBundle = "dist/browser/opentelemetry-distro-browser";
 test("the package can be imported as ES modules", async () => {
   const distro = await import(pkg.name);
   assert.equal(distro.OPENTELEMETRY_BROWSER_VERSION, pkg.version);
+  assert.throws(() => distro.useMicrosoftOpenTelemetry({}), /not implemented/);
 });
 
 test("the package can be required as CommonJS", () => {
   const distro = require(pkg.name);
   assert.equal(distro.OPENTELEMETRY_BROWSER_VERSION, pkg.version);
+  assert.throws(() => distro.useMicrosoftOpenTelemetry({}), /not implemented/);
 });
 
 for (const suffix of [".js", ".min.js"]) {
@@ -25,6 +27,10 @@ for (const suffix of [".js", ".min.js"]) {
     const context = {};
     runInNewContext(code, context);
     assert.equal(context.OpenTelemetryBrowser.OPENTELEMETRY_BROWSER_VERSION, pkg.version);
+    assert.throws(
+      () => context.OpenTelemetryBrowser.useMicrosoftOpenTelemetry({}),
+      /not implemented/,
+    );
   });
 }
 
@@ -40,6 +46,15 @@ test("both module formats ship TypeScript declarations", async () => {
     const path = pkg.exports["."][condition].types;
     const declaration = await readFile(new URL(path, root), "utf8");
     assert.match(declaration, /export\s*\{[^}]*OPENTELEMETRY_BROWSER_VERSION/);
+    assert.match(declaration, /export\s*\{[^}]*useMicrosoftOpenTelemetry/);
+    for (const type of [
+      "AzureMonitorOptions",
+      "MicrosoftOpenTelemetryBrowser",
+      "MicrosoftOpenTelemetryBrowserOptions",
+      "OtlpOptions",
+    ]) {
+      assert.match(declaration, new RegExp(`export type\\s*\\{[^}]*\\b${type}\\b`));
+    }
   }
 });
 

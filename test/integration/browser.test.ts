@@ -30,6 +30,9 @@ it.each([
     frameWindow.document.head.append(script);
 
     expect(frameWindow.OpenTelemetryBrowser?.OPENTELEMETRY_BROWSER_VERSION).toBe(version);
+    const distro = frameWindow.OpenTelemetryBrowser;
+    expect(distro).toBeDefined();
+    expect(() => distro?.useMicrosoftOpenTelemetry({})).toThrow("not implemented");
   } finally {
     frame.remove();
   }
