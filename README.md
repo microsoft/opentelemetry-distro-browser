@@ -1,160 +1,184 @@
-# OpenTelemetry distribution for the browser
+# @microsoft/opentelemetry-browser
 
-TypeScript project skeleton for a browser-focused OpenTelemetry distribution. The layout follows
-[`opentelemetry-distro-javascript`](https://github.com/microsoft/opentelemetry-distro-javascript),
-with Rollup bundling and Terser minification for browser delivery.
+[![Status](https://img.shields.io/badge/status-proposed-orange)](planning/IMPLEMENTATION_PLAN.md)
+[![Milestone](https://img.shields.io/badge/beta-9%20October-blue)](planning/M0_WORK_BREAKDOWN.md)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-The only runtime export is currently `OPENTELEMETRY_BROWSER_VERSION`. Telemetry initialization,
-instrumentations, and exporters are not implemented yet. The npm package is marked private until
-it is ready to publish.
+Microsoft OpenTelemetry distribution for browser applications — one import, one call, page views,
+exceptions, fetch/XHR tracing and manual telemetry across Azure Monitor and OTLP-compatible
+backends.
 
-## Planning and proof of concept
+This is the browser sibling of the Microsoft distributions for
+[Node.js](https://github.com/microsoft/opentelemetry-distro-javascript) and
+[Python](https://github.com/microsoft/opentelemetry-distro-python).
 
-The upstream design documents and standalone proof of concept are preserved alongside the skeleton:
+> **Not published yet.** This repository currently holds the implementation plan and a
+> working proof of concept. The package name is provisional and the beta is targeted for
+> **9 October**. Everything below describes the surface being built — see
+> [`planning/`](planning/).
 
-- [Implementation plan](planning/IMPLEMENTATION_PLAN.md)
-- [M0 work breakdown](planning/M0_WORK_BREAKDOWN.md)
-- [Architecture](planning/ARCHITECTURE.md)
-- [Requirements](planning/REQUIREMENTS.md)
-- [Milestones](planning/MILESTONES.md)
-- [Multi-instance browser PoC](poc/README.md) and its [size report](poc/SIZE_REPORT.md)
+## Getting Started
 
-These documents describe the proposed product and future milestones, rather than APIs implemented
-in the root package today. The PoC has its own npm manifest, dependencies, and commands; follow
-its README to build and test it independently. Root lint and format commands exclude `poc/`, and
-formatting leaves the existing planning documents unchanged.
+### Prerequisites
 
-## Development
+- A modern browser — ES2022, ESM. See [Supported environments](#supported-environments).
+- An [Application Insights resource](https://learn.microsoft.com/azure/azure-monitor/app/app-insights-overview)
+  (optional, for Azure Monitor), or any OTLP-compatible endpoint.
 
-Use Node.js 22.22.2+ (22.x), 24.15.0+ (24.x), or 26+, with npm 10 or newer.
+### Install the package
 
-```sh
-npm ci
-npm run test:install-browsers
-npm run check
+```bash
+npm install @microsoft/opentelemetry-browser
 ```
 
-Commit `package-lock.json` whenever dependencies change. Use `npm install` to update dependencies
-and `npm ci` for a reproducible installation. The project `.npmrc` omits registry-specific URLs
-from the lockfile so contributors and CI can use their configured npm registry; package versions
-and integrity hashes remain locked.
+### Quick start
 
-| Command                         | Purpose                                                            |
-| ------------------------------- | ------------------------------------------------------------------ |
-| `npm run build`                 | Build bundles, declarations, source maps, and bundle visualization |
-| `npm run clean`                 | Remove builds, bundle reports, and temporary API reports           |
-| `npm run typecheck`             | Check source, tests, and Vitest configuration                      |
-| `npm run lint`                  | Run ESLint with no warnings allowed                                |
-| `npm run lint:fix`              | Apply ESLint fixes                                                 |
-| `npm run format`                | Check formatting with Prettier                                     |
-| `npm run format:check`          | Alias for the formatting check                                     |
-| `npm run format:fix`            | Apply Prettier formatting                                          |
-| `npm test`                      | Run Vitest unit tests once in Chromium                             |
-| `npm run test:unit`             | Run Chromium unit tests under `test/internal/unit/`                |
-| `npm run test:integration`      | Test built browser scripts in Chromium; build first                |
-| `npm run test:install-browsers` | Install the Playwright Chromium browser                            |
-| `npm run test:watch`            | Run Vitest in watch mode                                           |
-| `npm run test:coverage`         | Run unit tests with V8 coverage                                    |
-| `npm run test:build`            | Smoke-test built bundles and declarations; build first             |
-| `npm run api:check`             | Compare the public API with its baseline; build first              |
-| `npm run api:update`            | Build and intentionally update the public API baseline             |
-| `npm run size`                  | Report minified, gzip, and Brotli bundle sizes; build first        |
-| `npm run size:report`           | Write bundle sizes to `reports/bundle-size.json`; build first      |
-| `npm run check`                 | Run all quality, browser, build, API, and size checks              |
+Call `useMicrosoftOpenTelemetry()` as early as possible in your application entry point, before the
+code you want instrumented runs.
 
-Vitest Browser Mode uses Playwright to run unit and integration tests in real headless Chromium.
-Install the browser after `npm ci`, and again after Playwright upgrades. On Linux, use
-`npm run test:install-browsers -- --with-deps` to also install required system libraries.
-Unit tests work without a build; integration tests execute the generated standard and minified
-browser scripts in isolated browser frames and require `npm run build` first.
+**Azure Monitor:**
 
-Coverage reports are written to `coverage/`. Source TypeScript uses DOM types without Node.js globals,
-while tests and tooling can use Node.js types.
+```typescript
+import { useMicrosoftOpenTelemetry } from "@microsoft/opentelemetry-browser";
 
-ESLint applies type-aware and security rules to the package source under `src/`, including checks
-for floating promises, misused promises, and non-null assertions.
-
-## Project structure
-
-```text
-.github/workflows/     Pull-request CI
-etc/                   Public API report baseline
-planning/              Product design and milestone documents
-poc/                   Standalone multi-instance browser proof of concept
-scripts/               Cross-platform build helpers
-src/
-  index.ts             Public package entry point
-  shared/              Shared constants and utilities
-test/
-  internal/unit/       Vitest unit tests
-  integration/         Built browser scripts tested in Chromium
-  build/               Built-package smoke tests
-api-extractor.json    Public API report configuration
-.size-limit.json      Bundle-size reporting configuration
-rollup.config.mjs      JavaScript bundles and TypeScript declarations
-tsconfig*.json         Shared, source, and test TypeScript settings
-vitest*.config.ts      Shared, unit, and integration Vitest settings
+useMicrosoftOpenTelemetry({
+  azureMonitor: {
+    connectionString: "InstrumentationKey=...;IngestionEndpoint=...",
+  },
+});
 ```
 
-## Build outputs
+**OTLP:**
 
-| Output                                             | Format                       |
-| -------------------------------------------------- | ---------------------------- |
-| `dist/esm/index.js`                                | ES module                    |
-| `dist/esm/index.d.ts`                              | ES module declarations       |
-| `dist/commonjs/index.cjs`                          | CommonJS                     |
-| `dist/commonjs/index.d.cts`                        | CommonJS declarations        |
-| `dist/browser/opentelemetry-distro-browser.js`     | Browser IIFE                 |
-| `dist/browser/opentelemetry-distro-browser.min.js` | Terser-minified browser IIFE |
+```typescript
+import { useMicrosoftOpenTelemetry } from "@microsoft/opentelemetry-browser";
 
-Every JavaScript bundle has a source map. Package exports select the appropriate JavaScript and
-declarations for `import` and `require`. Browser bundles expose the `OpenTelemetryBrowser` global:
-
-```html
-<script src="./dist/browser/opentelemetry-distro-browser.min.js"></script>
-<script>
-  console.log(OpenTelemetryBrowser.OPENTELEMETRY_BROWSER_VERSION);
-</script>
+useMicrosoftOpenTelemetry({
+  otlp: {
+    endpoint: "https://collector.example.com:4318",
+  },
+});
 ```
 
-## Public API validation
+That's it — page views, SPA soft navigations, unhandled errors and promise rejections, and fetch/XHR
+spans with W3C trace context are collected automatically, with `session.id` and document context on
+both signals.
 
-API Extractor compares the built ES module declarations against
-`etc/opentelemetry-distro-browser.api.md`. `npm run api:check` fails when the generated report
-differs from the baseline; CI never updates the baseline automatically.
+### Manual telemetry
 
-For an intentional API change, run `npm run api:update`, review the report diff, and include it
-in the pull request. This makes API changes visible for review ahead of a beta API stability
-commitment; it does not by itself prohibit breaking changes or enforce reviewer approval.
-Only the basic API report is enabled. Rollup continues to generate the package declarations.
+Use the standard upstream OpenTelemetry APIs. The distribution never asks you to learn a proprietary
+telemetry API, so instrumented code stays valid OpenTelemetry.
 
-## Bundle-size reporting
+```typescript
+import { trace } from "@opentelemetry/api";
+import { logs } from "@opentelemetry/api-logs";
 
-Size Limit measures the actual Terser-minified browser output without rebundling it. `npm run size`
-reports uncompressed, gzip, and Brotli sizes. `npm run size:report` writes the same measurements as
-JSON to `reports/bundle-size.json`.
+const tracer = trace.getTracer("my-app", "1.0.0");
+const span = tracer.startSpan("checkout");
+span.setAttribute("cart.item_count", 3);
+span.end();
 
-Every build also creates `reports/bundle-stats.html` with Rollup Visualizer. Open it in a browser
-to inspect which modules contribute to the minified bundle; source maps provide module attribution.
-The visualizer's per-module compression estimates need not sum to the compressed bundle size.
+logs.getLogger("my-app", "1.0.0").emit({
+  eventName: "app.checkout_started",
+  attributes: { "cart.item_count": 3 },
+});
+```
 
-CI uploads both reports as downloadable artifacts. Reports are not included in the npm package.
-Size reporting is informational for now: no arbitrary budget is imposed on the version-only
-skeleton. Once there is a representative minimum product, set reviewed `limit` values in
-`.size-limit.json` to make budget violations fail CI. Rollup and Terser remain the chosen tools,
-with their size advantage to be reassessed against that product.
+Browser occurrences are **log records carrying a top-level `eventName`**; spans are reserved for
+operations with real duration and backend correlation. See
+[§2 of the plan](planning/IMPLEMENTATION_PLAN.md#2-product-principles).
 
-## Continuous integration
+### Flush and shutdown
 
-GitHub Actions runs on every pull request, pushes to `main`, and manual dispatches. It checks
-ESLint, Prettier, and TypeScript, then runs Vitest unit tests with coverage in Chromium and builds
-the Rollup/Terser outputs on Node.js 22 and 24. Build smoke tests verify ES module and CommonJS
-imports, browser globals, minification, declarations, and source maps. Browser integration tests
-execute the built scripts in Chromium. CI also checks the API report, reports bundle sizes,
-uploads the size/visualizer artifacts, and checks npm package contents with `npm pack --dry-run`.
+Telemetry is batched and flushed automatically on `pagehide` and `visibilitychange`. The handle
+returned by `useMicrosoftOpenTelemetry()` lets you do it explicitly:
 
-To require these checks before merging, configure branch protection or a repository ruleset for
-`main` after the workflow has run. Workflow files alone do not prevent merging a failing PR.
+```typescript
+const telemetry = useMicrosoftOpenTelemetry({ /* ... */ });
+
+await telemetry.forceFlush();
+await telemetry.shutdown();
+```
+
+## Configuration
+
+### `MicrosoftOpenTelemetryBrowserOptions`
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `azureMonitor` | `AzureMonitorOptions` | — | Azure Monitor destination. When provided, Azure Monitor export is enabled |
+| `otlp` | `OtlpOptions` | — | OTLP/HTTP destination for traces and logs |
+| `resource` | `Resource` | auto-detected | OpenTelemetry Resource (service name, version, browser attributes) |
+| `samplingRatio` | `number` | `1.0` | Ratio of traces to sample (0.0–1.0) |
+| `instrumentationOptions` | `InstrumentationOptions` | see below | Toggle built-in instrumentations |
+| `spanProcessors` | `SpanProcessor[]` | — | Additional upstream span processors |
+| `logRecordProcessors` | `LogRecordProcessor[]` | — | Additional upstream log record processors |
+| `propagator` | `TextMapPropagator` | W3C Trace Context + Baggage | Context propagator |
+| `propagateToUrls` | `(string \| RegExp)[]` | same origin | Allow list for outbound `traceparent` injection |
+| `session` | `SessionOptions` | 30 min timeout | Session ID generation, storage, timeout and renewal |
+
+Configuration is validated and normalized into an immutable snapshot before any global is registered
+or any browser API is patched. Upstream types are passed through rather than re-modelled.
+
+### `azureMonitor` options
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `connectionString` | `string` | — | Application Insights connection string, including sovereign clouds |
+| `disableBeacon` | `boolean` | `false` | Disable the `sendBeacon` fallback used on page unload |
+
+### `otlp` options
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `endpoint` | `string` | — | Base OTLP/HTTP endpoint |
+| `headers` | `Record<string, string>` | — | Additional headers on export requests |
+
+### `instrumentationOptions`
+
+Instrumentations are named by the occurrence they capture, not by the package that produces them,
+and each is individually enableable and individually importable — so an events-only consumer never
+pays for the tracing SDK and vice versa.
+
+```typescript
+useMicrosoftOpenTelemetry({
+  azureMonitor: { connectionString: "..." },
+  instrumentationOptions: {
+    pageView: { enabled: true },
+    exception: { enabled: true },
+    fetch: { enabled: false },
+    xmlHttpRequest: { enabled: false },
+  },
+});
+```
+
+## Bundle size
+
+Bundle size is the binding constraint for a browser distribution, so it is measured on every build
+rather than argued about. From [`poc/SIZE_REPORT.md`](poc/SIZE_REPORT.md), gzipped:
+
+| Layer | Gzip |
+|---|---:|
+| OpenTelemetry API only (trace + logs) | 3.70 KB |
+| + SDK (providers, batch processors, W3C propagators) | 19.56 KB |
+| + multi-instance bridge | 21.29 KB |
+| + all 9 instrumentations and both OTLP exporters | 41.50 KB |
+
+For comparison, Application Insights v3 ships 71.3 KB gzipped and Splunk's OpenTelemetry browser
+distribution 140.5 KB. The per-package deltas, and why per-package numbers must never be summed,
+are in [`poc/SIZE_REPORT.md`](poc/SIZE_REPORT.md), regenerated by `npm run size`.
+
+## Supported environments
+
+| Runtime | Support |
+|---|---|
+| ES2022+ browsers (current Chrome, Edge, Firefox, Safari) | Full distribution |
+| ES2015 to pre-ES2020 browsers | Capability-detecting loader, planned |
+| Pre-ES2015 browsers | Not supported; separate no-op package, planned |
+
+The package is ESM-only with an `exports` map and no `main`/`module` fields. Not shipping ES5 is the
+single largest bundle-size lever available, so legacy runtimes are handled by a loader rather than by
+downleveling the main bundle.
 
 ## Contributing
 

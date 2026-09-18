@@ -7,5 +7,7 @@ reports/
 temp/api/
 etc/*.api.md
 **/package-lock.json
+# Preserve the root README unless a README change is explicitly requested.
+/README.md
 planning/
 poc/
