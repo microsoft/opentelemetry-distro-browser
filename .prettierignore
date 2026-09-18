@@ -1,7 +1,11 @@
-dist/
-node_modules/
-coverage/
+**/dist/
+**/node_modules/
+**/coverage/
+**/playwright-report/
+**/test-results/
 reports/
 temp/api/
 etc/*.api.md
-package-lock.json
+**/package-lock.json
+planning/
+poc/

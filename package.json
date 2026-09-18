@@ -33,7 +33,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/JacksonWeber/opentelemetry-distro-browser.git"
+    "url": "git+https://github.com/microsoft/opentelemetry-distro-browser.git"
   },
   "scripts": {
     "clean": "node scripts/clean.mjs",
@@ -42,6 +42,7 @@
     "lint": "eslint . --max-warnings 0",
     "lint:fix": "npm run lint -- --fix",
     "format": "prettier --check .",
+    "format:check": "npm run format",
     "format:fix": "prettier --write .",
     "test": "vitest run",
     "test:unit": "vitest run --config vitest.unit.config.ts",
@@ -70,6 +71,7 @@
     "@vitest/coverage-v8": "5.0.0",
     "eslint": "^10.10.0",
     "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-security": "4.0.1",
     "globals": "^17.12.0",
     "playwright": "^1.63.0",
     "prettier": "^3.6.2",

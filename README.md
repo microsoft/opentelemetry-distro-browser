@@ -8,6 +8,22 @@ The only runtime export is currently `OPENTELEMETRY_BROWSER_VERSION`. Telemetry 
 instrumentations, and exporters are not implemented yet. The npm package is marked private until
 it is ready to publish.
 
+## Planning and proof of concept
+
+The upstream design documents and standalone proof of concept are preserved alongside the skeleton:
+
+- [Implementation plan](planning/IMPLEMENTATION_PLAN.md)
+- [M0 work breakdown](planning/M0_WORK_BREAKDOWN.md)
+- [Architecture](planning/ARCHITECTURE.md)
+- [Requirements](planning/REQUIREMENTS.md)
+- [Milestones](planning/MILESTONES.md)
+- [Multi-instance browser PoC](poc/README.md) and its [size report](poc/SIZE_REPORT.md)
+
+These documents describe the proposed product and future milestones, rather than APIs implemented
+in the root package today. The PoC has its own npm manifest, dependencies, and commands; follow
+its README to build and test it independently. Root lint and format commands exclude `poc/`, and
+formatting leaves the existing planning documents unchanged.
+
 ## Development
 
 Use Node.js 22.22.2+ (22.x), 24.15.0+ (24.x), or 26+, with npm 10 or newer.
@@ -31,6 +47,7 @@ and integrity hashes remain locked.
 | `npm run lint`                  | Run ESLint with no warnings allowed                                |
 | `npm run lint:fix`              | Apply ESLint fixes                                                 |
 | `npm run format`                | Check formatting with Prettier                                     |
+| `npm run format:check`          | Alias for the formatting check                                     |
 | `npm run format:fix`            | Apply Prettier formatting                                          |
 | `npm test`                      | Run Vitest unit tests once in Chromium                             |
 | `npm run test:unit`             | Run Chromium unit tests under `test/internal/unit/`                |
@@ -54,11 +71,16 @@ browser scripts in isolated browser frames and require `npm run build` first.
 Coverage reports are written to `coverage/`. Source TypeScript uses DOM types without Node.js globals,
 while tests and tooling can use Node.js types.
 
+ESLint applies type-aware and security rules to the package source under `src/`, including checks
+for floating promises, misused promises, and non-null assertions.
+
 ## Project structure
 
 ```text
 .github/workflows/     Pull-request CI
 etc/                   Public API report baseline
+planning/              Product design and milestone documents
+poc/                   Standalone multi-instance browser proof of concept
 scripts/               Cross-platform build helpers
 src/
   index.ts             Public package entry point
@@ -138,20 +160,24 @@ To require these checks before merging, configure branch protection or a reposit
 
 This project welcomes contributions and suggestions. Most contributions require you to agree to a
 Contributor License Agreement (CLA) declaring that you have the right to, and actually do, grant us
-the rights to use your contribution. For details, visit [Contributor License Agreements](https://cla.opensource.microsoft.com).
+the rights to use your contribution. For details, visit
+[Contributor License Agreements](https://cla.opensource.com).
 
-When you submit a pull request, a CLA bot will automatically determine whether you need to provide
-a CLA and decorate the PR appropriately (e.g., status check, comment). Simply follow the instructions
-provided by the bot. You will only need to do this once across all repos using our CLA.
+When you submit a pull request, a CLA bot will automatically determine whether you need to provide a
+CLA and decorate the pull request appropriately. You only need to do this once across repositories
+using this CLA.
 
-This project has adopted the [Microsoft Open Source Code of Conduct](https://opensource.microsoft.com/codeofconduct/).
-For more information see the [Code of Conduct FAQ](https://opensource.microsoft.com/codeofconduct/faq/) or
-contact [opencode@microsoft.com](mailto:opencode@microsoft.com) with any additional questions or comments.
+This project has adopted the
+[Microsoft Open Source Code of Conduct](https://opensource.microsoft.com/codeofconduct/). For more
+information, see the
+[Code of Conduct FAQ](https://opensource.microsoft.com/codeofconduct/faq/) or contact
+[opencode@microsoft.com](mailto:opencode@microsoft.com).
 
 ## Trademarks
 
-This project may contain trademarks or logos for projects, products, or services. Authorized use of Microsoft
-trademarks or logos is subject to and must follow
+This project may contain trademarks or logos for projects, products, or services. Authorized use of
+Microsoft trademarks or logos is subject to and must follow
 [Microsoft's Trademark & Brand Guidelines](https://www.microsoft.com/legal/intellectualproperty/trademarks/usage/general).
-Use of Microsoft trademarks or logos in modified versions of this project must not cause confusion or imply Microsoft sponsorship.
-Any use of third-party trademarks or logos are subject to those third-party's policies.
+Use of Microsoft trademarks or logos in modified versions of this project must not cause confusion
+or imply Microsoft sponsorship. Any use of third-party trademarks or logos is subject to those third
+parties' policies.

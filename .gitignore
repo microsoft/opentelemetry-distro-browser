@@ -3,6 +3,9 @@
 ##
 ## Get latest from https://github.com/github/gitignore/blob/main/VisualStudio.gitignore
 
+# Node.js dependencies
+node_modules/
+
 # User-specific files
 *.rsuser
 *.suo
