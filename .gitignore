@@ -431,5 +431,8 @@ FodyWeavers.xsd
 # JavaScript build, test, and package outputs
 dist/
 coverage/
+reports/
+temp/api/
+test/**/__screenshots__/
 *.tsbuildinfo
 *.tgz

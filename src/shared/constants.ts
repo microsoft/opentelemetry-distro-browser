@@ -1,4 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-export const OPENTELEMETRY_BROWSER_VERSION = "0.0.0";
+/**
+ * Version of this browser distribution.
+ * @public
+ */
+export const OPENTELEMETRY_BROWSER_VERSION: string = "0.0.0";

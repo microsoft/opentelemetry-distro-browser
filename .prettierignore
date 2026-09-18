@@ -1,4 +1,7 @@
 dist/
 node_modules/
 coverage/
+reports/
+temp/api/
+etc/*.api.md
 package-lock.json

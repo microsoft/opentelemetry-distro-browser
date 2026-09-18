@@ -1,0 +1,16 @@
+[
+  {
+    "name": "Browser bundle (minified)",
+    "path": "dist/browser/opentelemetry-distro-browser.min.js",
+    "brotli": false
+  },
+  {
+    "name": "Browser bundle (minified + gzip)",
+    "path": "dist/browser/opentelemetry-distro-browser.min.js",
+    "gzip": true
+  },
+  {
+    "name": "Browser bundle (minified + Brotli)",
+    "path": "dist/browser/opentelemetry-distro-browser.min.js"
+  }
+]
