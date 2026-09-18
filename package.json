@@ -58,6 +58,20 @@
     "check": "npm run format && npm run lint && npm run typecheck && npm run test:coverage && npm run build && npm run test:build && npm run test:integration && npm run api:check && npm run size && npm run size:report",
     "prepack": "npm run build"
   },
+  "dependencies": {
+    "@opentelemetry/api": "1.9.1",
+    "@opentelemetry/api-logs": "0.222.0",
+    "@opentelemetry/browser-instrumentation": "0.8.1",
+    "@opentelemetry/core": "2.11.0",
+    "@opentelemetry/exporter-logs-otlp-http": "0.222.0",
+    "@opentelemetry/exporter-trace-otlp-http": "0.222.0",
+    "@opentelemetry/instrumentation": "0.222.0",
+    "@opentelemetry/resources": "2.11.0",
+    "@opentelemetry/sdk-logs": "0.222.0",
+    "@opentelemetry/sdk-trace-base": "2.11.0",
+    "@opentelemetry/sdk-trace-web": "2.11.0",
+    "@opentelemetry/semantic-conventions": "1.43.0"
+  },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@microsoft/api-extractor": "^7.59.1",
