@@ -11,6 +11,7 @@
   },
   {
     "name": "Browser bundle (minified + Brotli)",
-    "path": "dist/browser/opentelemetry-distro-browser.min.js"
+    "path": "dist/browser/opentelemetry-distro-browser.min.js",
+    "brotli": true
   }
 ]
