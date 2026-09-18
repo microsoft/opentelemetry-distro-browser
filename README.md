@@ -1,18 +1,98 @@
-# Project
+# OpenTelemetry distribution for the browser
 
-> This repo has been populated by an initial template to help get you started. Please
-> make sure to update the content to build a great experience for community-building.
+TypeScript project skeleton for a browser-focused OpenTelemetry distribution. The layout follows
+[`opentelemetry-distro-javascript`](https://github.com/microsoft/opentelemetry-distro-javascript),
+with Rollup bundling and Terser minification for browser delivery.
 
-As the maintainer of this project, please make a few updates:
+The only runtime export is currently `OPENTELEMETRY_BROWSER_VERSION`. Telemetry initialization,
+instrumentations, and exporters are not implemented yet. The npm package is marked private until
+it is ready to publish.
 
-- Improving this README.MD file to provide a great experience
-- Updating SUPPORT.MD with content about this project's support experience
-- Understanding the security reporting process in SECURITY.MD
-- Remove this section from the README
+## Development
+
+Use Node.js 22.22.2+ (22.x), 24.15.0+ (24.x), or 26+, with npm 10 or newer.
+
+```sh
+npm ci
+npm run check
+```
+
+Commit `package-lock.json` whenever dependencies change. Use `npm install` to update dependencies
+and `npm ci` for a reproducible installation. The project `.npmrc` omits registry-specific URLs
+from the lockfile so contributors and CI can use their configured npm registry; package versions
+and integrity hashes remain locked.
+
+| Command                 | Purpose                                                       |
+| ----------------------- | ------------------------------------------------------------- |
+| `npm run build`         | Clean and build bundles, declarations, and source maps        |
+| `npm run clean`         | Remove generated `dist/` outputs                              |
+| `npm run typecheck`     | Check source, tests, and Vitest configuration                 |
+| `npm run lint`          | Run ESLint with no warnings allowed                           |
+| `npm run lint:fix`      | Apply ESLint fixes                                            |
+| `npm run format`        | Check formatting with Prettier                                |
+| `npm run format:fix`    | Apply Prettier formatting                                     |
+| `npm test`              | Run Vitest tests once                                         |
+| `npm run test:unit`     | Run unit tests under `test/internal/unit/`                    |
+| `npm run test:watch`    | Run Vitest in watch mode                                      |
+| `npm run test:coverage` | Run unit tests with V8 coverage                               |
+| `npm run test:build`    | Smoke-test built bundles and declarations; build first        |
+| `npm run check`         | Run formatting, lint, types, coverage, build, and smoke tests |
+
+Vitest uses jsdom for a browser-like DOM environment; it does not launch a real browser.
+Coverage reports are written to `coverage/`. Source TypeScript uses DOM types without Node.js
+globals, while tests and tooling can use Node.js types.
+
+## Project structure
+
+```text
+.github/workflows/     Pull-request CI
+scripts/               Cross-platform build helpers
+src/
+  index.ts             Public package entry point
+  shared/              Shared constants and utilities
+test/
+  internal/unit/       Vitest unit tests
+  build/               Built-package smoke tests
+rollup.config.mjs      JavaScript bundles and TypeScript declarations
+tsconfig*.json         Shared, source, and test TypeScript settings
+vitest*.config.ts      Shared and unit-test Vitest settings
+```
+
+## Build outputs
+
+| Output                                             | Format                       |
+| -------------------------------------------------- | ---------------------------- |
+| `dist/esm/index.js`                                | ES module                    |
+| `dist/esm/index.d.ts`                              | ES module declarations       |
+| `dist/commonjs/index.cjs`                          | CommonJS                     |
+| `dist/commonjs/index.d.cts`                        | CommonJS declarations        |
+| `dist/browser/opentelemetry-distro-browser.js`     | Browser IIFE                 |
+| `dist/browser/opentelemetry-distro-browser.min.js` | Terser-minified browser IIFE |
+
+Every JavaScript bundle has a source map. Package exports select the appropriate JavaScript and
+declarations for `import` and `require`. Browser bundles expose the `OpenTelemetryBrowser` global:
+
+```html
+<script src="./dist/browser/opentelemetry-distro-browser.min.js"></script>
+<script>
+  console.log(OpenTelemetryBrowser.OPENTELEMETRY_BROWSER_VERSION);
+</script>
+```
+
+## Continuous integration
+
+GitHub Actions runs on every pull request, pushes to `main`, and manual dispatches. It checks
+ESLint, Prettier, and TypeScript, then runs Vitest with coverage and builds the Rollup/Terser
+outputs on Node.js 22 and 24. Build smoke tests verify ES module and CommonJS imports, browser
+globals, minification, declarations, and source maps. CI also checks the npm package contents
+with `npm pack --dry-run`.
+
+To require these checks before merging, configure branch protection or a repository ruleset for
+`main` after the workflow has run. Workflow files alone do not prevent merging a failing PR.
 
 ## Contributing
 
-This project welcomes contributions and suggestions.  Most contributions require you to agree to a
+This project welcomes contributions and suggestions. Most contributions require you to agree to a
 Contributor License Agreement (CLA) declaring that you have the right to, and actually do, grant us
 the rights to use your contribution. For details, visit [Contributor License Agreements](https://cla.opensource.microsoft.com).
 

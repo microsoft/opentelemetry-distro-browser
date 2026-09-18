@@ -427,3 +427,9 @@ FodyWeavers.xsd
 *.msix
 *.msm
 *.msp
+
+# JavaScript build, test, and package outputs
+dist/
+coverage/
+*.tsbuildinfo
+*.tgz
