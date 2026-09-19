@@ -30,7 +30,7 @@ test("the package exposes only ESM entry points without legacy entry fields", ()
 });
 
 test("the build produces only ESM bundles, declarations, and source maps", async () => {
-  assert.deepEqual(await readdir(new URL("dist/", root)), ["esm"]);
+  assert.deepEqual((await readdir(new URL("dist/", root))).sort(), ["esm"]);
   assert.deepEqual((await readdir(new URL("dist/esm/", root))).sort(), [
     "index.d.ts",
     "index.js",
@@ -58,7 +58,7 @@ for (const suffix of [".js", ".min.js"]) {
   test(`the ${suffix} bundle exposes the same ESM API`, async () => {
     const distro = await import(new URL(`${esmBundle}${suffix}`, root));
     const entry = await import(pkg.name);
-    assert.deepEqual(Object.keys(distro), Object.keys(entry));
+    assert.deepEqual(Object.keys(distro).sort(), Object.keys(entry).sort());
     assert.equal(distro.OPENTELEMETRY_BROWSER_VERSION, pkg.version);
     assert.throws(() => distro.useMicrosoftOpenTelemetry({}), /not implemented/);
   });
