@@ -2,38 +2,27 @@
 // Licensed under the MIT License.
 
 import { expect, it } from "vitest";
-import standardBundle from "../../dist/browser/opentelemetry-distro-browser.js?raw";
-import minifiedBundle from "../../dist/browser/opentelemetry-distro-browser.min.js?raw";
+import standardBundle from "../../dist/esm/index.js?raw";
+import minifiedBundle from "../../dist/esm/index.min.js?raw";
 import { version } from "../../package.json";
-
-declare global {
-  interface Window {
-    OpenTelemetryBrowser?: typeof import("../../src/index.js");
-  }
-}
 
 it.each([
   { name: "standard", source: standardBundle },
   { name: "minified", source: minifiedBundle },
-])("loads the $name bundle as a browser script", ({ source }) => {
-  const frame = document.createElement("iframe");
-  document.body.append(frame);
+])("imports the $name bundle as native browser ESM", async ({ source }) => {
+  const url = URL.createObjectURL(new Blob([source], { type: "text/javascript" }));
 
   try {
-    const frameWindow = frame.contentWindow;
-    if (!frameWindow) {
-      throw new Error("Could not create the browser script test frame.");
-    }
-
-    const script = frameWindow.document.createElement("script");
-    script.textContent = source;
-    frameWindow.document.head.append(script);
-
-    expect(frameWindow.OpenTelemetryBrowser?.OPENTELEMETRY_BROWSER_VERSION).toBe(version);
-    const distro = frameWindow.OpenTelemetryBrowser;
-    expect(distro).toBeDefined();
-    expect(() => distro?.useMicrosoftOpenTelemetry({})).toThrow("not implemented");
+    // Import the emitted bytes directly, without Vite transforming the module.
+    const distro: typeof import("../../src/index.js") = await import(/* @vite-ignore */ url);
+    expect(Object.keys(distro).sort()).toEqual([
+      "OPENTELEMETRY_BROWSER_VERSION",
+      "useMicrosoftOpenTelemetry",
+    ]);
+    expect(distro.OPENTELEMETRY_BROWSER_VERSION).toBe(version);
+    expect(() => distro.useMicrosoftOpenTelemetry({})).toThrow("not implemented");
+    expect(window).not.toHaveProperty("OpenTelemetryBrowser");
   } finally {
-    frame.remove();
+    URL.revokeObjectURL(url);
   }
 });

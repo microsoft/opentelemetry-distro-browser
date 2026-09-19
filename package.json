@@ -5,18 +5,12 @@
   "description": "OpenTelemetry distribution for the browser",
   "license": "MIT",
   "type": "module",
-  "main": "./dist/commonjs/index.cjs",
-  "module": "./dist/esm/index.js",
   "types": "./dist/esm/index.d.ts",
   "exports": {
     ".": {
       "import": {
         "types": "./dist/esm/index.d.ts",
         "default": "./dist/esm/index.js"
-      },
-      "require": {
-        "types": "./dist/commonjs/index.d.cts",
-        "default": "./dist/commonjs/index.cjs"
       }
     },
     "./package.json": "./package.json"

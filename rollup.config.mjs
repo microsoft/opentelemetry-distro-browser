@@ -5,9 +5,8 @@ import typescript from "@rollup/plugin-typescript";
 import { dts } from "rollup-plugin-dts";
 import { visualizer } from "rollup-plugin-visualizer";
 
-const browserOutput = {
-  format: "iife",
-  name: "OpenTelemetryBrowser",
+const esmOutput = {
+  format: "es",
   sourcemap: true,
 };
 
@@ -21,27 +20,17 @@ export default [
     ],
     output: [
       {
+        ...esmOutput,
         file: "dist/esm/index.js",
-        format: "es",
-        sourcemap: true,
       },
       {
-        file: "dist/commonjs/index.cjs",
-        format: "cjs",
-        sourcemap: true,
-      },
-      {
-        ...browserOutput,
-        file: "dist/browser/opentelemetry-distro-browser.js",
-      },
-      {
-        ...browserOutput,
-        file: "dist/browser/opentelemetry-distro-browser.min.js",
+        ...esmOutput,
+        file: "dist/esm/index.min.js",
         plugins: [
           terser(),
           visualizer({
             filename: "reports/bundle-stats.html",
-            title: "OpenTelemetry browser bundle",
+            title: "OpenTelemetry browser ESM bundle",
             template: "treemap",
             sourcemap: true,
             gzipSize: true,
@@ -54,15 +43,9 @@ export default [
   {
     input: "src/index.ts",
     plugins: [dts({ tsconfig: "./tsconfig.src.json" })],
-    output: [
-      {
-        file: "dist/esm/index.d.ts",
-        format: "es",
-      },
-      {
-        file: "dist/commonjs/index.d.cts",
-        format: "es",
-      },
-    ],
+    output: {
+      file: "dist/esm/index.d.ts",
+      format: "es",
+    },
   },
 ];

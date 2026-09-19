@@ -1,17 +1,17 @@
 [
   {
-    "name": "Browser bundle (minified)",
-    "path": "dist/browser/opentelemetry-distro-browser.min.js",
+    "name": "Browser ESM bundle (minified)",
+    "path": "dist/esm/index.min.js",
     "brotli": false
   },
   {
-    "name": "Browser bundle (minified + gzip)",
-    "path": "dist/browser/opentelemetry-distro-browser.min.js",
+    "name": "Browser ESM bundle (minified + gzip)",
+    "path": "dist/esm/index.min.js",
     "gzip": true
   },
   {
-    "name": "Browser bundle (minified + Brotli)",
-    "path": "dist/browser/opentelemetry-distro-browser.min.js",
+    "name": "Browser ESM bundle (minified + Brotli)",
+    "path": "dist/esm/index.min.js",
     "brotli": true
   }
 ]
