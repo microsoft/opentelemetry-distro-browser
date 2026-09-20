@@ -35,8 +35,7 @@ export interface OtlpOptions {
  * Base configuration contract for the browser distribution.
  *
  * @remarks
- * Initialization is not implemented yet. These options describe the intended
- * runtime contract; passing them to useMicrosoftOpenTelemetry currently throws.
+ * Destination presets are not implemented yet and are rejected during initialization.
  * Instrumentation and session configuration will be defined separately.
  *
  * @public
@@ -46,7 +45,7 @@ export interface MicrosoftOpenTelemetryBrowserOptions {
   readonly azureMonitor?: AzureMonitorOptions;
   /** Enable OTLP/HTTP export with the specified destination. */
   readonly otlp?: OtlpOptions;
-  /** Upstream resource to combine with the distribution's detected resource. */
+  /** Upstream resource to combine with the distribution's default resource. */
   readonly resource?: Resource;
   /**
    * Trace sampling ratio, from 0 through 1 inclusive.

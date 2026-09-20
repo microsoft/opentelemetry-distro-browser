@@ -2,6 +2,18 @@ import { playwright } from "@vitest/browser-playwright";
 import { defineConfig } from "vitest/config";
 
 export default defineConfig({
+  optimizeDeps: {
+    include: [
+      "@opentelemetry/api",
+      "@opentelemetry/api-logs",
+      "@opentelemetry/core",
+      "@opentelemetry/resources",
+      "@opentelemetry/sdk-logs",
+      "@opentelemetry/sdk-trace-base",
+      "@opentelemetry/sdk-trace-web",
+      "@opentelemetry/semantic-conventions/incubating",
+    ],
+  },
   test: {
     include: ["test/internal/unit/**/*.test.ts"],
     reporters: ["default"],

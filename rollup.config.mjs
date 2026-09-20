@@ -14,11 +14,9 @@ const browserOutput = {
 export default [
   {
     input: "src/index.ts",
-    plugins: [
-      nodeResolve({ browser: true }),
-      commonjs(),
-      typescript({ tsconfig: "./tsconfig.src.json" }),
-    ],
+    // Share APIs with npm consumers and let their bundler select the SDK platform.
+    external: (id) => id.startsWith("@opentelemetry/"),
+    plugins: [typescript({ tsconfig: "./tsconfig.src.json" })],
     output: [
       {
         file: "dist/esm/index.js",
@@ -30,6 +28,16 @@ export default [
         format: "cjs",
         sourcemap: true,
       },
+    ],
+  },
+  {
+    input: "src/index.ts",
+    plugins: [
+      nodeResolve({ browser: true }),
+      commonjs(),
+      typescript({ tsconfig: "./tsconfig.src.json" }),
+    ],
+    output: [
       {
         ...browserOutput,
         file: "dist/browser/opentelemetry-distro-browser.js",
