@@ -7,8 +7,6 @@ export default defineConfig({
       "@opentelemetry/api",
       "@opentelemetry/api-logs",
       "@opentelemetry/browser-sdk",
-      "@opentelemetry/browser-sdk/logs",
-      "@opentelemetry/browser-sdk/traces",
       "@opentelemetry/core",
       "@opentelemetry/resources",
       "@opentelemetry/sdk-logs",

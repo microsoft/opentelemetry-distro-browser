@@ -27,8 +27,6 @@ it("initializes the minified bundle as native browser ESM", async () => {
     expect(Object.keys(distro).sort()).toEqual([
       "OPENTELEMETRY_BROWSER_VERSION",
       "useMicrosoftOpenTelemetry",
-      "useMicrosoftOpenTelemetryLogs",
-      "useMicrosoftOpenTelemetryTraces",
     ]);
     expect(distro.OPENTELEMETRY_BROWSER_VERSION).toBe(version);
     expect(window).not.toHaveProperty("OpenTelemetryBrowser");
@@ -46,34 +44,20 @@ it("initializes the minified bundle as native browser ESM", async () => {
   }
 });
 
-it.each([
-  { name: "useMicrosoftOpenTelemetry", traces: true, logs: true },
-  { name: "useMicrosoftOpenTelemetryTraces", traces: true, logs: false },
-  { name: "useMicrosoftOpenTelemetryLogs", traces: false, logs: true },
-] as const)("exports manual telemetry through the built $name initializer", async (entry) => {
+it("exports both traces and logs through the built initializer", async () => {
   // Type-check from a clean checkout; load the built artifact only at runtime.
   const url = new URL("../../dist/esm/index.js", import.meta.url);
   const distro: typeof import("../../src/index.js") = await import(/* @vite-ignore */ url.href);
   const pipeline = createInMemoryPipeline();
-  const originalTrace = trace.getTracerProvider();
-  const originalLogs = logs.getLoggerProvider();
   const tracer = trace.getTracer("browser-consumer");
   const logger = logs.getLogger("browser-consumer");
-  const telemetry =
-    entry.name === "useMicrosoftOpenTelemetry"
-      ? distro.useMicrosoftOpenTelemetry(pipeline.options)
-      : entry.name === "useMicrosoftOpenTelemetryTraces"
-        ? distro.useMicrosoftOpenTelemetryTraces(pipeline.options.traces)
-        : distro.useMicrosoftOpenTelemetryLogs(pipeline.options.logs);
+  const telemetry = distro.useMicrosoftOpenTelemetry(pipeline.options);
   try {
     tracer.startSpan("manual").end();
     logger.emit({ eventName: "manual" });
     await Promise.all([pipeline.spanProcessor.forceFlush(), pipeline.logProcessor.forceFlush()]);
-    if (entry.traces) expect(pipeline.spanExporter.getFinishedSpans()[0]?.name).toBe("manual");
-    else expect(trace.getTracerProvider()).toBe(originalTrace);
-    if (entry.logs)
-      expect(pipeline.logExporter.getFinishedLogRecords()[0]?.eventName).toBe("manual");
-    else expect(logs.getLoggerProvider()).toBe(originalLogs);
+    expect(pipeline.spanExporter.getFinishedSpans()[0]?.name).toBe("manual");
+    expect(pipeline.logExporter.getFinishedLogRecords()[0]?.eventName).toBe("manual");
   } finally {
     await telemetry.shutdown();
   }

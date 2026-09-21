@@ -4,33 +4,19 @@
 
 ```ts
 
-import { LogsConfig } from '@opentelemetry/browser-sdk';
-import { TracesConfig } from '@opentelemetry/browser-sdk';
 import { startBrowserSdk as useMicrosoftOpenTelemetry } from '@opentelemetry/browser-sdk';
-import { startLogsSdk as useMicrosoftOpenTelemetryLogs } from '@opentelemetry/browser-sdk/logs';
-import { startTracesSdk as useMicrosoftOpenTelemetryTraces } from '@opentelemetry/browser-sdk/traces';
 import { WebSdk } from '@opentelemetry/browser-sdk';
 
 // @public
 export type MicrosoftOpenTelemetryBrowser = WebSdk;
 
 // @public
-export type MicrosoftOpenTelemetryBrowserLogOptions = LogsConfig;
-
-// @public
 export type MicrosoftOpenTelemetryBrowserOptions = Parameters<typeof useMicrosoftOpenTelemetry>[0];
-
-// @public
-export type MicrosoftOpenTelemetryBrowserTraceOptions = TracesConfig;
 
 // @public
 export const OPENTELEMETRY_BROWSER_VERSION: string;
 
 export { useMicrosoftOpenTelemetry }
-
-export { useMicrosoftOpenTelemetryLogs }
-
-export { useMicrosoftOpenTelemetryTraces }
 
 // (No @packageDocumentation comment for this package)
 
