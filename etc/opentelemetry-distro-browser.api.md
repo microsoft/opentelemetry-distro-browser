@@ -4,45 +4,33 @@
 
 ```ts
 
-import { LogRecordProcessor } from '@opentelemetry/sdk-logs';
-import { Resource } from '@opentelemetry/resources';
-import { SpanProcessor } from '@opentelemetry/sdk-trace-base';
-import { TextMapPropagator } from '@opentelemetry/api';
+import { LogsConfig } from '@opentelemetry/browser-sdk';
+import { TracesConfig } from '@opentelemetry/browser-sdk';
+import { startBrowserSdk as useMicrosoftOpenTelemetry } from '@opentelemetry/browser-sdk';
+import { startLogsSdk as useMicrosoftOpenTelemetryLogs } from '@opentelemetry/browser-sdk/logs';
+import { startTracesSdk as useMicrosoftOpenTelemetryTraces } from '@opentelemetry/browser-sdk/traces';
+import { WebSdk } from '@opentelemetry/browser-sdk';
 
 // @public
-export interface AzureMonitorOptions {
-    readonly connectionString: string;
-    readonly disableBeacon?: boolean;
-}
+export type MicrosoftOpenTelemetryBrowser = WebSdk;
 
 // @public
-export interface MicrosoftOpenTelemetryBrowser {
-    forceFlush(): Promise<void>;
-    shutdown(): Promise<void>;
-}
+export type MicrosoftOpenTelemetryBrowserLogOptions = LogsConfig;
 
 // @public
-export interface MicrosoftOpenTelemetryBrowserOptions {
-    readonly azureMonitor?: AzureMonitorOptions;
-    readonly logRecordProcessors?: readonly LogRecordProcessor[];
-    readonly otlp?: OtlpOptions;
-    readonly propagator?: TextMapPropagator;
-    readonly resource?: Resource;
-    readonly samplingRatio?: number;
-    readonly spanProcessors?: readonly SpanProcessor[];
-}
+export type MicrosoftOpenTelemetryBrowserOptions = Parameters<typeof useMicrosoftOpenTelemetry>[0];
+
+// @public
+export type MicrosoftOpenTelemetryBrowserTraceOptions = TracesConfig;
 
 // @public
 export const OPENTELEMETRY_BROWSER_VERSION: string;
 
-// @public
-export interface OtlpOptions {
-    readonly endpoint: string;
-    readonly headers?: Readonly<Record<string, string>>;
-}
+export { useMicrosoftOpenTelemetry }
 
-// @public
-export function useMicrosoftOpenTelemetry(options: MicrosoftOpenTelemetryBrowserOptions): MicrosoftOpenTelemetryBrowser;
+export { useMicrosoftOpenTelemetryLogs }
+
+export { useMicrosoftOpenTelemetryTraces }
 
 // (No @packageDocumentation comment for this package)
 

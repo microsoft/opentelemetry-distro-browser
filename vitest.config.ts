@@ -6,12 +6,13 @@ export default defineConfig({
     include: [
       "@opentelemetry/api",
       "@opentelemetry/api-logs",
+      "@opentelemetry/browser-sdk",
+      "@opentelemetry/browser-sdk/logs",
+      "@opentelemetry/browser-sdk/traces",
       "@opentelemetry/core",
       "@opentelemetry/resources",
       "@opentelemetry/sdk-logs",
       "@opentelemetry/sdk-trace-base",
-      "@opentelemetry/sdk-trace-web",
-      "@opentelemetry/semantic-conventions/incubating",
     ],
   },
   test: {

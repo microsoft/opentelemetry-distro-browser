@@ -25,10 +25,17 @@ CDN publication and loader policy remain deferred in the implementation plan.
 
 `npm run test:build` checks the output inventory, package resolution, declaration consumption
 with TypeScript NodeNext and Bundler resolution, source maps, minification, and tree shaking.
-`npm run test:integration` checks manual telemetry through the npm entry in Chromium and
+`npm run test:integration` checks manual telemetry through each named initializer in Chromium and
 imports the minified bundle natively without a bundler transforming its contents.
 The `sideEffects: false` contract remains in place; importing the package does not initialize
 telemetry.
+
+All initializers directly re-export `@opentelemetry/browser-sdk` functions under
+distribution names from the root entry and use one API report.
+Consumer bundlers can tree-shake unused initializers and their SDKs. Native ESM
+loading does not tree-shake; the prebuilt minified bundle includes both SDKs.
+Upstream's initializers include default OTLP exporters. Supplying custom processors
+is a runtime choice, not a guarantee that the default exporter code is removed.
 
 `npm run size` reports minified, gzip, and Brotli sizes for `dist/esm/index.min.js`.
 `npm run size:report` writes the machine-readable report, and the production build generates

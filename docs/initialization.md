@@ -1,94 +1,62 @@
-# Processor-backed initialization
+# Initialization
 
-`useMicrosoftOpenTelemetry(options)` initializes one trace pipeline and one log
-pipeline using the upstream `BasicTracerProvider` and `LoggerProvider`. Applications
-continue to use `@opentelemetry/api` and `@opentelemetry/api-logs` for manual telemetry.
+The distribution directly re-exports the experimental
+[`@opentelemetry/browser-sdk`](https://github.com/open-telemetry/opentelemetry-browser/tree/main/packages/sdk),
+pinned to `0.4.0`. It does not construct providers or implement its own lifecycle.
 
-Supply upstream processors, which can wrap any compatible exporter:
+## Choose an initializer
+
+Import these functions from `@microsoft/opentelemetry-distro-browser`:
+
+| Function                          | Upstream function | Signals         |
+| --------------------------------- | ----------------- | --------------- |
+| `useMicrosoftOpenTelemetry`       | `startBrowserSdk` | Traces and logs |
+| `useMicrosoftOpenTelemetryTraces` | `startTracesSdk`  | Traces only     |
+| `useMicrosoftOpenTelemetryLogs`   | `startLogsSdk`    | Logs only       |
+
+The signal-specific functions use upstream's `/traces` and `/logs` modules.
+A tree-shaking ESM bundler can remove the unused signal. Native imports without
+tree shaking still load both signals from the root entry.
+
+## Example
 
 ```typescript
-import { ROOT_CONTEXT, trace } from "@opentelemetry/api";
-import { logs } from "@opentelemetry/api-logs";
-import { resourceFromAttributes } from "@opentelemetry/resources";
-import { BatchSpanProcessor, InMemorySpanExporter } from "@opentelemetry/sdk-trace-base";
-import { BatchLogRecordProcessor, InMemoryLogRecordExporter } from "@opentelemetry/sdk-logs";
-import { useMicrosoftOpenTelemetry } from "@microsoft/opentelemetry-distro-browser";
+import { useMicrosoftOpenTelemetryTraces } from "@microsoft/opentelemetry-distro-browser";
+import { trace } from "@opentelemetry/api";
 
-const spans = new InMemorySpanExporter();
-const records = new InMemoryLogRecordExporter();
-const telemetry = useMicrosoftOpenTelemetry({
-  resource: resourceFromAttributes({ "service.name": "checkout", "service.version": "1.0.0" }),
-  spanProcessors: [new BatchSpanProcessor(spans)],
-  logRecordProcessors: [new BatchLogRecordProcessor({ exporter: records })],
+const telemetry = useMicrosoftOpenTelemetryTraces({
+  serviceName: "checkout",
+  exportConfig: { url: "https://collector.example.com/v1/traces" },
 });
 
-const span = trace.getTracer("checkout").startSpan("checkout");
-logs.getLogger("checkout").emit({
-  eventName: "checkout.started",
-  context: trace.setSpan(ROOT_CONTEXT, span),
-});
-span.end();
-await telemetry.forceFlush();
-
-// Inspect in-memory exports before shutdown, which clears these upstream exporters.
-const finishedSpans = spans.getFinishedSpans();
-const finishedRecords = records.getFinishedLogRecords();
+trace.getTracer("checkout").startSpan("checkout").end();
 await telemetry.shutdown();
 ```
 
-## Configuration and ownership
+For logs only, use `useMicrosoftOpenTelemetryLogs` with a `/v1/logs` endpoint.
+For both, use `useMicrosoftOpenTelemetry` with a base `exportConfig.url` and
+optional `traces` and `logs` configuration objects.
 
-- Distribution options are validated before global registration: the options
-  object, supported option names, sampling ratio, and processor-list containers.
-- Processors, resources, and propagators are expected to satisfy their upstream
-  OpenTelemetry interfaces. The distribution does not revalidate their methods or
-  internal settings; invalid implementations may fail when the SDK uses them.
-- `azureMonitor` and `otlp` presets currently throw instead of silently ignoring
-  destination settings. Instrumentation and session configuration are not implemented.
-- Omitting both processor lists is valid but emits an upstream `diag.warn` because
-  nothing will be exported. A single-signal configuration is also supported.
-- Processor arrays are copied when building the providers. Resources and processors
-  are not frozen or cloned, and processors are owned only after successful initialization.
-- The default resource contains upstream service and SDK attributes plus
-  `telemetry.distro.name` and `telemetry.distro.version`. Caller attributes win when
-  merged. Automatic browser detection remains in the separate browser detector work.
-- `samplingRatio` defaults to `1` and applies to root traces through an upstream
-  parent-based ratio sampler. Existing parent sampling decisions are honored; logs
-  are not sampled.
-- Propagation defaults to W3C Trace Context and Baggage. A custom upstream
-  propagator replaces that default. No fetch/XHR instrumentation or context manager
-  is installed; pass explicit Context values for parenting and correlation, including
-  across `await`. An application-provided context manager is left untouched.
-- Only one initialization may be active in a realm. Existing required global
-  registrations cause initialization to fail rather than being overwritten.
-  Do not replace these globals while the handle owns them.
+## Configuration and lifecycle
 
-## Lifecycle
+- Configuration types are aliases of the upstream types. Use `resourceAttributes`,
+  `processors`, `sampler`, and `propagators`, not the previous distribution options.
+  In combined configuration, put processors under `traces.processors` and
+  `logs.processors`. Azure Monitor connection-string configuration is not provided.
+- Upstream supplies OTLP exporters and batch processors when processors are omitted,
+  defaulting to `http://localhost:4318`. Supplying processors suppresses the default
+  exporter unless `exportConfig` is also set. Empty processor arrays without
+  `exportConfig` log an error and leave that signal inactive; unknown JavaScript
+  options are not validated here.
+- Tracing installs upstream's synchronous context manager and default W3C Trace
+  Context/Baggage propagation. It does not patch async context or instrument requests.
+- The returned handle has **`shutdown()` only**, not `forceFlush()`. When needed,
+  flush processors you supplied directly before shutdown.
+- Shutdown behavior and errors are upstream's. Version `0.4.0` does not unregister
+  global providers, propagation, or context, and this distribution adds no
+  single-instance guard, transactional rollback, or restart guarantee. Initialize
+  once in a browser context; do not assume shutdown permits safe reinitialization.
 
-`forceFlush()` delegates to both providers and serializes calls using their returned promises.
-Each provider uses its upstream 30-second processor flush timeout. Both providers
-are attempted, and failures are reported in an `AggregateError`; entries retain
-the original upstream rejection values.
-
-Failure timing follows the upstream SDK: a provider can reject while other processors
-inside that provider are still running. The distribution does not collect individual
-processor failures or wait for those siblings after the provider has rejected.
-
-`shutdown()` immediately stops forwarding new telemetry and late-ending spans to
-processors. It waits for queued provider flush calls to settle, unregisters owned
-globals, and delegates shutdown to both providers. Repeated shutdown calls return
-the same promise and result. Flush calls after shutdown begins return that promise
-without restarting work. There is no additional distribution-level shutdown
-timeout: completion depends on the supplied processors. A new instance can be
-initialized once shutdown settles; do not reuse processors owned by the old instance.
-
-No distribution-owned page-lifecycle listeners or automatic instrumentation are
-installed. Supplied upstream batch processors retain their own batching and
-page-lifecycle behavior. More extensive lifecycle diagnostics are separate work.
-
-## Packaging
-
-The npm ESM output keeps OpenTelemetry dependencies external to share the
-application's API instances and use the consumer's platform resolution.
-The minified ESM browser bundle includes the upstream SDKs. This initial combined
-entry point includes both signals; separate signal entry points remain future work.
+Upstream defaults also control diagnostics and resource attributes; no extra
+distribution attributes or custom stale-handle guards are added.
+See [packaging](packaging.md) for build outputs.
