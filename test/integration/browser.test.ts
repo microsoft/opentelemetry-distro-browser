@@ -4,56 +4,37 @@
 import { trace } from "@opentelemetry/api";
 import { logs } from "@opentelemetry/api-logs";
 import { expect, it, vi } from "vitest";
-import standardBundle from "../../dist/browser/opentelemetry-distro-browser.js?raw";
-import minifiedBundle from "../../dist/browser/opentelemetry-distro-browser.min.js?raw";
+import minifiedBundle from "../../dist/esm/index.min.js?raw";
 import { version } from "../../package.json";
 import type { MicrosoftOpenTelemetryBrowser } from "../../src/index.js";
 import { createInMemoryPipeline } from "../fixtures/telemetry.js";
 
-declare global {
-  interface Window {
-    OpenTelemetryBrowser?: typeof import("../../src/index.js");
-  }
-}
-
-it.each([
-  { name: "standard", source: standardBundle },
-  { name: "minified", source: minifiedBundle },
-])("initializes the $name bundle as a browser script", async ({ source }) => {
-  const frame = document.createElement("iframe");
-  document.body.append(frame);
+it("initializes the minified bundle as native browser ESM", async () => {
+  const url = URL.createObjectURL(new Blob([minifiedBundle], { type: "text/javascript" }));
   let telemetry: MicrosoftOpenTelemetryBrowser | undefined;
-
   try {
-    const frameWindow = frame.contentWindow;
-    if (!frameWindow) {
-      throw new Error("Could not create the browser script test frame.");
-    }
-
-    const script = frameWindow.document.createElement("script");
-    script.textContent = source;
-    frameWindow.document.head.append(script);
-
-    expect(frameWindow.OpenTelemetryBrowser?.OPENTELEMETRY_BROWSER_VERSION).toBe(version);
-    const distro = frameWindow.OpenTelemetryBrowser;
-    if (!distro) throw new Error("The browser bundle did not load.");
+    // Import the emitted bytes directly, without Vite transforming the module.
+    const distro: typeof import("../../src/index.js") = await import(/* @vite-ignore */ url);
+    expect(Object.keys(distro).sort()).toEqual([
+      "OPENTELEMETRY_BROWSER_VERSION",
+      "useMicrosoftOpenTelemetry",
+    ]);
+    expect(distro.OPENTELEMETRY_BROWSER_VERSION).toBe(version);
+    expect(window).not.toHaveProperty("OpenTelemetryBrowser");
     const pipeline = createInMemoryPipeline();
-    const spanFlush = vi.spyOn(pipeline.spanProcessor, "forceFlush");
-    const logFlush = vi.spyOn(pipeline.logProcessor, "forceFlush");
-    const spanShutdown = vi.spyOn(pipeline.spanProcessor, "shutdown");
-    const logShutdown = vi.spyOn(pipeline.logProcessor, "shutdown");
+    const processors = [pipeline.spanProcessor, pipeline.logProcessor];
+    const flushes = processors.map((processor) => vi.spyOn(processor, "forceFlush"));
+    const shutdowns = processors.map((processor) => vi.spyOn(processor, "shutdown"));
     telemetry = distro.useMicrosoftOpenTelemetry(pipeline.options);
     await telemetry.forceFlush();
-    expect(spanFlush).toHaveBeenCalledOnce();
-    expect(logFlush).toHaveBeenCalledOnce();
+    for (const flush of flushes) expect(flush).toHaveBeenCalledOnce();
     const shutdown = telemetry.shutdown();
     expect(telemetry.shutdown()).toBe(shutdown);
     await shutdown;
-    expect(spanShutdown).toHaveBeenCalledOnce();
-    expect(logShutdown).toHaveBeenCalledOnce();
+    for (const shutdown of shutdowns) expect(shutdown).toHaveBeenCalledOnce();
   } finally {
     await telemetry?.shutdown();
-    frame.remove();
+    URL.revokeObjectURL(url);
   }
 });
 

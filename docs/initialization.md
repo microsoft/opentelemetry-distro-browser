@@ -88,7 +88,7 @@ page-lifecycle behavior. More extensive lifecycle diagnostics are separate work.
 
 ## Packaging
 
-The npm ESM and CommonJS outputs keep OpenTelemetry dependencies external so they
-share the application's API instances and use the consumer's platform resolution.
-The standalone browser bundles include the upstream SDKs. This initial combined
+The npm ESM output keeps OpenTelemetry dependencies external to share the
+application's API instances and use the consumer's platform resolution.
+The minified ESM browser bundle includes the upstream SDKs. This initial combined
 entry point includes both signals; separate signal entry points remain future work.
