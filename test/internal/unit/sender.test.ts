@@ -2,16 +2,16 @@
 // Licensed under the MIT License.
 
 import { describe, expect, it, vi } from "vitest";
-import { BrowserSender } from "../../../src/exporter/browser-sender.js";
+import { Sender } from "../../../src/exporter/sender.js";
 
-describe("BrowserSender", () => {
+describe("Sender", () => {
   it("posts a payload and returns the Breeze response", async () => {
     const response = new Response('{"itemsAccepted":1,"itemsReceived":1,"errors":[]}', {
       status: 200,
       headers: { "retry-after": "120" },
     });
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response);
-    const sender = new BrowserSender({
+    const sender = new Sender({
       endpoint: "https://example.test/v2.1/track",
       fetch,
     });
@@ -35,7 +35,7 @@ describe("BrowserSender", () => {
     const fetch = vi
       .fn<typeof globalThis.fetch>()
       .mockResolvedValue(new Response(null, { status: 200 }));
-    const sender = new BrowserSender({
+    const sender = new Sender({
       endpoint: "https://example.test/v2.1/track",
       fetch,
     });
@@ -51,7 +51,7 @@ describe("BrowserSender", () => {
 
   it("rejects an unload payload above the keepalive body budget", async () => {
     const fetch = vi.fn<typeof globalThis.fetch>();
-    const sender = new BrowserSender({
+    const sender = new Sender({
       endpoint: "https://example.test/v2.1/track",
       fetch,
     });
@@ -74,7 +74,7 @@ describe("BrowserSender", () => {
           completeFirstRequest = resolve;
         }),
     );
-    const sender = new BrowserSender({
+    const sender = new Sender({
       endpoint: "https://example.test/v2.1/track",
       fetch,
     });
@@ -101,7 +101,7 @@ describe("BrowserSender", () => {
     const fetch = vi
       .fn<typeof globalThis.fetch>()
       .mockResolvedValue(new Response(null, { status: 200 }));
-    const sender = new BrowserSender({
+    const sender = new Sender({
       endpoint: "https://example.test/v2.1/track",
       fetch,
     });
@@ -118,7 +118,7 @@ describe("BrowserSender", () => {
 
   it("rejects an oversized payload before calling fetch", async () => {
     const fetch = vi.fn<typeof globalThis.fetch>();
-    const sender = new BrowserSender({
+    const sender = new Sender({
       endpoint: "https://example.test/v2.1/track",
       fetch,
       maxPayloadSize: 4,
@@ -133,7 +133,7 @@ describe("BrowserSender", () => {
   it("requires a positive payload limit", () => {
     expect(
       () =>
-        new BrowserSender({
+        new Sender({
           endpoint: "https://example.test/v2.1/track",
           fetch: vi.fn<typeof globalThis.fetch>(),
           maxPayloadSize: 0,
@@ -145,7 +145,7 @@ describe("BrowserSender", () => {
     const fetch = vi
       .fn<typeof globalThis.fetch>()
       .mockResolvedValue(new Response(null, { status: 200 }));
-    const sender = new BrowserSender({
+    const sender = new Sender({
       endpoint: "https://example.test/v2.1/track",
       fetch,
     });

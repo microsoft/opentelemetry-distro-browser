@@ -10,30 +10,30 @@ import {
 let pendingKeepaliveBodySize = 0;
 let pendingKeepaliveRequestCount = 0;
 
-export interface BrowserSenderOptions {
+export interface SenderOptions {
   readonly endpoint: string;
   readonly fetch?: typeof globalThis.fetch;
   readonly maxPayloadSize?: number;
 }
 
-export interface BrowserSendRequest {
+export interface SendRequest {
   readonly body: Uint8Array<ArrayBuffer>;
   readonly contentType: string;
   readonly unloading?: boolean;
 }
 
-export interface BrowserSenderResult {
+export interface SenderResult {
   readonly statusCode: number;
   readonly result: string;
   readonly retryAfterMs?: number;
 }
 
-export class BrowserSender {
+export class Sender {
   private readonly endpoint: string;
   private readonly fetch: typeof globalThis.fetch;
   private readonly maxPayloadSize: number | undefined;
 
-  public constructor(options: BrowserSenderOptions) {
+  public constructor(options: SenderOptions) {
     this.endpoint = options.endpoint;
     this.fetch = options.fetch ?? globalThis.fetch.bind(globalThis);
     this.maxPayloadSize = options.maxPayloadSize;
@@ -43,7 +43,7 @@ export class BrowserSender {
     }
   }
 
-  public async send(request: BrowserSendRequest): Promise<BrowserSenderResult> {
+  public async send(request: SendRequest): Promise<SenderResult> {
     if (this.maxPayloadSize !== undefined && request.body.byteLength > this.maxPayloadSize) {
       throw new RangeError(
         `Payload size ${request.body.byteLength} exceeds the ${this.maxPayloadSize} byte limit.`,
