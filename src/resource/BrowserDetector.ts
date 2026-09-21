@@ -12,6 +12,7 @@ import {
   ATTR_BROWSER_MOBILE,
   ATTR_BROWSER_PLATFORM,
 } from "@opentelemetry/semantic-conventions/incubating";
+import { isBrowserEnvironment } from "./isBrowserEnvironment.js";
 
 /**
  * Shape of a single entry of `NavigatorUAData.brands`, as defined by the User-Agent Client Hints
@@ -70,8 +71,9 @@ function formatBrands(brands: NavigatorUABrandVersion[] | undefined): string[] |
  * the user agent string are the responsibility of the separate `UserAgentDetector`.
  *
  * Detection is fully synchronous: every source is a synchronous browser global. The detector never
- * throws and is safe to run in non-browser environments (SSR, Node prerendering, web workers,
- * jsdom), where it simply yields fewer attributes — or none at all.
+ * throws, and it yields no attributes at all outside a browser scope — server-side rendering and
+ * prerendering under Node, Deno or Bun included, since those runtimes expose a `navigator` global
+ * describing the server. Web workers remain supported.
  *
  * Attributes that cannot be determined are omitted rather than emitted with a placeholder value.
  *
@@ -84,8 +86,12 @@ export class BrowserDetector implements ResourceDetector {
   detect(): DetectedResource {
     const attributes: DetectedResourceAttributes = {};
 
-    // `window` is deliberately not referenced: web workers expose `navigator` without a `window`,
-    // and `navigator` alone covers every source we need.
+    // Node, Deno and Bun all expose a `navigator` global, so its presence alone would cause the
+    // server's locale to be reported during SSR or prerendering. Require a real browser scope.
+    if (!isBrowserEnvironment()) {
+      return { attributes };
+    }
+
     const nav: NavigatorWithUAData | undefined =
       typeof navigator === "undefined" ? undefined : navigator;
 

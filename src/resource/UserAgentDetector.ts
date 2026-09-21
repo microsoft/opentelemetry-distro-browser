@@ -13,6 +13,7 @@ import {
   ATTR_USER_AGENT_OS_VERSION,
   ATTR_USER_AGENT_VERSION,
 } from "@opentelemetry/semantic-conventions/incubating";
+import { isBrowserEnvironment } from "./isBrowserEnvironment.js";
 
 interface Matcher {
   /** Value reported for the attribute when {@link Matcher.detect} matches. */
@@ -143,8 +144,10 @@ function findMatch(userAgent: string, matchers: readonly Matcher[]): Matcher | u
  * by design, are frozen or reduced by modern browsers, and change without notice. Register this
  * detector when broad coverage matters more than exactness.
  *
- * Detection is fully synchronous, never throws, and is safe in non-browser environments, where it
- * yields no attributes.
+ * Detection is fully synchronous and never throws. It yields no attributes outside a browser scope
+ * — server-side rendering and prerendering under Node, Deno or Bun included, since those runtimes
+ * expose a `navigator` global whose `userAgent` describes the runtime rather than a browser. Web
+ * workers remain supported.
  *
  * @public
  */
@@ -155,7 +158,12 @@ export class UserAgentDetector implements ResourceDetector {
   detect(): DetectedResource {
     const attributes: DetectedResourceAttributes = {};
 
-    // `window` is deliberately not referenced so the detector also works in web workers.
+    // Node, Deno and Bun all expose a `navigator` global whose `userAgent` describes the runtime
+    // rather than a browser, so require a real browser scope before reading it.
+    if (!isBrowserEnvironment()) {
+      return { attributes };
+    }
+
     const nav: Navigator | undefined = typeof navigator === "undefined" ? undefined : navigator;
     const userAgent = nav?.userAgent;
 
