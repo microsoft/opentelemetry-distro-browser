@@ -16,8 +16,12 @@ it.each([
     // Import the emitted bytes directly, without Vite transforming the module.
     const distro: typeof import("../../src/index.js") = await import(/* @vite-ignore */ url);
     expect(Object.keys(distro).sort()).toEqual([
+      "BrowserDetector",
       "OPENTELEMETRY_BROWSER_VERSION",
+      "UserAgentDetector",
+      "browserDetector",
       "useMicrosoftOpenTelemetry",
+      "userAgentDetector",
     ]);
     expect(distro.OPENTELEMETRY_BROWSER_VERSION).toBe(version);
     expect(() => distro.useMicrosoftOpenTelemetry({})).toThrow("not implemented");

@@ -6,7 +6,6 @@ import type {
   DetectedResourceAttributes,
   ResourceDetector,
 } from "@opentelemetry/resources";
-import { ATTR_USER_AGENT_ORIGINAL } from "@opentelemetry/semantic-conventions";
 import {
   ATTR_BROWSER_BRANDS,
   ATTR_BROWSER_LANGUAGE,
@@ -63,8 +62,12 @@ function formatBrands(brands: NavigatorUABrandVersion[] | undefined): string[] |
 }
 
 /**
- * Detects resource attributes describing the browser the instrumented application runs in,
- * following the OpenTelemetry `browser` resource semantic conventions.
+ * Detects the `browser.*` resource attributes describing the browser the instrumented application
+ * runs in, following the OpenTelemetry browser resource semantic conventions.
+ *
+ * `browser.brands`, `browser.platform` and `browser.mobile` come from the User-Agent Client Hints
+ * API, which is Chromium-only; on other engines they are legitimately absent. Values derived from
+ * the user agent string are the responsibility of the separate `UserAgentDetector`.
  *
  * Detection is fully synchronous: every source is a synchronous browser global. The detector never
  * throws and is safe to run in non-browser environments (SSR, Node prerendering, web workers,
@@ -92,10 +95,6 @@ export class BrowserDetector implements ResourceDetector {
 
     if (typeof nav.language === "string" && nav.language !== "") {
       attributes[ATTR_BROWSER_LANGUAGE] = nav.language;
-    }
-
-    if (typeof nav.userAgent === "string" && nav.userAgent !== "") {
-      attributes[ATTR_USER_AGENT_ORIGINAL] = nav.userAgent;
     }
 
     // User-Agent Client Hints are Chromium-only. On other engines the `browser.brands`,
@@ -129,4 +128,4 @@ export class BrowserDetector implements ResourceDetector {
  *
  * @public
  */
-export const browserDetector = new BrowserDetector();
+export const browserDetector = /* @__PURE__ */ new BrowserDetector();

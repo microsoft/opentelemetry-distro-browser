@@ -108,7 +108,7 @@ await telemetry.shutdown();
 |---|---|---|---|
 | `azureMonitor` | `AzureMonitorOptions` | — | Azure Monitor destination. When provided, Azure Monitor export is enabled |
 | `otlp` | `OtlpOptions` | — | OTLP/HTTP destination for traces and logs |
-| `resource` | `Resource` | auto-detected | OpenTelemetry Resource (service name, version, browser attributes) |
+| `resource` | `Resource` | default resource | OpenTelemetry Resource. Add `browserDetector` or `userAgentDetector` to attach browser attributes |
 | `samplingRatio` | `number` | `1.0` | Ratio of traces to sample (0.0–1.0) |
 | `instrumentationOptions` | `InstrumentationOptions` | see below | Toggle built-in instrumentations |
 | `spanProcessors` | `SpanProcessor[]` | — | Additional upstream span processors |
