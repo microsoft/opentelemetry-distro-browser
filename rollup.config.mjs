@@ -23,6 +23,8 @@ export default [
   },
   {
     input: "src/index.ts",
+    // Retain the application's API singletons, including pre-initialization handles.
+    external: ["@opentelemetry/api", "@opentelemetry/api-logs"],
     plugins: [
       nodeResolve({ browser: true }),
       commonjs(),

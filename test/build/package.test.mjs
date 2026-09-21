@@ -17,11 +17,13 @@ const root = new URL("../../", import.meta.url);
 const pkg = JSON.parse(await readFile(new URL("package.json", root), "utf8"));
 const require = createRequire(import.meta.url);
 const esmBundle = "dist/esm/index";
+const sharedApiPackages = ["@opentelemetry/api", "@opentelemetry/api-logs"];
 
-async function bundleConsumer(source) {
+async function bundleConsumer(source, external = []) {
   const input = "\0consumer";
   const bundle = await rollup({
     input,
+    external,
     plugins: [
       {
         name: "package-consumer",
@@ -45,7 +47,7 @@ async function bundleConsumer(source) {
     const { output } = await bundle.generate({ format: "es" });
     assert.equal(output.length, 1);
     assert.equal(output[0].type, "chunk");
-    assert.deepEqual(output[0].imports, []);
+    assert.deepEqual(output[0].imports.sort(), [...external].sort());
     return output[0];
   } finally {
     await bundle.close();
@@ -145,6 +147,29 @@ test("using the initializer includes both SDKs and their default exporters", asy
   }
 });
 
+test("the minified artifact keeps both API packages external", async () => {
+  const bundle = await rollup({
+    input: fileURLToPath(new URL(`${esmBundle}.min.js`, root)),
+    external: sharedApiPackages,
+    onwarn(warning) {
+      throw new Error(warning.message);
+    },
+  });
+  try {
+    const { output } = await bundle.generate({ format: "es" });
+    assert.deepEqual(output[0].imports.sort(), sharedApiPackages);
+    const map = JSON.parse(await readFile(new URL(`${esmBundle}.min.js.map`, root), "utf8"));
+    assert.ok(
+      map.sources.every(
+        (source) => !/\/@opentelemetry\/api(?:-logs)?\//.test(source.replaceAll("\\", "/")),
+      ),
+      "API implementations must not be embedded in the minified SDK bundle",
+    );
+  } finally {
+    await bundle.close();
+  }
+});
+
 test("the package does not expose a CommonJS entry point", () => {
   assert.throws(() => require(pkg.name), { code: "ERR_PACKAGE_PATH_NOT_EXPORTED" });
 });
@@ -189,7 +214,7 @@ for (const suffix of [".js", ".min.js"]) {
 
 test("Terser produces a smaller ESM bundle", async () => {
   const [standard, minified] = await Promise.all([
-    bundleConsumer('export * from "distro";'),
+    bundleConsumer('export * from "distro";', sharedApiPackages),
     readFile(new URL(`${esmBundle}.min.js`, root)),
   ]);
   assert.ok(minified.byteLength < Buffer.byteLength(standard.code));

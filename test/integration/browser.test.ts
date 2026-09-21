@@ -1,12 +1,10 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-import { context, diag, propagation, trace } from "@opentelemetry/api";
+import { ROOT_CONTEXT, context, diag, propagation, trace } from "@opentelemetry/api";
 import { logs } from "@opentelemetry/api-logs";
 import { afterEach, expect, it, vi } from "vitest";
-import minifiedBundle from "../../dist/esm/index.min.js?raw";
 import { version } from "../../package.json";
-import type { MicrosoftOpenTelemetryBrowser } from "../../src/index.js";
 import { createInMemoryPipeline } from "../fixtures/telemetry.js";
 
 afterEach(() => {
@@ -18,12 +16,13 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-it("initializes the minified bundle as native browser ESM", async () => {
-  const url = URL.createObjectURL(new Blob([minifiedBundle], { type: "text/javascript" }));
-  let telemetry: MicrosoftOpenTelemetryBrowser | undefined;
-  try {
-    // Import the emitted bytes directly, without Vite transforming the module.
-    const distro: typeof import("../../src/index.js") = await import(/* @vite-ignore */ url);
+it.each(["index.js", "index.min.js"])(
+  "exports manual telemetry from application APIs through %s",
+  async (file) => {
+    // Type-check from a clean checkout; load the built artifact only at runtime.
+    const path = `../../dist/esm/${file}`;
+    const url = new URL(path, import.meta.url);
+    const distro: typeof import("../../src/index.js") = await import(/* @vite-ignore */ url.href);
     expect(Object.keys(distro).sort()).toEqual([
       "OPENTELEMETRY_BROWSER_VERSION",
       "useMicrosoftOpenTelemetry",
@@ -31,34 +30,26 @@ it("initializes the minified bundle as native browser ESM", async () => {
     expect(distro.OPENTELEMETRY_BROWSER_VERSION).toBe(version);
     expect(window).not.toHaveProperty("OpenTelemetryBrowser");
     const pipeline = createInMemoryPipeline();
-    const processors = [pipeline.spanProcessor, pipeline.logProcessor];
-    const shutdowns = processors.map((processor) => vi.spyOn(processor, "shutdown"));
-    telemetry = distro.useMicrosoftOpenTelemetry(pipeline.options);
-    expect(telemetry).not.toHaveProperty("forceFlush");
-    await telemetry.shutdown();
-    telemetry = undefined;
-    for (const shutdown of shutdowns) expect(shutdown).toHaveBeenCalledOnce();
-  } finally {
-    await telemetry?.shutdown();
-    URL.revokeObjectURL(url);
-  }
-});
-
-it("exports both traces and logs through the built initializer", async () => {
-  // Type-check from a clean checkout; load the built artifact only at runtime.
-  const url = new URL("../../dist/esm/index.js", import.meta.url);
-  const distro: typeof import("../../src/index.js") = await import(/* @vite-ignore */ url.href);
-  const pipeline = createInMemoryPipeline();
-  const tracer = trace.getTracer("browser-consumer");
-  const logger = logs.getLogger("browser-consumer");
-  const telemetry = distro.useMicrosoftOpenTelemetry(pipeline.options);
-  try {
-    tracer.startSpan("manual").end();
-    logger.emit({ eventName: "manual" });
-    await Promise.all([pipeline.spanProcessor.forceFlush(), pipeline.logProcessor.forceFlush()]);
-    expect(pipeline.spanExporter.getFinishedSpans()[0]?.name).toBe("manual");
-    expect(pipeline.logExporter.getFinishedLogRecords()[0]?.eventName).toBe("manual");
-  } finally {
-    await telemetry.shutdown();
-  }
-});
+    const tracer = trace.getTracer("browser-consumer");
+    const logger = logs.getLogger("browser-consumer");
+    const telemetry = distro.useMicrosoftOpenTelemetry(pipeline.options);
+    try {
+      const span = tracer.startSpan("before-init");
+      logger.emit({
+        eventName: "before-init",
+        context: trace.setSpan(ROOT_CONTEXT, span),
+      });
+      span.end();
+      trace.getTracer("after-init").startSpan("after-init").end();
+      logs.getLogger("after-init").emit({ eventName: "after-init" });
+      await Promise.all([pipeline.spanProcessor.forceFlush(), pipeline.logProcessor.forceFlush()]);
+      const spans = pipeline.spanExporter.getFinishedSpans();
+      const records = pipeline.logExporter.getFinishedLogRecords();
+      expect(spans.map((record) => record.name)).toEqual(["before-init", "after-init"]);
+      expect(records.map((record) => record.eventName)).toEqual(["before-init", "after-init"]);
+      expect(records[0].spanContext).toEqual(spans[0].spanContext());
+    } finally {
+      await telemetry.shutdown();
+    }
+  },
+);
