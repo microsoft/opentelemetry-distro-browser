@@ -11,7 +11,7 @@ import { type LogRecord } from "@opentelemetry/api-logs";
  * `location.pathname`. Aggregate on the page name only where the source is `explicit` or `route`;
  * treat `document_title` and `url_path` as high-cardinality diagnostic values.
  *
- * @public
+ * @internal
  */
 export type PageViewNameSource = "explicit" | "route" | "document_title" | "url_path";
 
@@ -24,7 +24,7 @@ export type PageViewNameSource = "explicit" | "route" | "document_title" | "url_
  * `soft_navigation_capped`, `soft_navigation_interrupted` and `page_hide` values are lower bounds
  * rather than measurements, and should be excluded from duration percentiles.
  *
- * @public
+ * @internal
  */
 export type PageViewDurationSource =
   | "navigation_timing"
@@ -43,7 +43,7 @@ export type PageViewDurationSource =
  * `browser.navigation.type` vocabulary. Unlike upstream `browser.navigation`, this is always
  * populated, so a missing value never has to be guessed at query time.
  *
- * @public
+ * @internal
  */
 export type PageViewNavigationType =
   "navigate" | "reload" | "back_forward" | "prerender" | "push" | "replace" | "traverse";
@@ -56,7 +56,7 @@ export type PageViewNavigationType =
  * That ordering is deliberate: a processor stamping {@link PageView.id} onto other signals must see
  * the id while the page is still loading, not after it has settled.
  *
- * @public
+ * @internal
  */
 export interface PageView {
   /**
@@ -84,7 +84,7 @@ export interface PageView {
 
 /**
  * Notified whenever a new page view becomes current.
- * @public
+ * @internal
  */
 export type PageViewListener = (pageView: PageView) => void;
 
@@ -96,7 +96,7 @@ export type PageViewListener = (pageView: PageView) => void;
  * view, so a consumer cannot influence page-view lifetime, and it carries no dependency on the
  * instrumentation itself.
  *
- * @public
+ * @internal
  */
 export interface PageViewSource {
   /**
@@ -119,7 +119,7 @@ export interface PageViewSource {
  * `createPageViewContext` and pass it to both the instrumentation and the component that needs to
  * read from it.
  *
- * @public
+ * @internal
  */
 export interface PageViewContext extends PageViewSource {
   /** Publishes a new current page view and notifies subscribers. */
@@ -129,32 +129,13 @@ export interface PageViewContext extends PageViewSource {
 }
 
 /**
- * Modifies the log record immediately before it is emitted.
- * @public
- */
-export type ApplyCustomLogRecordDataFunction = (logRecord: LogRecord) => void;
-
-/**
- * Removes sensitive segments from a URL before it is recorded.
- * @public
- */
-export type SanitizeUrlFunction = (url: string) => string;
-
-/**
- * Supplies the current framework route pattern, such as `/orders/:id`.
+ * Configuration for the page-view instrumentation.
  *
  * @remarks
- * Prefer a route pattern over a resolved path: patterns aggregate, concrete paths do not. Return
- * undefined when no route is known, so resolution falls through to `document.title`.
+ * This is the only page-view type in the package's public API. Hook signatures are written inline
+ * rather than as named aliases, and the context-injection seam lives on the internal configuration,
+ * so configuring page views pulls no other type into the public surface.
  *
- * @public
- */
-export type RouteResolverFunction = () => string | undefined;
-
-/**
- * Configuration for `PageViewInstrumentation`.
- *
- * @remarks
  * Structurally compatible with `InstrumentationConfig` from `@opentelemetry/instrumentation`, but
  * declared standalone rather than extending it. That package's type entry point resolves to its
  * Node platform build, which references Node built-ins, so inheriting from it would force every
@@ -171,16 +152,20 @@ export interface PageViewInstrumentationConfig {
   readonly enabled?: boolean;
 
   /**
-   * Supplies the framework route pattern. Called once per navigation, when the navigation is
-   * observed.
+   * Supplies the framework route pattern, such as `/orders/:id`. Called once per navigation, when
+   * the navigation is observed.
+   *
+   * @remarks
+   * Prefer a route pattern over a resolved path: patterns aggregate, concrete paths do not. Return
+   * undefined when no route is known, so resolution falls through to `document.title`.
    */
-  readonly routeResolver?: RouteResolverFunction;
+  readonly routeResolver?: () => string | undefined;
 
   /** Sanitizes the page URL and the referrer before they are recorded. */
-  readonly sanitizeUrl?: SanitizeUrlFunction;
+  readonly sanitizeUrl?: (url: string) => string;
 
   /** Modifies the log record immediately before it is emitted. */
-  readonly applyCustomLogRecordData?: ApplyCustomLogRecordDataFunction;
+  readonly applyCustomLogRecordData?: (logRecord: LogRecord) => void;
 
   /**
    * Upper bound, in milliseconds, on how long a soft navigation may wait to settle before its page
@@ -196,20 +181,28 @@ export interface PageViewInstrumentationConfig {
    * @defaultValue false
    */
   readonly useNavigationApiIfAvailable?: boolean;
+}
 
+/**
+ * Configuration including the seams that are not part of the public API.
+ *
+ * @remarks
+ * Kept internal because neither field is usable from outside the distribution yet: sharing a
+ * context is only meaningful to a correlation processor, which does not exist, and overriding id
+ * generation exists for tests. Exposing either would drag {@link PageViewContext} and its whole
+ * type chain into the public surface for no consumer benefit. Widen deliberately once a processor
+ * ships.
+ *
+ * @internal
+ */
+export interface InternalPageViewInstrumentationConfig extends PageViewInstrumentationConfig {
   /**
-   * Page-view context to publish into.
-   *
-   * @remarks
-   * Supply one when another component, typically a correlation processor, must share a single
-   * page-view identity. When omitted the instrumentation creates its own and exposes it through
-   * `pageViews`. It is never a module-level global, so independent instances stay independent.
+   * Page-view context to publish into. When omitted the instrumentation creates its own and
+   * exposes it through `pageViews`. Never a module-level global, so independent instances stay
+   * independent.
    */
   readonly pageViewContext?: PageViewContext;
 
-  /**
-   * Overrides page-view id generation, for tests and for consumers that must align ids with an
-   * existing correlation scheme.
-   */
+  /** Overrides page-view id generation. */
   readonly generatePageViewId?: () => string;
 }

@@ -14,7 +14,7 @@ import {
   PAGE_VIEW_INSTRUMENTATION_NAME,
   PageViewInstrumentation,
   type PageView,
-  type PageViewInstrumentationConfig,
+  type InternalPageViewInstrumentationConfig,
 } from "../../../src/instrumentation/pageView/index.js";
 import {
   ATTR_PAGE_VIEW_DURATION,
@@ -50,7 +50,7 @@ const originalUrl = location.href;
 const originalTitle = document.title;
 let active: PageViewInstrumentation | undefined;
 
-function createInstrumentation(config: PageViewInstrumentationConfig = {}): {
+function createInstrumentation(config: InternalPageViewInstrumentationConfig = {}): {
   instrumentation: PageViewInstrumentation;
   provider: RecordingLoggerProvider;
 } {

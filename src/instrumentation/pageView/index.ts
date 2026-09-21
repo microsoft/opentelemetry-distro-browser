@@ -7,7 +7,7 @@ export {
 } from "./pageViewInstrumentation.js";
 export { createPageViewContext, generatePageViewId } from "./pageViewContext.js";
 export type {
-  ApplyCustomLogRecordDataFunction,
+  InternalPageViewInstrumentationConfig,
   PageView,
   PageViewContext,
   PageViewDurationSource,
@@ -16,8 +16,6 @@ export type {
   PageViewNameSource,
   PageViewNavigationType,
   PageViewSource,
-  RouteResolverFunction,
-  SanitizeUrlFunction,
 } from "./types.js";
 
 // `semconv.js` is intentionally not re-exported. The event name and attribute keys are an internal

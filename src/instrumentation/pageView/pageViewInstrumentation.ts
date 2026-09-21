@@ -37,10 +37,10 @@ import {
   SEVERITY_NUMBER_INFO,
 } from "./semconv.js";
 import {
+  type InternalPageViewInstrumentationConfig,
   type PageView,
   type PageViewContext,
   type PageViewDurationSource,
-  type PageViewInstrumentationConfig,
   type PageViewNameSource,
   type PageViewNavigationType,
   type PageViewSource,
@@ -110,7 +110,7 @@ type RequestIdleCallbackLike = (
  *
  * @public
  */
-export class PageViewInstrumentation extends InstrumentationBase<PageViewInstrumentationConfig> {
+export class PageViewInstrumentation extends InstrumentationBase<InternalPageViewInstrumentationConfig> {
   private enabledState = false;
   private historyPatched = false;
   private readonly context: PageViewContext;
@@ -127,7 +127,7 @@ export class PageViewInstrumentation extends InstrumentationBase<PageViewInstrum
   private onPageHide: (() => void) | undefined;
   private onCurrentEntryChange: ((event: Event) => void) | undefined;
 
-  public constructor(config: PageViewInstrumentationConfig = {}) {
+  public constructor(config: InternalPageViewInstrumentationConfig = {}) {
     super(PAGE_VIEW_INSTRUMENTATION_NAME, OPENTELEMETRY_BROWSER_VERSION, config);
     this.ownsContext = config.pageViewContext === undefined;
     this.context = config.pageViewContext ?? createPageViewContext();
