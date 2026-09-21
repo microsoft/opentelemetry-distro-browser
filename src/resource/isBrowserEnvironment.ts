@@ -7,6 +7,7 @@
 interface GlobalScopeLike {
   readonly window?: unknown;
   readonly WorkerGlobalScope?: unknown;
+  readonly WorkerNavigator?: unknown;
 }
 
 /**
@@ -20,7 +21,16 @@ interface GlobalScopeLike {
  *
  * Browser scopes are therefore identified positively rather than by ruling individual runtimes out:
  * a document context provides `window`, and a worker scope provides `WorkerGlobalScope` in its
- * place. Checking both keeps web workers supported, which a bare `window` check would exclude.
+ * place.
+ *
+ * `WorkerGlobalScope` alone is not sufficient, because edge runtimes that implement the worker API
+ * expose it too — Cloudflare Workers registers it as a global and reports a `navigator.userAgent`
+ * of `Cloudflare-Workers` with a `navigator.language` of `en`, which would otherwise be recorded as
+ * browser telemetry. A worker scope is accepted only when it also exposes `WorkerNavigator`, the
+ * standardised browser worker navigator type; Cloudflare exposes a plain `Navigator` instead.
+ *
+ * `WorkerNavigator` is preferred over a capability check such as `indexedDB` because storage APIs
+ * are absent in sandboxed and private-browsing contexts, where detection should still work.
  *
  * Values are compared against `undefined` rather than tested with `in` so that a server-side shim
  * which declares `window` without assigning it is still treated as a non-browser scope.
@@ -29,5 +39,9 @@ interface GlobalScopeLike {
  * @internal
  */
 export function isBrowserEnvironment(scope: GlobalScopeLike = globalThis): boolean {
-  return scope.window !== undefined || scope.WorkerGlobalScope !== undefined;
+  if (scope.window !== undefined) {
+    return true;
+  }
+
+  return scope.WorkerGlobalScope !== undefined && scope.WorkerNavigator !== undefined;
 }

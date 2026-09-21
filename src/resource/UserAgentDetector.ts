@@ -105,7 +105,14 @@ const OPERATING_SYSTEMS: readonly Matcher[] = [
   { name: "Windows", detect: /Windows/ },
   { name: "Ubuntu", detect: /Ubuntu/ },
   { name: "Fedora", detect: /Fedora/ },
-  { name: "Linux", detect: /Linux|X11/ },
+  { name: "FreeBSD", detect: /FreeBSD/ },
+  { name: "OpenBSD", detect: /OpenBSD/ },
+  { name: "NetBSD", detect: /NetBSD/ },
+  { name: "DragonFly BSD", detect: /DragonFly/ },
+  { name: "Solaris", detect: /SunOS|Solaris/ },
+  // `X11` only means the X Window System, which the BSDs and Solaris also run, so it is not
+  // evidence of Linux. A scope that reaches here with `X11` alone reports no operating system.
+  { name: "Linux", detect: /Linux/ },
 ];
 
 /**

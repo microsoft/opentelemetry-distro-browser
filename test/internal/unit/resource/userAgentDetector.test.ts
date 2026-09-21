@@ -391,6 +391,34 @@ const MODERN_CASES: Expectation[] = [
     osName: "Fedora",
   },
   {
+    label: "Firefox on FreeBSD, which uses X11 without being Linux",
+    userAgent: "Mozilla/5.0 (X11; FreeBSD amd64; rv:133.0) Gecko/20100101 Firefox/133.0",
+    name: "Firefox",
+    version: "133.0",
+    osName: "FreeBSD",
+  },
+  {
+    label: "Firefox on OpenBSD",
+    userAgent: "Mozilla/5.0 (X11; OpenBSD amd64; rv:128.0) Gecko/20100101 Firefox/128.0",
+    name: "Firefox",
+    version: "128.0",
+    osName: "OpenBSD",
+  },
+  {
+    label: "Firefox on NetBSD",
+    userAgent: "Mozilla/5.0 (X11; NetBSD amd64; rv:115.0) Gecko/20100101 Firefox/115.0",
+    name: "Firefox",
+    version: "115.0",
+    osName: "NetBSD",
+  },
+  {
+    label: "Firefox on Solaris",
+    userAgent: "Mozilla/5.0 (X11; SunOS i86pc; rv:115.0) Gecko/20100101 Firefox/115.0",
+    name: "Firefox",
+    version: "115.0",
+    osName: "Solaris",
+  },
+  {
     label: "Firefox on Android",
     userAgent: "Mozilla/5.0 (Android 14; Mobile; rv:133.0) Gecko/133.0 Firefox/133.0",
     name: "Firefox",
@@ -653,6 +681,32 @@ describe("UserAgentDetector", () => {
       ["UCBrowser/12.13.5.1209", "UC Browser"],
     ])("prefers %s over the Chrome and Safari tokens it also carries", (token, expected) => {
       expect(detectWith(`${chromium} ${token}`)["user_agent.name"]).toBe(expected);
+    });
+  });
+
+  describe("operating systems that share the X11 token", () => {
+    it("does not claim Linux for an X11 user agent that names no known system", () => {
+      const attributes = detectWith(
+        "Mozilla/5.0 (X11; AIX 7.2; rv:115.0) Gecko/20100101 Firefox/115.0",
+      );
+
+      expect(attributes).not.toHaveProperty("user_agent.os.name");
+      expect(attributes["user_agent.name"]).toBe("Firefox");
+    });
+
+    it.each([
+      ["FreeBSD amd64", "FreeBSD"],
+      ["OpenBSD amd64", "OpenBSD"],
+      ["NetBSD amd64", "NetBSD"],
+      ["DragonFly x86_64", "DragonFly BSD"],
+      ["SunOS i86pc", "Solaris"],
+      ["Linux x86_64", "Linux"],
+    ])("reports %s as %s", (token, expected) => {
+      expect(
+        detectWith(`Mozilla/5.0 (X11; ${token}; rv:133.0) Gecko/20100101 Firefox/133.0`)[
+          "user_agent.os.name"
+        ],
+      ).toBe(expected);
     });
   });
 
