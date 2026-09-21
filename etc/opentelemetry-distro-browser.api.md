@@ -4,15 +4,24 @@
 
 ```ts
 
+import { LogRecord } from '@opentelemetry/api-logs';
 import { LogRecordProcessor } from '@opentelemetry/sdk-logs';
 import { Resource } from '@opentelemetry/resources';
 import { SpanProcessor } from '@opentelemetry/sdk-trace-base';
 import { TextMapPropagator } from '@opentelemetry/api';
 
 // @public
+export type ApplyCustomLogRecordDataFunction = (logRecord: LogRecord) => void;
+
+// @public
 export interface AzureMonitorOptions {
     readonly connectionString: string;
     readonly disableBeacon?: boolean;
+}
+
+// @public
+export interface InstrumentationOptions {
+    readonly pageView?: PageViewInstrumentationConfig;
 }
 
 // @public
@@ -24,6 +33,7 @@ export interface MicrosoftOpenTelemetryBrowser {
 // @public
 export interface MicrosoftOpenTelemetryBrowserOptions {
     readonly azureMonitor?: AzureMonitorOptions;
+    readonly instrumentationOptions?: InstrumentationOptions;
     readonly logRecordProcessors?: readonly LogRecordProcessor[];
     readonly otlp?: OtlpOptions;
     readonly propagator?: TextMapPropagator;
@@ -40,6 +50,61 @@ export interface OtlpOptions {
     readonly endpoint: string;
     readonly headers?: Readonly<Record<string, string>>;
 }
+
+// @public
+export interface PageView {
+    readonly id: string;
+    readonly index: number;
+    readonly name: string;
+    readonly nameSource: PageViewNameSource;
+    readonly navigationType: PageViewNavigationType;
+    readonly referrer: string;
+    readonly sameDocument: boolean;
+    readonly startTimeUnixMs: number;
+    readonly url: string;
+}
+
+// @public
+export interface PageViewContext extends PageViewSource {
+    clear(): void;
+    setCurrentPageView(pageView: PageView): void;
+}
+
+// @public
+export type PageViewDurationSource = "navigation_timing" | "document_load" | "soft_navigation_settled" | "soft_navigation_capped" | "soft_navigation_interrupted" | "page_hide";
+
+// @public
+export interface PageViewInstrumentationConfig {
+    readonly applyCustomLogRecordData?: ApplyCustomLogRecordDataFunction;
+    readonly enabled?: boolean;
+    readonly generatePageViewId?: () => string;
+    readonly pageViewContext?: PageViewContext;
+    readonly routeResolver?: RouteResolverFunction;
+    readonly sanitizeUrl?: SanitizeUrlFunction;
+    readonly softNavigationSettleTimeoutMs?: number;
+    readonly useNavigationApiIfAvailable?: boolean;
+}
+
+// @public
+export type PageViewListener = (pageView: PageView) => void;
+
+// @public
+export type PageViewNameSource = "explicit" | "route" | "document_title" | "url_path";
+
+// @public
+export type PageViewNavigationType = "navigate" | "reload" | "back_forward" | "prerender" | "push" | "replace" | "traverse";
+
+// @public
+export interface PageViewSource {
+    getCurrentPageView(): PageView | undefined;
+    onPageViewChanged(listener: PageViewListener): () => void;
+}
+
+// @public
+export type RouteResolverFunction = () => string | undefined;
+
+// @public
+export type SanitizeUrlFunction = (url: string) => string;
 
 // @public
 export function useMicrosoftOpenTelemetry(options: MicrosoftOpenTelemetryBrowserOptions): MicrosoftOpenTelemetryBrowser;

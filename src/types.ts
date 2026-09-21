@@ -5,6 +5,30 @@ import type { TextMapPropagator } from "@opentelemetry/api";
 import type { Resource } from "@opentelemetry/resources";
 import type { LogRecordProcessor } from "@opentelemetry/sdk-logs";
 import type { SpanProcessor } from "@opentelemetry/sdk-trace-base";
+import type { PageViewInstrumentationConfig } from "./instrumentation/pageView/types.js";
+
+/**
+ * Per-instrumentation configuration.
+ *
+ * @remarks
+ * Instrumentations are named by the occurrence they capture, not by the package that produces
+ * them. Each is individually enableable, and omitting an entry leaves that instrumentation at its
+ * default state. Additional instrumentations are added here as they land.
+ *
+ * @public
+ */
+export interface InstrumentationOptions {
+  /**
+   * Page views for the initial document load and for single-page-application route changes.
+   *
+   * @remarks
+   * Emits one `browser.page_view` log record per navigation. Upstream
+   * `@opentelemetry/browser-instrumentation` has no page-view concept, so this instrumentation is
+   * distribution-owned. Enabling it alongside the upstream `navigation` module produces two
+   * records per navigation; prefer one or the other.
+   */
+  readonly pageView?: PageViewInstrumentationConfig;
+}
 
 /**
  * Azure Monitor destination configuration.
@@ -46,6 +70,13 @@ export interface MicrosoftOpenTelemetryBrowserOptions {
   readonly azureMonitor?: AzureMonitorOptions;
   /** Enable OTLP/HTTP export with the specified destination. */
   readonly otlp?: OtlpOptions;
+  /**
+   * Per-instrumentation configuration.
+   *
+   * @remarks
+   * Omitted instrumentations keep their default state.
+   */
+  readonly instrumentationOptions?: InstrumentationOptions;
   /** Upstream resource to combine with the distribution's detected resource. */
   readonly resource?: Resource;
   /**
