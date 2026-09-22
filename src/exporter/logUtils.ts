@@ -11,6 +11,14 @@ import {
   millisecondsToTimeSpan,
   serializeAttribute,
 } from "./common.js";
+import {
+  EXCEPTION_MESSAGE,
+  EXCEPTION_STACKTRACE,
+  EXCEPTION_TYPE,
+  NAVIGATION_DURATION,
+  PAGE_VIEW_EVENT_NAME,
+  URL_FULL,
+} from "./constants.js";
 import type {
   AzureMonitorEnvelope,
   CustomEventData,
@@ -19,13 +27,6 @@ import type {
   PageViewData,
   SeverityLevel,
 } from "./telemetryModels.js";
-
-const URL_FULL = "url.full";
-const EXCEPTION_MESSAGE = "exception.message";
-const EXCEPTION_STACKTRACE = "exception.stacktrace";
-const EXCEPTION_TYPE = "exception.type";
-const NAVIGATION_DURATION = "browser.navigation.duration";
-const PAGE_VIEW_EVENT_NAME = "browser.navigation";
 
 const promotedLogAttributes = new Set([
   EXCEPTION_MESSAGE,

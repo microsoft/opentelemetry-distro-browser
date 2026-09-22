@@ -11,13 +11,14 @@ import {
   mapAttributes,
   millisecondsToTimeSpan,
 } from "./common.js";
+import {
+  HTTP_METHOD,
+  HTTP_STATUS_CODE,
+  SERVER_ADDRESS,
+  SERVER_PORT,
+  URL_FULL,
+} from "./constants.js";
 import type { AzureMonitorEnvelope, RemoteDependencyData, RequestData } from "./telemetryModels.js";
-
-const HTTP_METHOD = "http.request.method";
-const HTTP_STATUS_CODE = "http.response.status_code";
-const SERVER_ADDRESS = "server.address";
-const SERVER_PORT = "server.port";
-const URL_FULL = "url.full";
 
 const promotedSpanAttributes = new Set([
   HTTP_METHOD,
