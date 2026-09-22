@@ -9,6 +9,12 @@
 // surface. Widen deliberately if that changes.
 export type { PageViewInstrumentationConfig } from "./instrumentation/pageView/types.js";
 export { OPENTELEMETRY_BROWSER_VERSION } from "./shared/constants.js";
+export {
+  BrowserDetector,
+  browserDetector,
+  UserAgentDetector,
+  userAgentDetector,
+} from "./resource/index.js";
 export type {
   AzureMonitorOptions,
   InstrumentationOptions,

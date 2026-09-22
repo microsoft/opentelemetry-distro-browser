@@ -4,9 +4,11 @@
 
 ```ts
 
+import { DetectedResource } from '@opentelemetry/resources';
 import { LogRecord } from '@opentelemetry/api-logs';
 import { LogRecordProcessor } from '@opentelemetry/sdk-logs';
 import { Resource } from '@opentelemetry/resources';
+import { ResourceDetector } from '@opentelemetry/resources';
 import { SpanProcessor } from '@opentelemetry/sdk-trace-base';
 import { TextMapPropagator } from '@opentelemetry/api';
 
@@ -15,6 +17,14 @@ export interface AzureMonitorOptions {
     readonly connectionString: string;
     readonly disableBeacon?: boolean;
 }
+
+// @public
+export class BrowserDetector implements ResourceDetector {
+    detect(): DetectedResource;
+}
+
+// @public
+export const browserDetector: BrowserDetector;
 
 // @public
 export interface InstrumentationOptions {
@@ -60,6 +70,14 @@ export interface PageViewInstrumentationConfig {
 
 // @public
 export function useMicrosoftOpenTelemetry(options: MicrosoftOpenTelemetryBrowserOptions): MicrosoftOpenTelemetryBrowser;
+
+// @public
+export class UserAgentDetector implements ResourceDetector {
+    detect(): DetectedResource;
+}
+
+// @public
+export const userAgentDetector: UserAgentDetector;
 
 // (No @packageDocumentation comment for this package)
 
