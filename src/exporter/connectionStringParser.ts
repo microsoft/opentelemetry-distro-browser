@@ -1,0 +1,106 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
+import { diag } from "@opentelemetry/api";
+
+const DEFAULT_INGESTION_ENDPOINT = "https://dc.services.visualstudio.com";
+const DEFAULT_LIVE_ENDPOINT = "https://rt.services.visualstudio.com";
+
+type ConnectionStringKey =
+  | "authorization"
+  | "aadaudience"
+  | "applicationid"
+  | "instrumentationkey"
+  | "ingestionendpoint"
+  | "liveendpoint"
+  | "location"
+  | "endpointsuffix";
+
+type ParsedConnectionString = Partial<Record<ConnectionStringKey, string>>;
+
+export interface ResolvedConnectionString {
+  readonly instrumentationKey?: string;
+  readonly ingestionEndpoint: string;
+  readonly liveEndpoint: string;
+  readonly aadAudience?: string;
+  readonly applicationId?: string;
+  readonly location?: string;
+}
+
+const connectionStringKeys = new Set<ConnectionStringKey>([
+  "authorization",
+  "aadaudience",
+  "applicationid",
+  "instrumentationkey",
+  "ingestionendpoint",
+  "liveendpoint",
+  "location",
+  "endpointsuffix",
+]);
+
+function sanitizeEndpoint(endpoint: string): string {
+  let sanitizedEndpoint = endpoint.trim();
+  if (!sanitizedEndpoint.startsWith("https://")) {
+    sanitizedEndpoint = sanitizedEndpoint.replace(/^http:\/\//, "https://");
+  }
+  return sanitizedEndpoint.endsWith("/") ? sanitizedEndpoint.slice(0, -1) : sanitizedEndpoint;
+}
+
+function parseFields(connectionString: string): ParsedConnectionString | undefined {
+  const fields: ParsedConnectionString = {};
+
+  for (const field of connectionString.split(";")) {
+    const separatorIndex = field.indexOf("=");
+    if (separatorIndex <= 0 || separatorIndex !== field.lastIndexOf("=")) {
+      diag.error(
+        "Connection string key-value pair is invalid: Entire connection string will be discarded",
+      );
+      return undefined;
+    }
+
+    const key = field.slice(0, separatorIndex).trim().toLowerCase();
+    if (connectionStringKeys.has(key as ConnectionStringKey)) {
+      fields[key as ConnectionStringKey] = field.slice(separatorIndex + 1).trim();
+    }
+  }
+
+  return fields;
+}
+
+export function parseConnectionString(connectionString: string): ResolvedConnectionString {
+  const fields = parseFields(connectionString);
+  if (!fields || Object.keys(fields).length === 0) {
+    diag.error("An invalid connection string was passed in. There may be telemetry loss");
+    return {
+      ingestionEndpoint: DEFAULT_INGESTION_ENDPOINT,
+      liveEndpoint: DEFAULT_LIVE_ENDPOINT,
+    };
+  }
+
+  let ingestionEndpoint = fields.ingestionendpoint;
+  let liveEndpoint = fields.liveendpoint;
+  if (fields.endpointsuffix) {
+    const locationPrefix = fields.location ? `${fields.location}.` : "";
+    ingestionEndpoint ||= `https://${locationPrefix}dc.${fields.endpointsuffix}`;
+    liveEndpoint ||= `https://${locationPrefix}live.${fields.endpointsuffix}`;
+  }
+
+  if (fields.authorization && fields.authorization.toLowerCase() !== "ikey") {
+    diag.warn(
+      "Connection String contains an unsupported 'Authorization' value. Defaulting to 'Authorization=ikey'",
+    );
+  }
+
+  return {
+    instrumentationKey: fields.instrumentationkey,
+    ingestionEndpoint: sanitizeEndpoint(ingestionEndpoint ?? DEFAULT_INGESTION_ENDPOINT),
+    liveEndpoint: sanitizeEndpoint(liveEndpoint ?? DEFAULT_LIVE_ENDPOINT),
+    aadAudience: fields.aadaudience,
+    applicationId: fields.applicationid,
+    location: fields.location,
+  };
+}
+
+export function isValidInstrumentationKey(instrumentationKey: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(instrumentationKey);
+}
