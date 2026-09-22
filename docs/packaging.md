@@ -3,12 +3,12 @@
 The [M0 build requirements](../planning/M0_WORK_BREAKDOWN.md#repository-build-and-tooling)
 require ES2022 ESM-only output. `npm run build` cleans previous artifacts and emits:
 
-| Artifact                 | Purpose                                                      |
-| ------------------------ | ------------------------------------------------------------ |
-| `dist/esm/index.js`      | Package entry point with external OpenTelemetry dependencies |
-| `dist/esm/index.min.js`  | Minified SDK bundle with shared trace and logs APIs          |
-| `dist/esm/index.d.ts`    | Public TypeScript declarations                               |
-| `dist/esm/index*.js.map` | Source maps with embedded source content                     |
+| Artifact                 | Purpose                                     |
+| ------------------------ | ------------------------------------------- |
+| `dist/esm/index.js`      | Package entry point, resolved by `exports`  |
+| `dist/esm/index.min.js`  | Minified ESM bundle for browser size checks |
+| `dist/esm/index.d.ts`    | Public TypeScript declarations              |
+| `dist/esm/index*.js.map` | Source maps with embedded source content    |
 
 Import the package through its `exports` map. The manifest intentionally has no `main` or
 `module` field and no CommonJS `require` condition. CommonJS consumers must use asynchronous
@@ -18,28 +18,14 @@ metadata subpath remains available.
 There is no CommonJS build, `.d.cts` declaration, IIFE bundle, or `OpenTelemetryBrowser` global.
 The former `dist/commonjs/` and `dist/browser/` outputs are removed. Browser consumers use an
 ESM-aware bundler or native module imports, not a classic script tag expecting a global.
-The npm entry leaves OpenTelemetry dependencies external to share the application's API
-instances and platform resolution. The minified bundle includes the SDKs but leaves
-`@opentelemetry/api` and `@opentelemetry/api-logs` external too, so application handles
-created before initialization use the same API instances as the SDK.
-Native browser loading requires an import map: map all dependencies for `index.js`,
-or the two API packages for `index.min.js`, to the same modules used by the application.
 CDN publication and loader policy remain deferred in the implementation plan.
 
 `npm run test:build` checks the output inventory, package resolution, declaration consumption
 with TypeScript NodeNext and Bundler resolution, source maps, minification, and tree shaking.
-`npm run test:integration` checks manual traces and logs through both emitted artifacts
-in Chromium, with application handles acquired before and after initialization.
-The `sideEffects: false` contract remains in place; importing the package does not initialize
-telemetry.
-
-The single initializer re-exports `startBrowserSdk` as `useMicrosoftOpenTelemetry`
-and includes both signal SDKs. A version-only or unused import can still be
-tree-shaken without retaining either SDK. The prebuilt minified bundle includes both.
-Upstream's initializer includes default OTLP exporters. Supplying custom processors
-is a runtime choice, not a guarantee that the default exporter code is removed.
+`npm run test:integration` imports both emitted bundles natively in Chromium without a bundler
+transforming their contents. The `sideEffects: false` contract remains in place; importing the
+package does not initialize telemetry.
 
 `npm run size` reports minified, gzip, and Brotli sizes for `dist/esm/index.min.js`.
-These artifact sizes exclude the two shared API dependencies, not the SDKs.
 `npm run size:report` writes the machine-readable report, and the production build generates
 `reports/bundle-stats.html` for dependency analysis.

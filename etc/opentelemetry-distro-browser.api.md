@@ -4,19 +4,32 @@
 
 ```ts
 
-import { startBrowserSdk as useMicrosoftOpenTelemetry } from '@opentelemetry/browser-sdk';
-import { WebSdk } from '@opentelemetry/browser-sdk';
+import { LogRecordProcessor } from '@opentelemetry/sdk-logs';
+import { SpanProcessor } from '@opentelemetry/sdk-trace-base';
 
 // @public
-export type MicrosoftOpenTelemetryBrowser = WebSdk;
+export interface MicrosoftOpenTelemetryBrowser {
+    shutdown(): Promise<void>;
+}
 
 // @public
-export type MicrosoftOpenTelemetryBrowserOptions = Parameters<typeof useMicrosoftOpenTelemetry>[0];
+export interface MicrosoftOpenTelemetryBrowserOptions {
+    logRecordProcessors?: LogRecordProcessor[];
+    otlp?: OtlpOptions;
+    spanProcessors?: SpanProcessor[];
+}
 
 // @public
 export const OPENTELEMETRY_BROWSER_VERSION: string;
 
-export { useMicrosoftOpenTelemetry }
+// @public
+export interface OtlpOptions {
+    endpoint?: string;
+    headers?: Record<string, string>;
+}
+
+// @public
+export function useMicrosoftOpenTelemetry(options?: MicrosoftOpenTelemetryBrowserOptions): MicrosoftOpenTelemetryBrowser;
 
 // (No @packageDocumentation comment for this package)
 

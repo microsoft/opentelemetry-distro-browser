@@ -5,5 +5,6 @@ export { OPENTELEMETRY_BROWSER_VERSION } from "./shared/constants.js";
 export type {
   MicrosoftOpenTelemetryBrowser,
   MicrosoftOpenTelemetryBrowserOptions,
+  OtlpOptions,
 } from "./types.js";
-export { startBrowserSdk as useMicrosoftOpenTelemetry } from "@opentelemetry/browser-sdk";
+export { useMicrosoftOpenTelemetry } from "./useMicrosoftOpenTelemetry.js";

@@ -4,14 +4,21 @@
 import { ROOT_CONTEXT, context, diag, propagation, trace } from "@opentelemetry/api";
 import { logs } from "@opentelemetry/api-logs";
 import { startBrowserSdk } from "@opentelemetry/browser-sdk";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import {
   useMicrosoftOpenTelemetry,
   type MicrosoftOpenTelemetryBrowser,
+  type MicrosoftOpenTelemetryBrowserOptions,
 } from "../../../src/index.js";
 import { createInMemoryPipeline } from "../../fixtures/telemetry.js";
 
+vi.mock("@opentelemetry/browser-sdk", { spy: true });
+
 const handles = new Set<MicrosoftOpenTelemetryBrowser>();
+
+beforeEach(() => {
+  vi.mocked(startBrowserSdk).mockClear();
+});
 
 afterEach(async () => {
   const results = await Promise.allSettled([...handles].map((handle) => handle.shutdown()));
@@ -28,40 +35,49 @@ afterEach(async () => {
   }
 });
 
-it("exports the upstream combined initializer directly, without lifecycle wrappers", () => {
-  expect(useMicrosoftOpenTelemetry).toBe(startBrowserSdk);
+it("maps distro options to the upstream SDK and returns its lifecycle handle unchanged", () => {
+  const options: MicrosoftOpenTelemetryBrowserOptions = {
+    otlp: Object.freeze({
+      endpoint: "https://collector.example.test",
+      headers: { "x-tenant": "checkout" },
+    }),
+    spanProcessors: [],
+    logRecordProcessors: [],
+  };
+  const upstreamHandle = { shutdown: vi.fn(async () => {}) };
+  vi.mocked(startBrowserSdk).mockReturnValueOnce(upstreamHandle);
+
+  expect(useMicrosoftOpenTelemetry(Object.freeze(options))).toBe(upstreamHandle);
+  expect(useMicrosoftOpenTelemetry).not.toBe(startBrowserSdk);
+  expect(startBrowserSdk).toHaveBeenCalledExactlyOnceWith({
+    exportConfig: { url: options.otlp?.endpoint, headers: options.otlp?.headers },
+    traces: { processors: options.spanProcessors },
+    logs: { processors: options.logRecordProcessors },
+  });
 });
 
-it("delegates the globally disabled configuration without registering providers", async () => {
-  const registerTrace = vi.spyOn(trace, "setGlobalTracerProvider");
-  const registerLogs = vi.spyOn(logs, "setGlobalLoggerProvider");
-  const handle = useMicrosoftOpenTelemetry({ disabled: true });
-  handles.add(handle);
-  expect(registerTrace).not.toHaveBeenCalled();
-  expect(registerLogs).not.toHaveBeenCalled();
-  expect(handle).not.toHaveProperty("forceFlush");
-  await handle.shutdown();
+it("propagates initialization failures without returning a success-shaped handle", () => {
+  const failure = new Error("initialization failed");
+  vi.mocked(startBrowserSdk).mockImplementationOnce(() => {
+    throw failure;
+  });
+  expect(() => useMicrosoftOpenTelemetry()).toThrow(failure);
 });
 
-it("initializes both providers when signal configuration is omitted", async () => {
+it.each([undefined, {}])("initializes both providers with default configuration %j", (options) => {
   const registerTrace = vi.spyOn(trace, "setGlobalTracerProvider");
   const registerLogs = vi.spyOn(logs, "setGlobalLoggerProvider");
-  const handle = useMicrosoftOpenTelemetry();
+  const handle = useMicrosoftOpenTelemetry(options);
   handles.add(handle);
   expect(registerTrace).toHaveBeenCalledOnce();
   expect(registerLogs).toHaveBeenCalledOnce();
-  await handle.shutdown();
 });
 
-it("exports correlated manual telemetry with upstream resources and processors", async () => {
+it("exports correlated manual telemetry through custom processors", async () => {
   const pipeline = createInMemoryPipeline();
   const spanExport = vi.spyOn(pipeline.spanExporter, "export");
   const logExport = vi.spyOn(pipeline.logExporter, "export");
-  const handle = useMicrosoftOpenTelemetry({
-    ...pipeline.options,
-    serviceName: "checkout",
-    resourceAttributes: { "test.resource": true },
-  });
+  const handle = useMicrosoftOpenTelemetry(Object.freeze(pipeline.options));
   handles.add(handle);
   const span = trace.getTracer("manual", "1.2.3").startSpan("checkout");
   logs.getLogger("manual", "1.2.3").emit({
@@ -70,6 +86,7 @@ it("exports correlated manual telemetry with upstream resources and processors",
   });
   span.end();
   await handle.shutdown();
+  handles.delete(handle);
 
   const exportedSpan = spanExport.mock.calls[0][0][0];
   const exportedLog = logExport.mock.calls[0][0][0];
@@ -77,10 +94,6 @@ it("exports correlated manual telemetry with upstream resources and processors",
   expect(exportedLog.eventName).toBe("checkout.started");
   expect(exportedLog.spanContext).toEqual(span.spanContext());
   for (const record of [exportedSpan, exportedLog]) {
-    expect(record.resource.attributes).toMatchObject({
-      "service.name": "checkout",
-      "test.resource": true,
-    });
     expect(record.instrumentationScope).toMatchObject({ name: "manual", version: "1.2.3" });
   }
 });
@@ -90,18 +103,16 @@ it("reports an upstream shutdown failure while shutting down both signals", asyn
   const pipeline = createInMemoryPipeline();
   const traceShutdown = vi.spyOn(pipeline.spanProcessor, "shutdown");
   const handle = useMicrosoftOpenTelemetry({
-    traces: pipeline.options.traces,
-    logs: {
-      processors: [
-        {
-          onEmit() {},
-          async forceFlush() {},
-          async shutdown() {
-            throw failure;
-          },
+    spanProcessors: pipeline.options.spanProcessors,
+    logRecordProcessors: [
+      {
+        onEmit() {},
+        async forceFlush() {},
+        async shutdown() {
+          throw failure;
         },
-      ],
-    },
+      },
+    ],
   });
   await expect(handle.shutdown()).rejects.toThrow("processor shutdown failed");
   expect(traceShutdown).toHaveBeenCalledOnce();

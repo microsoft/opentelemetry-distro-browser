@@ -19,8 +19,8 @@ export function createInMemoryPipeline() {
     logExporter,
     logProcessor,
     options: {
-      traces: { processors: [spanProcessor] },
-      logs: { processors: [logProcessor] },
+      spanProcessors: [spanProcessor],
+      logRecordProcessors: [logProcessor],
     },
   };
 }

@@ -1,16 +1,38 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-import type { WebSdk, startBrowserSdk } from "@opentelemetry/browser-sdk";
+import type { LogRecordProcessor } from "@opentelemetry/sdk-logs";
+import type { SpanProcessor } from "@opentelemetry/sdk-trace-base";
 
 /**
- * Upstream browser SDK configuration for traces and logs.
+ * Microsoft browser distribution configuration for traces and logs.
  * @public
  */
-export type MicrosoftOpenTelemetryBrowserOptions = Parameters<typeof startBrowserSdk>[0];
+export interface MicrosoftOpenTelemetryBrowserOptions {
+  /** Configures the default OTLP exporters for traces and logs. */
+  otlp?: OtlpOptions;
+  /** Replaces the default OTLP span processor when provided. */
+  spanProcessors?: SpanProcessor[];
+  /** Replaces the default OTLP log record processor when provided. */
+  logRecordProcessors?: LogRecordProcessor[];
+}
 
 /**
- * Upstream lifecycle handle. Exposes shutdown(), not forceFlush().
+ * Browser OTLP/HTTP destination for both signals.
  * @public
  */
-export type MicrosoftOpenTelemetryBrowser = WebSdk;
+export interface OtlpOptions {
+  /** Base collector URL. Defaults to http://localhost:4318; upstream sets the signal paths. */
+  endpoint?: string;
+  /** Additional HTTP headers sent with OTLP export requests. */
+  headers?: Record<string, string>;
+}
+
+/**
+ * Browser telemetry lifecycle handle.
+ * @public
+ */
+export interface MicrosoftOpenTelemetryBrowser {
+  /** Shuts down trace and log providers without unregistering their global APIs. */
+  shutdown(): Promise<void>;
+}

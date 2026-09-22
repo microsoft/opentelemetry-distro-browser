@@ -87,16 +87,16 @@ async function exerciseNpmPackage(distro) {
   const records = new InMemoryLogRecordExporter();
   const tracer = trace.getTracer("package-consumer");
   const logger = logs.getLogger("package-consumer");
-  const traceConfig = { processors: [new SimpleSpanProcessor(spans)] };
-  const logConfig = {
-    processors: [new SimpleLogRecordProcessor({ exporter: records })],
+  const options = {
+    spanProcessors: [new SimpleSpanProcessor(spans)],
+    logRecordProcessors: [new SimpleLogRecordProcessor({ exporter: records })],
   };
-  const telemetry = distro.useMicrosoftOpenTelemetry({ traces: traceConfig, logs: logConfig });
+  const telemetry = distro.useMicrosoftOpenTelemetry(options);
   try {
     tracer.startSpan("manual").end();
     logger.emit({ eventName: "manual" });
     await Promise.all(
-      [...traceConfig.processors, ...logConfig.processors].map((p) => p.forceFlush()),
+      [...options.spanProcessors, ...options.logRecordProcessors].map((p) => p.forceFlush()),
     );
     assert.equal(spans.getFinishedSpans()[0]?.name, "manual");
     assert.equal(records.getFinishedLogRecords()[0]?.eventName, "manual");
@@ -114,9 +114,9 @@ async function exerciseNpmPackage(distro) {
   }
 }
 
-test("the only initializer is the upstream combined SDK", async () => {
+test("the only initializer is a distro-owned wrapper", async () => {
   const distro = await import(pkg.name);
-  assert.equal(distro.useMicrosoftOpenTelemetry, startBrowserSdk);
+  assert.notEqual(distro.useMicrosoftOpenTelemetry, startBrowserSdk);
   assert.deepEqual(Object.keys(distro).sort(), [
     "OPENTELEMETRY_BROWSER_VERSION",
     "useMicrosoftOpenTelemetry",
@@ -206,9 +206,7 @@ for (const suffix of [".js", ".min.js"]) {
     const entry = await import(pkg.name);
     assert.deepEqual(Object.keys(distro).sort(), Object.keys(entry).sort());
     assert.equal(distro.OPENTELEMETRY_BROWSER_VERSION, pkg.version);
-    const sdk = distro.useMicrosoftOpenTelemetry({ disabled: true });
-    assert.equal("forceFlush" in sdk, false);
-    await sdk.shutdown();
+    await exerciseNpmPackage(distro);
   });
 }
 

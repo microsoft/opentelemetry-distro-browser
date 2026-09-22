@@ -16,6 +16,14 @@ formatting. Do not replace the existing README with generated summaries or gener
 When README changes are explicitly requested, preserve its existing structure, voice, and content
 unless the requested change requires otherwise, and keep edits limited to the requested scope.
 
+## JavaScript distro alignment
+
+Use [microsoft/opentelemetry-distro-javascript](https://github.com/microsoft/opentelemetry-distro-javascript)
+as a design reference. Align public APIs, configuration, naming, and initialization/lifecycle patterns
+where practical and compatible with the browser environment. Prefer established distro patterns over
+inventing alternatives, but do not pursue parity at the expense of browser bundle size. Explain
+necessary deviations and use the bundle-size checks below to evaluate runtime or dependency tradeoffs.
+
 ## Browser bundle size
 
 Treat minified browser bundle size as a design constraint for every change, not a final cleanup.
