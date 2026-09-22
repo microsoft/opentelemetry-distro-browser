@@ -101,6 +101,14 @@ export const DURATION_SOURCE_SOFT_CAPPED = "soft_navigation_capped";
 export const DURATION_SOURCE_SOFT_INTERRUPTED = "soft_navigation_interrupted";
 /** The page was hidden before the page view settled; the duration is truncated. */
 export const DURATION_SOURCE_PAGE_HIDE = "page_hide";
+/**
+ * Restored from the back/forward cache, observed to settle. There is no document load to measure,
+ * so this is the same observed settle heuristic as a soft navigation, reported separately because
+ * a cache restore and a route change are not comparable populations.
+ */
+export const DURATION_SOURCE_BFCACHE_RESTORE = "bfcache_restore_settled";
+/** Restored from the back/forward cache but did not settle within the cap; the duration is the cap. */
+export const DURATION_SOURCE_BFCACHE_CAPPED = "bfcache_restore_capped";
 
 /** Document load that was not a reload and not a history traversal. */
 export const PAGE_VIEW_TYPE_NAVIGATE = "navigate";

@@ -32,7 +32,9 @@ export type PageViewDurationSource =
   | "soft_navigation_settled"
   | "soft_navigation_capped"
   | "soft_navigation_interrupted"
-  | "page_hide";
+  | "page_hide"
+  | "bfcache_restore_settled"
+  | "bfcache_restore_capped";
 
 /**
  * Normalized navigation type.

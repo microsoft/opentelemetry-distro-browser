@@ -19,6 +19,8 @@ import {
   DURATION_SOURCE_DOCUMENT_LOAD,
   DURATION_SOURCE_NAVIGATION_TIMING,
   DURATION_SOURCE_PAGE_HIDE,
+  DURATION_SOURCE_BFCACHE_RESTORE,
+  DURATION_SOURCE_BFCACHE_CAPPED,
   DURATION_SOURCE_SOFT_CAPPED,
   DURATION_SOURCE_SOFT_INTERRUPTED,
   DURATION_SOURCE_SOFT_SETTLED,
@@ -141,7 +143,10 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
   private onPopState: (() => void) | undefined;
   private onHashChange: (() => void) | undefined;
   private onPageHide: (() => void) | undefined;
+  private onPageShow: ((event: Event) => void) | undefined;
   private onCurrentEntryChange: ((event: Event) => void) | undefined;
+  private ownPushState: unknown;
+  private ownReplaceState: unknown;
   /** The target the `currententrychange` listener was attached to, so it can always be removed. */
   private navigationApiTarget: NavigationApiLike | undefined;
 
@@ -223,6 +228,10 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
       if (!this.historyPatched) {
         this._wrap(history, "pushState", this.patchHistoryMethod("pushState"));
         this._wrap(history, "replaceState", this.patchHistoryMethod("replaceState"));
+        // Remember the exact functions installed, so `disable()` can tell whether it is still the
+        // outermost wrapper before unwrapping.
+        this.ownPushState = Reflect.get(history, "pushState");
+        this.ownReplaceState = Reflect.get(history, "replaceState");
         this.historyPatched = true;
       }
       this.onPopState = (): void => {
@@ -240,6 +249,17 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
       this.settle(DURATION_SOURCE_PAGE_HIDE);
     };
     window.addEventListener("pagehide", this.onPageHide);
+
+    // A restore from the back/forward cache reuses the document, so nothing else here fires: no
+    // load event, no history entry change. Without this the user is looking at a page that
+    // produced no page view, and every signal they generate is stamped with the correlation id of
+    // the visit they made before they navigated away.
+    this.onPageShow = (event: Event): void => {
+      if ((event as PageTransitionEvent).persisted) {
+        this.handleBackForwardRestore();
+      }
+    };
+    window.addEventListener("pageshow", this.onPageShow);
 
     this.startHardNavigation();
   }
@@ -266,6 +286,10 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
       window.removeEventListener("pagehide", this.onPageHide);
       this.onPageHide = undefined;
     }
+    if (this.onPageShow) {
+      window.removeEventListener("pageshow", this.onPageShow);
+      this.onPageShow = undefined;
+    }
     if (this.onCurrentEntryChange) {
       this.navigationApiTarget?.removeEventListener(
         "currententrychange",
@@ -275,9 +299,22 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
       this.navigationApiTarget = undefined;
     }
     if (this.historyPatched) {
-      this._unwrap(history, "pushState");
-      this._unwrap(history, "replaceState");
-      this.historyPatched = false;
+      // Unwrap only while this instance is still the outermost wrapper. `history` is global: if
+      // another instance wrapped after this one, unwrapping here restores the function this
+      // instance wrapped and silently deletes the other instance's wrapper with it. Leaving the
+      // wrapper installed is harmless, because it checks `enabledState` and passes straight
+      // through once disabled, and `historyPatched` stays set so a re-enable does not stack a
+      // second wrapper on top.
+      const outermost =
+        Reflect.get(history, "pushState") === this.ownPushState &&
+        Reflect.get(history, "replaceState") === this.ownReplaceState;
+      if (outermost) {
+        this._unwrap(history, "pushState");
+        this._unwrap(history, "replaceState");
+        this.ownPushState = undefined;
+        this.ownReplaceState = undefined;
+        this.historyPatched = false;
+      }
     }
 
     // Drop rather than emit. Distribution shutdown disables instrumentations before providers, and
@@ -422,6 +459,30 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
     this.scheduleSoftSettle();
   }
 
+  /**
+   * Starts a page view for a document restored from the back/forward cache.
+   *
+   * @remarks
+   * The document, and every module-level variable in it, survives the round trip, so this mints a
+   * fresh id: the restored visit is a separate page view and must not inherit the correlation id
+   * of the visit that preceded it. `documentLoadReported` stays set, because the load itself
+   * happened once and was already reported.
+   */
+  private handleBackForwardRestore(): void {
+    // The page was hidden on the way into the cache, which already settled anything in flight.
+    this.settle(DURATION_SOURCE_PAGE_HIDE);
+
+    this.begin({
+      navigationType: PAGE_VIEW_TYPE_BACK_FORWARD,
+      sameDocument: false,
+      referrer: document.referrer,
+      startTimeUnixMs: Date.now(),
+      startedAt: performance.now(),
+    });
+    // No load event fires on a restore, so the observed settle heuristic supplies the duration.
+    this.scheduleSoftSettle(DURATION_SOURCE_BFCACHE_RESTORE, DURATION_SOURCE_BFCACHE_CAPPED);
+  }
+
   private mapSoftNavigationType(
     trigger: SoftNavigationTrigger,
     event?: NavigationCurrentEntryChangeEventLike,
@@ -457,8 +518,14 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
    * wait two animation frames, which lands after the first paint reflecting the new route, then
    * wait for the first idle callback, which lands after the synchronous work that paint triggered
    * has drained. A cap timer bounds the wait.
+   *
+   * @param settledSource - Duration source to report when the settle heuristic completes.
+   * @param cappedSource - Duration source to report when the cap timer fires first.
    */
-  private scheduleSoftSettle(): void {
+  private scheduleSoftSettle(
+    settledSource: PageViewDurationSource = DURATION_SOURCE_SOFT_SETTLED,
+    cappedSource: PageViewDurationSource = DURATION_SOURCE_SOFT_CAPPED,
+  ): void {
     const pending = this.pending;
     if (!pending) {
       return;
@@ -466,7 +533,7 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
 
     const timeout = this.getConfig().softNavigationSettleTimeoutMs ?? DEFAULT_SETTLE_TIMEOUT_MS;
     pending.capTimerId = window.setTimeout(() => {
-      this.emit(pending, timeout, DURATION_SOURCE_SOFT_CAPPED);
+      this.emit(pending, timeout, cappedSource);
     }, timeout);
 
     const afterPaint = (): void => {
@@ -474,7 +541,7 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
         return;
       }
       this.whenIdle(() => {
-        this.emit(pending, performance.now() - pending.startedAt, DURATION_SOURCE_SOFT_SETTLED);
+        this.emit(pending, performance.now() - pending.startedAt, settledSource);
       });
     };
 
@@ -543,8 +610,12 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
    * Applies the `sanitizeUrl` hook.
    *
    * @remarks
-   * A throwing hook falls back to the unmodified URL. This runs synchronously inside the
-   * application's own `history.pushState` call, so it must never propagate.
+   * Returns an empty string when the hook fails or returns a non-string, and the caller then omits
+   * the URL entirely. Falling back to the unmodified URL would publish exactly the credentials or
+   * personal data the hook exists to strip, so a broken redactor drops the field instead.
+   *
+   * This runs synchronously inside the application's own `history.pushState` call, so it must
+   * never propagate.
    */
   private sanitize(url: string): string {
     const sanitize = this.getConfig().sanitizeUrl;
@@ -555,12 +626,12 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
       () => sanitize(url),
       (error) => {
         if (error) {
-          this._diag.error("sanitizeUrl hook failed", error);
+          this._diag.error("sanitizeUrl hook failed; dropping the URL", error);
         }
       },
       true,
     );
-    return typeof result === "string" ? result : url;
+    return typeof result === "string" ? result : "";
   }
 
   /** Mints a page-view id, falling back to the built-in generator if a supplied one throws. */
@@ -675,7 +746,8 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
       severityNumber: SEVERITY_NUMBER_INFO,
       timestamp: pageView.startTimeUnixMs,
       attributes: {
-        [ATTR_URL_FULL]: pageView.url,
+        // Omitted when the sanitizer dropped it, rather than reported as an empty string.
+        ...(pageView.url ? { [ATTR_URL_FULL]: pageView.url } : {}),
         [ATTR_PAGE_VIEW_ID]: pageView.id,
         [ATTR_PAGE_VIEW_INDEX]: pageView.index,
         [ATTR_PAGE_VIEW_NAME]: pageView.name,

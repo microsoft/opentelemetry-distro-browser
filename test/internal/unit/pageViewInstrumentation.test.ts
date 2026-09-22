@@ -777,7 +777,8 @@ describe("PageViewInstrumentation", () => {
       await settle();
 
       const record = provider.records.at(-1) as LogRecord;
-      expect(attributesOf(record)[ATTR_URL_FULL]).toContain("/throwing-hooks");
+      // The URL is dropped, not reported raw: see the sanitizer-failure test below.
+      expect(attributesOf(record)).not.toHaveProperty(ATTR_URL_FULL);
       expect(attributesOf(record)[ATTR_PAGE_VIEW_ID]).toMatch(/^[0-9a-f]{32}$/);
     });
 
@@ -852,6 +853,84 @@ describe("PageViewInstrumentation", () => {
       expect(attributesOf(softView)[ATTR_PAGE_VIEW_DURATION]).toBeLessThan(
         attributesOf(documentView)[ATTR_PAGE_VIEW_DURATION] as number,
       );
+    });
+
+    it("drops the URL rather than reporting it raw when the sanitizer throws", async () => {
+      const { instrumentation, provider } = createInstrumentation({
+        sanitizeUrl: () => {
+          throw new Error("sanitizer failed");
+        },
+      });
+
+      instrumentation.enable();
+      history.pushState(null, "", "/secret?token=leaked-value");
+      await settle();
+
+      expect(provider.records.length).toBeGreaterThan(0);
+      for (const record of provider.records) {
+        expect(attributesOf(record)).not.toHaveProperty(ATTR_URL_FULL);
+      }
+      expect(JSON.stringify(provider.records)).not.toContain("leaked-value");
+    });
+
+    it("starts a new page view with a new id when restored from the back/forward cache", async () => {
+      const { instrumentation, provider } = createInstrumentation();
+
+      instrumentation.enable();
+      await settle();
+      const before = provider.records.length;
+      const firstId = attributesOf(provider.records[before - 1] as LogRecord)[ATTR_PAGE_VIEW_ID];
+
+      window.dispatchEvent(new PageTransitionEvent("pagehide", { persisted: true }));
+      window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true }));
+      await settle();
+
+      expect(provider.records.length).toBe(before + 1);
+      const restored = attributesOf(provider.records[before] as LogRecord);
+      expect(restored[ATTR_PAGE_VIEW_ID]).not.toBe(firstId);
+      expect(restored[ATTR_PAGE_VIEW_TYPE]).toBe("back_forward");
+      expect(restored[ATTR_PAGE_VIEW_DURATION_SOURCE]).toBe("bfcache_restore_settled");
+      expect(instrumentation.pageViews.getCurrentPageView()?.id).toBe(restored[ATTR_PAGE_VIEW_ID]);
+    });
+
+    it("ignores a pageshow that is not a back/forward cache restore", async () => {
+      const { instrumentation, provider } = createInstrumentation();
+
+      instrumentation.enable();
+      await settle();
+      const before = provider.records.length;
+
+      window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: false }));
+      await settle();
+
+      expect(provider.records.length).toBe(before);
+    });
+
+    it("keeps another instance's history wrapper installed when this one is disabled", async () => {
+      const first = createInstrumentation();
+      const second = createInstrumentation();
+
+      first.instrumentation.enable();
+      second.instrumentation.enable();
+      await settle();
+      const secondBefore = second.provider.records.length;
+
+      // Disabling the instance that wrapped first must not tear the second instance's wrapper off
+      // the shared `history` object.
+      first.instrumentation.disable();
+      history.pushState(null, "", "/after-first-disabled");
+      await settle();
+
+      try {
+        expect(second.provider.records.length).toBe(secondBefore + 1);
+        expect(
+          attributesOf(second.provider.records[secondBefore] as LogRecord)[
+            ATTR_PAGE_VIEW_SAME_DOCUMENT
+          ],
+        ).toBe(true);
+      } finally {
+        second.instrumentation.disable();
+      }
     });
   });
 });
