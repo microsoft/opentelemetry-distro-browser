@@ -11,9 +11,9 @@ import type { SpanProcessor } from "@opentelemetry/sdk-trace-base";
 export interface MicrosoftOpenTelemetryBrowserOptions {
   /** Configures the default OTLP exporters for traces and logs. */
   otlp?: OtlpOptions;
-  /** Replaces the default OTLP span processor when provided. */
+  /** Custom span processors; additive when otlp is configured, otherwise used on their own. */
   spanProcessors?: SpanProcessor[];
-  /** Replaces the default OTLP log record processor when provided. */
+  /** Custom log record processors; additive when otlp is configured, otherwise used on their own. */
   logRecordProcessors?: LogRecordProcessor[];
 }
 

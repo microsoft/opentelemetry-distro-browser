@@ -19,7 +19,14 @@ export function useMicrosoftOpenTelemetry(
       url: options.otlp?.endpoint,
       headers: options.otlp?.headers,
     },
-    traces: { processors: options.spanProcessors },
-    logs: { processors: options.logRecordProcessors },
+    // Per-signal export configs retain OTLP with custom processors; upstream sets the URLs.
+    traces: {
+      processors: options.spanProcessors,
+      exportConfig: options.otlp ? { headers: options.otlp.headers } : undefined,
+    },
+    logs: {
+      processors: options.logRecordProcessors,
+      exportConfig: options.otlp ? { headers: options.otlp.headers } : undefined,
+    },
   });
 }

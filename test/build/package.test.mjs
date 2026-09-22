@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
+import { once } from "node:events";
 import { readFile, readdir } from "node:fs/promises";
+import { createServer } from "node:http";
 import { createRequire } from "node:module";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -127,6 +129,72 @@ test("the root ESM initializer exports both traces and logs", async () => {
   const distro = await import(pkg.name);
   assert.equal(distro.OPENTELEMETRY_BROWSER_VERSION, pkg.version);
   await exerciseNpmPackage(distro);
+});
+
+test("explicit OTLP export runs alongside custom processors", async (t) => {
+  const requests = [];
+  const server = createServer((request, response) => {
+    const chunks = [];
+    request.on("data", (chunk) => chunks.push(chunk));
+    request.on("end", () => {
+      requests.push({
+        path: request.url,
+        headers: request.headers,
+        body: JSON.parse(Buffer.concat(chunks).toString("utf8")),
+      });
+      response.writeHead(200, { "Content-Type": "application/json" });
+      response.end("{}");
+    });
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(
+    () =>
+      new Promise((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()));
+      }),
+  );
+  t.after(() => {
+    trace.disable();
+    logs.disable();
+    propagation.disable();
+    context.disable();
+    diag.disable();
+  });
+
+  const distro = await import(pkg.name);
+  const spans = new InMemorySpanExporter();
+  const records = new InMemoryLogRecordExporter();
+  const spanProcessors = Object.freeze([new SimpleSpanProcessor(spans)]);
+  const logRecordProcessors = Object.freeze([new SimpleLogRecordProcessor({ exporter: records })]);
+  const otlp = Object.freeze({
+    endpoint: `http://127.0.0.1:${server.address().port}`,
+    headers: Object.freeze({ "x-tenant": "checkout" }),
+  });
+  const telemetry = distro.useMicrosoftOpenTelemetry({
+    otlp,
+    spanProcessors,
+    logRecordProcessors,
+  });
+  try {
+    trace.getTracer("additive-export").startSpan("checkout").end();
+    logs.getLogger("additive-export").emit({ eventName: "checkout.started" });
+    await Promise.all([...spanProcessors, ...logRecordProcessors].map((p) => p.forceFlush()));
+    assert.equal(spans.getFinishedSpans()[0]?.name, "checkout");
+    assert.equal(records.getFinishedLogRecords()[0]?.eventName, "checkout.started");
+  } finally {
+    await telemetry.shutdown();
+  }
+
+  assert.deepEqual(requests.map((request) => request.path).sort(), ["/v1/logs", "/v1/traces"]);
+  for (const request of requests) assert.equal(request.headers["x-tenant"], "checkout");
+  const traceRequest = requests.find((request) => request.path === "/v1/traces");
+  const logRequest = requests.find((request) => request.path === "/v1/logs");
+  assert.equal(traceRequest.body.resourceSpans[0].scopeSpans[0].spans[0].name, "checkout");
+  assert.equal(
+    logRequest.body.resourceLogs[0].scopeLogs[0].logRecords[0].eventName,
+    "checkout.started",
+  );
 });
 
 test("using the initializer includes both SDKs and their default exporters", async () => {
