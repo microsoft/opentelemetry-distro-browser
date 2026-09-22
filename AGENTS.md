@@ -1,5 +1,12 @@
 # Repository guidance
 
+## Markdown file creation
+
+Avoid creating new Markdown (`.md`) files as part of routine work. Prefer updating existing
+documentation, subject to the README restrictions below. Only add a new document when explicitly
+requested by the user or when it adds clear, lasting value that existing documentation cannot cover.
+Do not create summary, planning, progress, or implementation-note Markdown files unless requested.
+
 ## README changes
 
 Do not modify the root `README.md` during general updates unless the user explicitly requests
