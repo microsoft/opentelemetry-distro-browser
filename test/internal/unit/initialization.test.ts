@@ -6,6 +6,8 @@ import { logs } from "@opentelemetry/api-logs";
 import { startBrowserSdk } from "@opentelemetry/browser-sdk";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import {
+  browserDetector,
+  userAgentDetector,
   useMicrosoftOpenTelemetry,
   type MicrosoftOpenTelemetryBrowser,
   type MicrosoftOpenTelemetryBrowserOptions,
@@ -62,10 +64,14 @@ it("propagates initialization failures without returning a success-shaped handle
 it.each([undefined, {}])("initializes both providers with default configuration %j", (options) => {
   const registerTrace = vi.spyOn(trace, "setGlobalTracerProvider");
   const registerLogs = vi.spyOn(logs, "setGlobalLoggerProvider");
+  const detectBrowser = vi.spyOn(browserDetector, "detect");
+  const detectUserAgent = vi.spyOn(userAgentDetector, "detect");
   const handle = useMicrosoftOpenTelemetry(options);
   handles.add(handle);
   expect(registerTrace).toHaveBeenCalledOnce();
   expect(registerLogs).toHaveBeenCalledOnce();
+  expect(detectBrowser).not.toHaveBeenCalled();
+  expect(detectUserAgent).not.toHaveBeenCalled();
 });
 
 it("exports correlated manual telemetry through custom processors", async () => {

@@ -4,8 +4,18 @@
 
 ```ts
 
+import { DetectedResource } from '@opentelemetry/resources';
 import { LogRecordProcessor } from '@opentelemetry/sdk-logs';
+import { ResourceDetector } from '@opentelemetry/resources';
 import { SpanProcessor } from '@opentelemetry/sdk-trace-base';
+
+// @public
+export class BrowserDetector implements ResourceDetector {
+    detect(): DetectedResource;
+}
+
+// @public
+export const browserDetector: BrowserDetector;
 
 // @public
 export interface MicrosoftOpenTelemetryBrowser {
@@ -23,6 +33,14 @@ export const OPENTELEMETRY_BROWSER_VERSION: string;
 
 // @public
 export function useMicrosoftOpenTelemetry(options?: MicrosoftOpenTelemetryBrowserOptions): MicrosoftOpenTelemetryBrowser;
+
+// @public
+export class UserAgentDetector implements ResourceDetector {
+    detect(): DetectedResource;
+}
+
+// @public
+export const userAgentDetector: UserAgentDetector;
 
 // (No @packageDocumentation comment for this package)
 

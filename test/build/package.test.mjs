@@ -130,8 +130,12 @@ test("the only initializer is a distro-owned wrapper", async () => {
   const distro = await import(pkg.name);
   assert.notEqual(distro.useMicrosoftOpenTelemetry, startBrowserSdk);
   assert.deepEqual(Object.keys(distro).sort(), [
+    "BrowserDetector",
     "OPENTELEMETRY_BROWSER_VERSION",
+    "UserAgentDetector",
+    "browserDetector",
     "useMicrosoftOpenTelemetry",
+    "userAgentDetector",
   ]);
 });
 
@@ -214,6 +218,7 @@ test("standard OTLP processors export alongside other processors", async (t) => 
 
 test("using the initializer includes both SDKs and their default exporters", async () => {
   const chunk = await bundleConsumer('export { useMicrosoftOpenTelemetry } from "distro";');
+  assert.doesNotMatch(chunk.code, /BrowserDetector|UserAgentDetector/);
   const modules = Object.entries(chunk.modules)
     .filter(([, module]) => module.renderedLength > 0)
     .map(([id]) => id.replaceAll("\\", "/"));
@@ -227,6 +232,17 @@ test("using the initializer includes both SDKs and their default exporters", asy
       modules.some((id) => id.includes(`/@opentelemetry/${name}/`)),
       `${name} must be included by the combined initializer`,
     );
+  }
+});
+
+test("detector-only imports do not retain telemetry SDKs or exporters", async () => {
+  const chunk = await bundleConsumer(
+    'export { browserDetector, userAgentDetector } from "distro";',
+  );
+  for (const [id, module] of Object.entries(chunk.modules)) {
+    if (module.renderedLength > 0) {
+      assert.doesNotMatch(id.replaceAll("\\", "/"), /\/@opentelemetry\/(?:sdk-|exporter-)/);
+    }
   }
 });
 

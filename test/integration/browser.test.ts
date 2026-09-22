@@ -24,8 +24,12 @@ it.each(["index.js", "index.min.js"])(
     const url = new URL(path, import.meta.url);
     const distro: typeof import("../../src/index.js") = await import(/* @vite-ignore */ url.href);
     expect(Object.keys(distro).sort()).toEqual([
+      "BrowserDetector",
       "OPENTELEMETRY_BROWSER_VERSION",
+      "UserAgentDetector",
+      "browserDetector",
       "useMicrosoftOpenTelemetry",
+      "userAgentDetector",
     ]);
     expect(distro.OPENTELEMETRY_BROWSER_VERSION).toBe(version);
     expect(window).not.toHaveProperty("OpenTelemetryBrowser");

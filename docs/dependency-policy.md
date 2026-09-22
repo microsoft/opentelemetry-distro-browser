@@ -11,6 +11,7 @@ in a minor release.
 | API                     | `@opentelemetry/api`                                                                                                                                                        | `1.9.1`   |
 | Stable SDK              | `@opentelemetry/core`, `@opentelemetry/resources`, `@opentelemetry/sdk-trace-base`, `@opentelemetry/sdk-trace-web`                                                          | `2.11.0`  |
 | Development SDK         | `@opentelemetry/api-logs`, `@opentelemetry/exporter-logs-otlp-http`, `@opentelemetry/exporter-trace-otlp-http`, `@opentelemetry/instrumentation`, `@opentelemetry/sdk-logs` | `0.222.0` |
+| Browser SDK             | `@opentelemetry/browser-sdk`                                                                                                                                                | `0.4.0`   |
 | Browser instrumentation | `@opentelemetry/browser-instrumentation`                                                                                                                                    | `0.8.1`   |
 | Semantic conventions    | `@opentelemetry/semantic-conventions`                                                                                                                                       | `1.43.0`  |
 
