@@ -81,10 +81,14 @@ export class Sender {
     try {
       let response: Response;
       try {
+        const payload = unloading ? undefined : await gzipPayload(request.body);
         response = await this.fetch(this.endpoint, {
           method: "POST",
-          headers: { "content-type": request.contentType },
-          body: request.body,
+          headers: {
+            "content-type": request.contentType,
+            ...(payload === undefined ? {} : { "content-encoding": "gzip" }),
+          },
+          body: payload ?? request.body,
           keepalive: useKeepalive,
         });
       } catch (error) {
@@ -129,6 +133,21 @@ export class Sender {
     }
 
     return { transport: "beacon" };
+  }
+}
+
+async function gzipPayload(
+  body: Uint8Array<ArrayBuffer>,
+): Promise<Uint8Array<ArrayBuffer> | undefined> {
+  if (typeof globalThis.CompressionStream !== "function") {
+    return undefined;
+  }
+
+  try {
+    const stream = new Blob([body]).stream().pipeThrough(new CompressionStream("gzip"));
+    return new Uint8Array(await new Response(stream).arrayBuffer());
+  } catch {
+    return undefined;
   }
 }
 
