@@ -686,4 +686,57 @@ describe("PageViewInstrumentation", () => {
       }
     });
   });
+
+  describe("review regressions", () => {
+    it("constructs and observes with default options", async () => {
+      // `InstrumentationBase` enables from its own constructor, before subclass fields exist.
+      const provider = new RecordingLoggerProvider();
+      const instrumentation = new PageViewInstrumentation();
+      active = instrumentation;
+      instrumentation.setLoggerProvider(provider);
+
+      expect(instrumentation.pageViews.getCurrentPageView()).toBeDefined();
+      await settle();
+      history.pushState(null, "", "/default-options");
+      await settle();
+
+      const soft = provider.records.at(-1);
+      expect(attributesOf(soft as LogRecord)[ATTR_PAGE_VIEW_SAME_DOCUMENT]).toBe(true);
+    });
+
+    it("still emits when the page name is set after the navigation begins", async () => {
+      const { instrumentation, provider } = createInstrumentation();
+
+      instrumentation.enable();
+      await settle();
+      const before = provider.records.length;
+
+      history.pushState(null, "", "/late-name");
+      instrumentation.setPageName("Checkout");
+      await settle();
+
+      expect(provider.records.length).toBe(before + 1);
+      const record = provider.records.at(-1) as LogRecord;
+      expect(attributesOf(record)[ATTR_PAGE_VIEW_NAME]).toBe("Checkout");
+      expect(attributesOf(record)[ATTR_PAGE_VIEW_DURATION_SOURCE]).toBe("soft_navigation_settled");
+    });
+
+    it("does not give a soft navigation the document load duration", async () => {
+      const { instrumentation, provider } = createInstrumentation();
+
+      // Starts a soft navigation before the scheduled document-load finalization runs.
+      instrumentation.enable();
+      history.pushState(null, "", "/before-load-settles");
+      await settle();
+
+      expect(provider.records.length).toBe(2);
+      const [documentView, softView] = provider.records as [LogRecord, LogRecord];
+      expect(attributesOf(documentView)[ATTR_PAGE_VIEW_SAME_DOCUMENT]).toBe(false);
+      expect(attributesOf(softView)[ATTR_PAGE_VIEW_SAME_DOCUMENT]).toBe(true);
+      expect(attributesOf(softView)[ATTR_PAGE_VIEW_DURATION_SOURCE]).not.toBe("navigation_timing");
+      expect(attributesOf(softView)[ATTR_PAGE_VIEW_DURATION]).toBeLessThan(
+        attributesOf(documentView)[ATTR_PAGE_VIEW_DURATION] as number,
+      );
+    });
+  });
 });

@@ -59,7 +59,12 @@ type SoftNavigationTrigger =
   "pushState" | "replaceState" | "popstate" | "hashchange" | "currententrychange";
 
 interface PendingPageView {
-  readonly pageView: PageView;
+  /**
+   * Mutable so a late {@link PageViewInstrumentation.setPageName} can correct the name in place.
+   * Callbacks scheduled for this navigation hold the pending object by identity, so replacing it
+   * would orphan them and the record would never be emitted.
+   */
+  pageView: PageView;
   /** Monotonic start, from `performance.now()`. */
   readonly startedAt: number;
   capTimerId?: number;
@@ -128,9 +133,20 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
   private onCurrentEntryChange: ((event: Event) => void) | undefined;
 
   public constructor(config: InternalPageViewInstrumentationConfig = {}) {
-    super(PAGE_VIEW_INSTRUMENTATION_NAME, OPENTELEMETRY_BROWSER_VERSION, config);
+    // `InstrumentationBase` calls `enable()` from its own constructor, which runs before this
+    // subclass's field initializers. That would observe an undefined page-view context, and the
+    // initializers would then overwrite the state `enable()` had just set. Start disabled, finish
+    // construction, then honor the caller's setting.
+    super(PAGE_VIEW_INSTRUMENTATION_NAME, OPENTELEMETRY_BROWSER_VERSION, {
+      ...config,
+      enabled: false,
+    });
     this.ownsContext = config.pageViewContext === undefined;
     this.context = config.pageViewContext ?? createPageViewContext();
+    this.setConfig(config);
+    if (this.getConfig().enabled) {
+      this.enable();
+    }
   }
 
   /**
@@ -160,9 +176,11 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
     this.explicitName = name;
     const pending = this.pending;
     if (pending && name !== undefined && pending.pageView.name !== name) {
-      // Republish so a correlation consumer sees the corrected name before the record is emitted.
+      // Mutated in place: callbacks already scheduled for this navigation hold `pending` by
+      // identity, so replacing it would strand both the settle path and the cap timer.
       const updated: PageView = { ...pending.pageView, name, nameSource: NAME_SOURCE_EXPLICIT };
-      this.pending = { ...pending, pageView: updated };
+      pending.pageView = updated;
+      // Republish so a correlation consumer sees the corrected name before the record is emitted.
       this.context.setCurrentPageView(updated);
     }
   }
@@ -253,7 +271,7 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
 
   private startHardNavigation(): void {
     const timing = this.getNavigationTiming();
-    this.begin({
+    const documentNavigation = this.begin({
       navigationType: this.mapHardNavigationType(timing?.type),
       sameDocument: false,
       referrer: document.referrer,
@@ -264,30 +282,36 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
 
     if (document.readyState === "complete") {
       this.scheduleMacrotask(() => {
-        this.finalizeHardNavigation();
+        this.finalizeHardNavigation(documentNavigation);
       });
       return;
     }
     this.onLoad = (): void => {
       // `loadEventEnd` is populated only after the load event finishes dispatching.
       this.scheduleMacrotask(() => {
-        this.finalizeHardNavigation();
+        this.finalizeHardNavigation(documentNavigation);
       });
     };
     window.addEventListener("load", this.onLoad, { once: true });
   }
 
-  private finalizeHardNavigation(): void {
-    const pending = this.pending;
-    if (!this.enabledState || !pending) {
+  /**
+   * Ends the document navigation with its browser-reported load duration.
+   *
+   * @param target - The navigation this callback was scheduled for. A soft navigation can start
+   * before `load` fires, and that one has no document load duration, so anything but the original
+   * navigation is left alone for its own settle path to finish.
+   */
+  private finalizeHardNavigation(target: PendingPageView): void {
+    if (!this.enabledState || this.pending !== target) {
       return;
     }
     const timing = this.getNavigationTiming();
     if (timing && timing.loadEventEnd > 0) {
-      this.emit(pending, timing.loadEventEnd - timing.startTime, DURATION_SOURCE_NAVIGATION_TIMING);
+      this.emit(target, timing.loadEventEnd - timing.startTime, DURATION_SOURCE_NAVIGATION_TIMING);
       return;
     }
-    this.settle(DURATION_SOURCE_DOCUMENT_LOAD);
+    this.emit(target, performance.now() - target.startedAt, DURATION_SOURCE_DOCUMENT_LOAD);
   }
 
   private getNavigationTiming(): PerformanceNavigationTiming | undefined {
@@ -455,6 +479,7 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
     window.setTimeout(callback, 0);
   }
 
+  /** Starts a new page view and publishes it. Returns the pending record callbacks should target. */
   private begin(input: {
     navigationType: PageViewNavigationType;
     sameDocument: boolean;
@@ -462,7 +487,7 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
     url?: string;
     startTimeUnixMs: number;
     startedAt: number;
-  }): void {
+  }): PendingPageView {
     const config = this.getConfig();
     const sanitize = config.sanitizeUrl;
     const rawUrl = input.url ?? location.href;
@@ -481,9 +506,11 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
     };
 
     this.lastUrl = rawUrl;
-    this.pending = { pageView, startedAt: input.startedAt };
+    const pending: PendingPageView = { pageView, startedAt: input.startedAt };
+    this.pending = pending;
     // Publish before the record is emitted, so signals produced during the navigation correlate.
     this.context.setCurrentPageView(pageView);
+    return pending;
   }
 
   private resolveName(): { name: string; source: PageViewNameSource } {
