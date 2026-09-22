@@ -1,5 +1,12 @@
 # Repository guidance
 
+## Markdown file creation
+
+Avoid creating new Markdown (`.md`) files as part of routine work. Prefer updating existing
+documentation, subject to the README restrictions below. Only add a new document when explicitly
+requested by the user or when it adds clear, lasting value that existing documentation cannot cover.
+Do not create summary, planning, progress, or implementation-note Markdown files unless requested.
+
 ## README changes
 
 Do not add `README.md` files inside source folders. This repository has one root `README.md`.
@@ -11,6 +18,14 @@ formatting. Do not replace the existing README with generated summaries or gener
 
 When README changes are explicitly requested, preserve its existing structure, voice, and content
 unless the requested change requires otherwise, and keep edits limited to the requested scope.
+
+## JavaScript distro alignment
+
+Use [microsoft/opentelemetry-distro-javascript](https://github.com/microsoft/opentelemetry-distro-javascript)
+as a design reference. Align public APIs, configuration, naming, and initialization/lifecycle patterns
+where practical and compatible with the browser environment. Prefer established distro patterns over
+inventing alternatives, but do not pursue parity at the expense of browser bundle size. Explain
+necessary deviations and use the bundle-size checks below to evaluate runtime or dependency tradeoffs.
 
 ## Browser bundle size
 

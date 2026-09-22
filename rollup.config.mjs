@@ -13,32 +13,38 @@ const esmOutput = {
 export default [
   {
     input: "src/index.ts",
+    // Share APIs with npm consumers and let their bundler select the SDK platform.
+    external: (id) => id.startsWith("@opentelemetry/"),
+    plugins: [typescript({ tsconfig: "./tsconfig.src.json" })],
+    output: {
+      ...esmOutput,
+      file: "dist/esm/index.js",
+    },
+  },
+  {
+    input: "src/index.ts",
+    // Retain the application's API singletons, including pre-initialization handles.
+    external: ["@opentelemetry/api", "@opentelemetry/api-logs"],
     plugins: [
       nodeResolve({ browser: true }),
       commonjs(),
       typescript({ tsconfig: "./tsconfig.src.json" }),
     ],
-    output: [
-      {
-        ...esmOutput,
-        file: "dist/esm/index.js",
-      },
-      {
-        ...esmOutput,
-        file: "dist/esm/index.min.js",
-        plugins: [
-          terser(),
-          visualizer({
-            filename: "reports/bundle-stats.html",
-            title: "OpenTelemetry browser ESM bundle",
-            template: "treemap",
-            sourcemap: true,
-            gzipSize: true,
-            brotliSize: true,
-          }),
-        ],
-      },
-    ],
+    output: {
+      ...esmOutput,
+      file: "dist/esm/index.min.js",
+      plugins: [
+        terser(),
+        visualizer({
+          filename: "reports/bundle-stats.html",
+          title: "OpenTelemetry browser ESM bundle",
+          template: "treemap",
+          sourcemap: true,
+          gzipSize: true,
+          brotliSize: true,
+        }),
+      ],
+    },
   },
   {
     input: "src/index.ts",

@@ -55,6 +55,7 @@
   "dependencies": {
     "@opentelemetry/api-logs": "0.222.0",
     "@opentelemetry/browser-instrumentation": "0.8.1",
+    "@opentelemetry/browser-sdk": "0.4.0",
     "@opentelemetry/core": "2.11.0",
     "@opentelemetry/exporter-logs-otlp-http": "0.222.0",
     "@opentelemetry/exporter-trace-otlp-http": "0.222.0",

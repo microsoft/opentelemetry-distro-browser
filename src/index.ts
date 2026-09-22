@@ -16,10 +16,8 @@ export {
   userAgentDetector,
 } from "./resource/index.js";
 export type {
-  AzureMonitorOptions,
   InstrumentationOptions,
   MicrosoftOpenTelemetryBrowser,
   MicrosoftOpenTelemetryBrowserOptions,
-  OtlpOptions,
 } from "./types.js";
 export { useMicrosoftOpenTelemetry } from "./useMicrosoftOpenTelemetry.js";
