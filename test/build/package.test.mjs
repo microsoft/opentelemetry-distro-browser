@@ -222,6 +222,10 @@ test("using the initializer includes both SDKs and their default exporters", asy
   const modules = Object.entries(chunk.modules)
     .filter(([, module]) => module.renderedLength > 0)
     .map(([id]) => id.replaceAll("\\", "/"));
+  assert.ok(
+    modules.every((id) => !/\/@opentelemetry\/(?:browser-)?instrumentation\//.test(id)),
+    "the initializer must not pull in optional instrumentation implementations",
+  );
   for (const name of [
     "sdk-trace",
     "sdk-logs",
@@ -232,6 +236,45 @@ test("using the initializer includes both SDKs and their default exporters", asy
       modules.some((id) => id.includes(`/@opentelemetry/${name}/`)),
       `${name} must be included by the combined initializer`,
     );
+  }
+});
+
+test("individual upstream instrumentation imports do not retain other instrumentations", async () => {
+  for (const [name, className] of [
+    ["navigation", "NavigationInstrumentation"],
+    ["fetch", "FetchInstrumentation"],
+  ]) {
+    const chunk = await bundleConsumer(`
+      import { useMicrosoftOpenTelemetry } from "distro";
+      import { ${className} } from "@opentelemetry/browser-instrumentation/experimental/${name}";
+      export const telemetry = useMicrosoftOpenTelemetry({
+        instrumentations: [new ${className}({ enabled: false })],
+      });
+    `);
+    const modules = Object.entries(chunk.modules)
+      .filter(([, module]) => module.renderedLength > 0)
+      .map(([id]) => id.replaceAll("\\", "/"));
+    assert.ok(
+      modules.some((id) => id.includes(`/browser-instrumentation/dist/${name}/`)),
+      `the selected ${name} instrumentation must remain in the consumer bundle`,
+    );
+    for (const omitted of [
+      "console",
+      "errors",
+      "navigation",
+      "navigation-timing",
+      "resource-timing",
+      "user-action",
+      "web-vitals",
+      "fetch",
+      "xhr",
+    ].filter((candidate) => candidate !== name)) {
+      assert.ok(
+        modules.every((id) => !id.includes(`/browser-instrumentation/dist/${omitted}/`)),
+        `selecting ${name} must not include ${omitted}`,
+      );
+    }
+    assert.ok(modules.every((id) => !id.includes("/web-vitals/")));
   }
 });
 

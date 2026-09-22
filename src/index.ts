@@ -9,6 +9,7 @@ export {
   userAgentDetector,
 } from "./resource/index.js";
 export type {
+  BrowserInstrumentation,
   MicrosoftOpenTelemetryBrowser,
   MicrosoftOpenTelemetryBrowserOptions,
 } from "./types.js";

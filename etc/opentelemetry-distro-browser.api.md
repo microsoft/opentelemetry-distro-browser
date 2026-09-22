@@ -5,9 +5,11 @@
 ```ts
 
 import { DetectedResource } from '@opentelemetry/resources';
+import { LoggerProvider } from '@opentelemetry/api-logs';
 import { LogRecordProcessor } from '@opentelemetry/sdk-logs';
 import { ResourceDetector } from '@opentelemetry/resources';
 import { SpanProcessor } from '@opentelemetry/sdk-trace-base';
+import { TracerProvider } from '@opentelemetry/api';
 
 // @public
 export class BrowserDetector implements ResourceDetector {
@@ -18,12 +20,24 @@ export class BrowserDetector implements ResourceDetector {
 export const browserDetector: BrowserDetector;
 
 // @public
+export interface BrowserInstrumentation {
+    disable(): void;
+    enable(): void;
+    getConfig(): {
+        enabled?: boolean;
+    };
+    setLoggerProvider?(provider: LoggerProvider): void;
+    setTracerProvider(provider: TracerProvider): void;
+}
+
+// @public
 export interface MicrosoftOpenTelemetryBrowser {
     shutdown(): Promise<void>;
 }
 
 // @public
 export interface MicrosoftOpenTelemetryBrowserOptions {
+    instrumentations?: readonly BrowserInstrumentation[];
     logRecordProcessors?: LogRecordProcessor[];
     spanProcessors?: SpanProcessor[];
 }

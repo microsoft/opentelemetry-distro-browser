@@ -1,6 +1,7 @@
 import {
   OPENTELEMETRY_BROWSER_VERSION,
   useMicrosoftOpenTelemetry,
+  type BrowserInstrumentation,
   type MicrosoftOpenTelemetryBrowser,
   type MicrosoftOpenTelemetryBrowserOptions,
 } from "@microsoft/opentelemetry-distro-browser";
@@ -11,7 +12,21 @@ import { BatchSpanProcessor } from "@opentelemetry/sdk-trace-base";
 
 export const version: string = OPENTELEMETRY_BROWSER_VERSION;
 const headers = { "x-tenant": "consumer" };
+export const instrumentation: BrowserInstrumentation = {
+  setTracerProvider(provider) {
+    provider.getTracer("consumer");
+  },
+  setLoggerProvider(provider) {
+    provider.getLogger("consumer");
+  },
+  getConfig() {
+    return { enabled: false };
+  },
+  enable() {},
+  disable() {},
+};
 export const options: MicrosoftOpenTelemetryBrowserOptions = {
+  instrumentations: Object.freeze([instrumentation]),
   spanProcessors: [
     new BatchSpanProcessor(
       new OTLPTraceExporter({ url: "https://example.test/v1/traces", headers }),
