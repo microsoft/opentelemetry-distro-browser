@@ -76,7 +76,7 @@ describe("Azure Monitor span envelope mapping", () => {
           ver: 2,
           id: spanContext.spanId,
           name: "GET /items/42",
-          duration: "00:00:01.234567",
+          duration: "00:00:01.2345670",
           success: false,
           resultCode: "503",
           type: "Http",
@@ -108,7 +108,7 @@ describe("Azure Monitor span envelope mapping", () => {
         ver: 2,
         id: spanContext.spanId,
         name: "GET /checkout",
-        duration: "00:00:01.234567",
+        duration: "00:00:01.2345670",
         success: true,
         responseCode: "204",
         url: "https://shop.example.test/checkout",
@@ -124,6 +124,6 @@ describe("Azure Monitor span envelope mapping", () => {
       instrumentationKey,
     );
 
-    expect(envelope.data.baseData.duration).toBe("1.01:01:01.001000");
+    expect(envelope.data.baseData.duration).toBe("1.01:01:01.0010000");
   });
 });

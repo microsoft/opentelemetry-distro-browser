@@ -38,12 +38,17 @@ const connectionStringKeys = new Set<ConnectionStringKey>([
   "endpointsuffix",
 ]);
 
-function sanitizeEndpoint(endpoint: string): string {
-  let sanitizedEndpoint = endpoint.trim();
-  if (!sanitizedEndpoint.startsWith("https://")) {
-    sanitizedEndpoint = sanitizedEndpoint.replace(/^http:\/\//, "https://");
+function sanitizeEndpoint(endpoint: string): string | undefined {
+  try {
+    const sanitizedEndpoint = new URL(endpoint.trim());
+    if (sanitizedEndpoint.protocol !== "http:" && sanitizedEndpoint.protocol !== "https:") {
+      return undefined;
+    }
+    const value = sanitizedEndpoint.toString();
+    return value.endsWith("/") ? value.slice(0, -1) : value;
+  } catch {
+    return undefined;
   }
-  return sanitizedEndpoint.endsWith("/") ? sanitizedEndpoint.slice(0, -1) : sanitizedEndpoint;
 }
 
 function parseFields(connectionString: string): ParsedConnectionString | undefined {
@@ -77,12 +82,12 @@ export function parseConnectionString(connectionString: string): ResolvedConnect
     };
   }
 
-  let ingestionEndpoint = fields.ingestionendpoint;
-  let liveEndpoint = fields.liveendpoint;
+  let fallbackIngestionEndpoint = DEFAULT_INGESTION_ENDPOINT;
+  let fallbackLiveEndpoint = DEFAULT_LIVE_ENDPOINT;
   if (fields.endpointsuffix) {
     const locationPrefix = fields.location ? `${fields.location}.` : "";
-    ingestionEndpoint ||= `https://${locationPrefix}dc.${fields.endpointsuffix}`;
-    liveEndpoint ||= `https://${locationPrefix}live.${fields.endpointsuffix}`;
+    fallbackIngestionEndpoint = `https://${locationPrefix}dc.${fields.endpointsuffix}`;
+    fallbackLiveEndpoint = `https://${locationPrefix}live.${fields.endpointsuffix}`;
   }
 
   if (fields.authorization && fields.authorization.toLowerCase() !== "ikey") {
@@ -93,8 +98,14 @@ export function parseConnectionString(connectionString: string): ResolvedConnect
 
   return {
     instrumentationKey: fields.instrumentationkey,
-    ingestionEndpoint: sanitizeEndpoint(ingestionEndpoint ?? DEFAULT_INGESTION_ENDPOINT),
-    liveEndpoint: sanitizeEndpoint(liveEndpoint ?? DEFAULT_LIVE_ENDPOINT),
+    ingestionEndpoint:
+      sanitizeEndpoint(fields.ingestionendpoint ?? "") ??
+      sanitizeEndpoint(fallbackIngestionEndpoint) ??
+      DEFAULT_INGESTION_ENDPOINT,
+    liveEndpoint:
+      sanitizeEndpoint(fields.liveendpoint ?? "") ??
+      sanitizeEndpoint(fallbackLiveEndpoint) ??
+      DEFAULT_LIVE_ENDPOINT,
     aadAudience: fields.aadaudience,
     applicationId: fields.applicationid,
     location: fields.location,

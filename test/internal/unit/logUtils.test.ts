@@ -101,7 +101,7 @@ describe("Azure Monitor log envelope mapping", () => {
         ver: 2,
         name: "https://shop.example.test/cart",
         url: "https://shop.example.test/cart",
-        duration: "00:00:00.425250",
+        duration: "00:00:00.4252500",
         properties: { "browser.navigation.same_document": "true" },
         measurements: undefined,
       },

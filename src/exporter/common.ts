@@ -13,20 +13,20 @@ export function hrTimeToDate(hrTime: HrTime): string {
 }
 
 export function millisecondsToTimeSpan(milliseconds: number): string {
-  const totalMicroseconds = Number.isFinite(milliseconds)
-    ? Math.max(0, Math.round(milliseconds * 1000))
+  const totalTicks = Number.isFinite(milliseconds)
+    ? Math.max(0, Math.round(milliseconds * 10_000))
     : 0;
-  const days = Math.floor(totalMicroseconds / 86_400_000_000);
-  const hours = Math.floor((totalMicroseconds % 86_400_000_000) / 3_600_000_000);
-  const minutes = Math.floor((totalMicroseconds % 3_600_000_000) / 60_000_000);
-  const seconds = Math.floor((totalMicroseconds % 60_000_000) / 1_000_000);
-  const microseconds = totalMicroseconds % 1_000_000;
+  const days = Math.floor(totalTicks / 864_000_000_000);
+  const hours = Math.floor((totalTicks % 864_000_000_000) / 36_000_000_000);
+  const minutes = Math.floor((totalTicks % 36_000_000_000) / 600_000_000);
+  const seconds = Math.floor((totalTicks % 600_000_000) / 10_000_000);
+  const fractionalTicks = totalTicks % 10_000_000;
   const dayPrefix = days > 0 ? `${days}.` : "";
   return `${dayPrefix}${hours.toString().padStart(2, "0")}:${minutes
     .toString()
-    .padStart(2, "0")}:${seconds.toString().padStart(2, "0")}.${microseconds
+    .padStart(2, "0")}:${seconds.toString().padStart(2, "0")}.${fractionalTicks
     .toString()
-    .padStart(6, "0")}`;
+    .padStart(7, "0")}`;
 }
 
 export function serializeAttribute(value: unknown): string {

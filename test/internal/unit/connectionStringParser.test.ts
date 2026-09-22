@@ -58,13 +58,34 @@ describe("Azure Monitor connection string", () => {
     expect(result.liveEndpoint).toBe(expected.liveEndpoint);
   });
 
-  it("prefers explicit endpoints and normalizes them to HTTPS", () => {
+  it("prefers explicit endpoints and preserves HTTP(S) protocols", () => {
     const result = parseConnectionString(
       `InstrumentationKey=${instrumentationKey};EndpointSuffix=applicationinsights.azure.us;` +
         "IngestionEndpoint=http://custom.ingest.example/;LiveEndpoint=https://custom.live.example/",
     );
 
-    expect(result.ingestionEndpoint).toBe("https://custom.ingest.example");
+    expect(result.ingestionEndpoint).toBe("http://custom.ingest.example");
+    expect(result.liveEndpoint).toBe("https://custom.live.example");
+  });
+
+  it("discards unsupported endpoint schemes and uses suffix-derived endpoints", () => {
+    const result = parseConnectionString(
+      `InstrumentationKey=${instrumentationKey};EndpointSuffix=applicationinsights.azure.us;` +
+        "Location=usgovvirginia;IngestionEndpoint=ftp://custom.ingest.example;" +
+        "LiveEndpoint=file:///custom/live",
+    );
+
+    expect(result.ingestionEndpoint).toBe("https://usgovvirginia.dc.applicationinsights.azure.us");
+    expect(result.liveEndpoint).toBe("https://usgovvirginia.live.applicationinsights.azure.us");
+  });
+
+  it("discards malformed endpoint overrides independently", () => {
+    const result = parseConnectionString(
+      `InstrumentationKey=${instrumentationKey};IngestionEndpoint=not-a-url;` +
+        "LiveEndpoint=https://custom.live.example/",
+    );
+
+    expect(result.ingestionEndpoint).toBe("https://dc.services.visualstudio.com");
     expect(result.liveEndpoint).toBe("https://custom.live.example");
   });
 
