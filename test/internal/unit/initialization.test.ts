@@ -35,16 +35,8 @@ afterEach(async () => {
   }
 });
 
-it.each([
-  undefined,
-  {},
-  Object.freeze({
-    endpoint: "https://collector.example.test",
-    headers: { "x-tenant": "checkout" },
-  }),
-])("maps OTLP configuration %j and returns the upstream handle unchanged", (otlp) => {
+it("maps distro processors and returns the upstream handle unchanged", () => {
   const options: MicrosoftOpenTelemetryBrowserOptions = {
-    otlp,
     spanProcessors: [],
     logRecordProcessors: [],
   };
@@ -54,15 +46,8 @@ it.each([
   expect(useMicrosoftOpenTelemetry(Object.freeze(options))).toBe(upstreamHandle);
   expect(useMicrosoftOpenTelemetry).not.toBe(startBrowserSdk);
   expect(startBrowserSdk).toHaveBeenCalledExactlyOnceWith({
-    exportConfig: { url: options.otlp?.endpoint, headers: options.otlp?.headers },
-    traces: {
-      processors: options.spanProcessors,
-      exportConfig: otlp ? { headers: options.otlp?.headers } : undefined,
-    },
-    logs: {
-      processors: options.logRecordProcessors,
-      exportConfig: otlp ? { headers: options.otlp?.headers } : undefined,
-    },
+    traces: { processors: options.spanProcessors },
+    logs: { processors: options.logRecordProcessors },
   });
 });
 

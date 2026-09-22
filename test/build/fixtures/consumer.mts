@@ -3,18 +3,25 @@ import {
   useMicrosoftOpenTelemetry,
   type MicrosoftOpenTelemetryBrowser,
   type MicrosoftOpenTelemetryBrowserOptions,
-  type OtlpOptions,
 } from "@microsoft/opentelemetry-distro-browser";
+import { OTLPLogExporter } from "@opentelemetry/exporter-logs-otlp-http";
+import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
+import { BatchLogRecordProcessor } from "@opentelemetry/sdk-logs";
+import { BatchSpanProcessor } from "@opentelemetry/sdk-trace-base";
 
 export const version: string = OPENTELEMETRY_BROWSER_VERSION;
-export const otlp: OtlpOptions = {
-  endpoint: "https://example.test",
-  headers: { "x-tenant": "consumer" },
-};
+const headers = { "x-tenant": "consumer" };
 export const options: MicrosoftOpenTelemetryBrowserOptions = {
-  otlp,
-  spanProcessors: [],
-  logRecordProcessors: [],
+  spanProcessors: [
+    new BatchSpanProcessor(
+      new OTLPTraceExporter({ url: "https://example.test/v1/traces", headers }),
+    ),
+  ],
+  logRecordProcessors: [
+    new BatchLogRecordProcessor({
+      exporter: new OTLPLogExporter({ url: "https://example.test/v1/logs", headers }),
+    }),
+  ],
 };
 export const initialize: (
   config: MicrosoftOpenTelemetryBrowserOptions,
@@ -25,7 +32,9 @@ useMicrosoftOpenTelemetry({ samplingRatio: 1 });
 useMicrosoftOpenTelemetry({ serviceName: "consumer" });
 // @ts-expect-error Upstream SDK controls are not exposed by the distro.
 useMicrosoftOpenTelemetry({ disabled: true });
-// @ts-expect-error Use the distro's otlp option instead of upstream exportConfig.
+// @ts-expect-error Configure exporters through standard processors, not distro-specific options.
+useMicrosoftOpenTelemetry({ otlp: { endpoint: "https://example.test" } });
+// @ts-expect-error Configure exporters through standard processors, not upstream exportConfig.
 useMicrosoftOpenTelemetry({ exportConfig: { url: "https://example.test" } });
 // @ts-expect-error Processors are top-level distro options, not upstream signal configuration.
 useMicrosoftOpenTelemetry({ traces: { processors: [] } });

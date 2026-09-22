@@ -9,23 +9,10 @@ import type { SpanProcessor } from "@opentelemetry/sdk-trace-base";
  * @public
  */
 export interface MicrosoftOpenTelemetryBrowserOptions {
-  /** Configures the default OTLP exporters for traces and logs. */
-  otlp?: OtlpOptions;
-  /** Custom span processors; additive when otlp is configured, otherwise used on their own. */
+  /** Span processors to register with the tracer provider. */
   spanProcessors?: SpanProcessor[];
-  /** Custom log record processors; additive when otlp is configured, otherwise used on their own. */
+  /** Log record processors to register with the logger provider. */
   logRecordProcessors?: LogRecordProcessor[];
-}
-
-/**
- * Browser OTLP/HTTP destination for both signals.
- * @public
- */
-export interface OtlpOptions {
-  /** Base collector URL. Defaults to http://localhost:4318; upstream sets the signal paths. */
-  endpoint?: string;
-  /** Additional HTTP headers sent with OTLP export requests. */
-  headers?: Record<string, string>;
 }
 
 /**

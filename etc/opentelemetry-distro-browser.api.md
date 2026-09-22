@@ -15,18 +15,11 @@ export interface MicrosoftOpenTelemetryBrowser {
 // @public
 export interface MicrosoftOpenTelemetryBrowserOptions {
     logRecordProcessors?: LogRecordProcessor[];
-    otlp?: OtlpOptions;
     spanProcessors?: SpanProcessor[];
 }
 
 // @public
 export const OPENTELEMETRY_BROWSER_VERSION: string;
-
-// @public
-export interface OtlpOptions {
-    endpoint?: string;
-    headers?: Record<string, string>;
-}
 
 // @public
 export function useMicrosoftOpenTelemetry(options?: MicrosoftOpenTelemetryBrowserOptions): MicrosoftOpenTelemetryBrowser;

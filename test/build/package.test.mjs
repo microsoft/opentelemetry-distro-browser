@@ -8,8 +8,18 @@ import { fileURLToPath } from "node:url";
 import { context, diag, propagation, trace } from "@opentelemetry/api";
 import { logs } from "@opentelemetry/api-logs";
 import { startBrowserSdk } from "@opentelemetry/browser-sdk";
-import { InMemoryLogRecordExporter, SimpleLogRecordProcessor } from "@opentelemetry/sdk-logs";
-import { InMemorySpanExporter, SimpleSpanProcessor } from "@opentelemetry/sdk-trace-base";
+import { OTLPLogExporter } from "@opentelemetry/exporter-logs-otlp-http";
+import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
+import {
+  BatchLogRecordProcessor,
+  InMemoryLogRecordExporter,
+  SimpleLogRecordProcessor,
+} from "@opentelemetry/sdk-logs";
+import {
+  BatchSpanProcessor,
+  InMemorySpanExporter,
+  SimpleSpanProcessor,
+} from "@opentelemetry/sdk-trace-base";
 import commonjs from "@rollup/plugin-commonjs";
 import { nodeResolve } from "@rollup/plugin-node-resolve";
 import { rollup } from "rollup";
@@ -131,7 +141,7 @@ test("the root ESM initializer exports both traces and logs", async () => {
   await exerciseNpmPackage(distro);
 });
 
-test("explicit OTLP export runs alongside custom processors", async (t) => {
+test("standard OTLP processors export alongside other processors", async (t) => {
   const requests = [];
   const server = createServer((request, response) => {
     const chunks = [];
@@ -165,14 +175,19 @@ test("explicit OTLP export runs alongside custom processors", async (t) => {
   const distro = await import(pkg.name);
   const spans = new InMemorySpanExporter();
   const records = new InMemoryLogRecordExporter();
-  const spanProcessors = Object.freeze([new SimpleSpanProcessor(spans)]);
-  const logRecordProcessors = Object.freeze([new SimpleLogRecordProcessor({ exporter: records })]);
-  const otlp = Object.freeze({
-    endpoint: `http://127.0.0.1:${server.address().port}`,
-    headers: Object.freeze({ "x-tenant": "checkout" }),
-  });
+  const endpoint = `http://127.0.0.1:${server.address().port}`;
+  const headers = Object.freeze({ "x-tenant": "checkout" });
+  const spanProcessors = Object.freeze([
+    new SimpleSpanProcessor(spans),
+    new BatchSpanProcessor(new OTLPTraceExporter({ url: `${endpoint}/v1/traces`, headers })),
+  ]);
+  const logRecordProcessors = Object.freeze([
+    new SimpleLogRecordProcessor({ exporter: records }),
+    new BatchLogRecordProcessor({
+      exporter: new OTLPLogExporter({ url: `${endpoint}/v1/logs`, headers }),
+    }),
+  ]);
   const telemetry = distro.useMicrosoftOpenTelemetry({
-    otlp,
     spanProcessors,
     logRecordProcessors,
   });
