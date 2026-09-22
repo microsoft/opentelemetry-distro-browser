@@ -37,7 +37,7 @@ afterEach(async () => {
   }
 });
 
-it("maps distro processors and returns the upstream handle unchanged", () => {
+it("maps distro processors and delegates shutdown to the upstream handle", async () => {
   const options: MicrosoftOpenTelemetryBrowserOptions = {
     spanProcessors: [],
     logRecordProcessors: [],
@@ -45,12 +45,15 @@ it("maps distro processors and returns the upstream handle unchanged", () => {
   const upstreamHandle = { shutdown: vi.fn(async () => {}) };
   vi.mocked(startBrowserSdk).mockReturnValueOnce(upstreamHandle);
 
-  expect(useMicrosoftOpenTelemetry(Object.freeze(options))).toBe(upstreamHandle);
+  const handle = useMicrosoftOpenTelemetry(Object.freeze(options));
   expect(useMicrosoftOpenTelemetry).not.toBe(startBrowserSdk);
   expect(startBrowserSdk).toHaveBeenCalledExactlyOnceWith({
     traces: { processors: options.spanProcessors },
     logs: { processors: options.logRecordProcessors },
   });
+
+  await handle.shutdown();
+  expect(upstreamHandle.shutdown).toHaveBeenCalledOnce();
 });
 
 it("propagates initialization failures without returning a success-shaped handle", () => {
