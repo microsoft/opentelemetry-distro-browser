@@ -71,7 +71,7 @@ describe("Sender", () => {
     const [endpoint, body] = sendBeacon.mock.calls[0];
     expect(endpoint).toBe("https://example.test/v2.1/track");
     expect(body).toBeInstanceOf(Blob);
-    expect(body).toMatchObject({ size: 60 * 1024 + 1, type: "application/json" });
+    expect(body).toMatchObject({ size: 60 * 1024 + 1, type: "text/plain;charset=utf-8" });
   });
 
   it("applies the keepalive body budget across pending requests", async () => {
@@ -307,6 +307,26 @@ describe("Sender", () => {
     expect(sendBeacon).not.toHaveBeenCalled();
   });
 
+  it("allows an unload payload at the beacon body limit", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    const sendBeacon = vi.fn<typeof globalThis.navigator.sendBeacon>().mockReturnValue(true);
+    const sender = new Sender({
+      endpoint: "https://example.test/v2.1/track",
+      fetch,
+      sendBeacon,
+    });
+
+    await expect(
+      sender.send({
+        body: new Uint8Array(65_000),
+        contentType: "application/json",
+        unloading: true,
+      }),
+    ).resolves.toEqual({ transport: "beacon" });
+    expect(fetch).not.toHaveBeenCalled();
+    expect(sendBeacon).toHaveBeenCalledOnce();
+  });
+
   it("does not use sendBeacon when the fallback is disabled", async () => {
     const fetch = vi.fn<typeof globalThis.fetch>();
     const sendBeacon = vi.fn<typeof globalThis.navigator.sendBeacon>().mockReturnValue(true);
@@ -326,5 +346,105 @@ describe("Sender", () => {
     ).rejects.toThrow("sendBeacon fallback is unavailable");
     expect(fetch).not.toHaveBeenCalled();
     expect(sendBeacon).not.toHaveBeenCalled();
+  });
+
+  it("fails cleanly when the browser does not support sendBeacon", async () => {
+    const sendBeaconDescriptor = Object.getOwnPropertyDescriptor(navigator, "sendBeacon");
+    Object.defineProperty(navigator, "sendBeacon", {
+      configurable: true,
+      value: undefined,
+    });
+
+    try {
+      const fetch = vi.fn<typeof globalThis.fetch>();
+      const sender = new Sender({
+        endpoint: "https://example.test/v2.1/track",
+        fetch,
+      });
+
+      await expect(
+        sender.send({
+          body: new Uint8Array(60 * 1024 + 1),
+          contentType: "application/json",
+          unloading: true,
+        }),
+      ).rejects.toThrow("sendBeacon fallback is unavailable");
+      expect(fetch).not.toHaveBeenCalled();
+    } finally {
+      if (sendBeaconDescriptor) {
+        Object.defineProperty(navigator, "sendBeacon", sendBeaconDescriptor);
+      } else {
+        Reflect.deleteProperty(navigator, "sendBeacon");
+      }
+    }
+  });
+
+  it("uses keepalive when the browser does not support sendBeacon", async () => {
+    const sendBeaconDescriptor = Object.getOwnPropertyDescriptor(navigator, "sendBeacon");
+    Object.defineProperty(navigator, "sendBeacon", {
+      configurable: true,
+      value: undefined,
+    });
+
+    try {
+      const fetch = vi
+        .fn<typeof globalThis.fetch>()
+        .mockResolvedValue(new Response(null, { status: 200 }));
+      const sender = new Sender({
+        endpoint: "https://example.test/v2.1/track",
+        fetch,
+      });
+
+      await expect(
+        sender.send({
+          body: new TextEncoder().encode("telemetry"),
+          contentType: "application/json",
+          unloading: true,
+        }),
+      ).resolves.toEqual({ transport: "fetch", statusCode: 200, result: "" });
+      expect(fetch).toHaveBeenCalledWith(
+        "https://example.test/v2.1/track",
+        expect.objectContaining({ keepalive: true }),
+      );
+    } finally {
+      if (sendBeaconDescriptor) {
+        Object.defineProperty(navigator, "sendBeacon", sendBeaconDescriptor);
+      } else {
+        Reflect.deleteProperty(navigator, "sendBeacon");
+      }
+    }
+  });
+
+  it("fails cleanly when keepalive fails and the browser does not support sendBeacon", async () => {
+    const sendBeaconDescriptor = Object.getOwnPropertyDescriptor(navigator, "sendBeacon");
+    Object.defineProperty(navigator, "sendBeacon", {
+      configurable: true,
+      value: undefined,
+    });
+
+    try {
+      const fetch = vi
+        .fn<typeof globalThis.fetch>()
+        .mockRejectedValue(new TypeError("fetch failed"));
+      const sender = new Sender({
+        endpoint: "https://example.test/v2.1/track",
+        fetch,
+      });
+
+      await expect(
+        sender.send({
+          body: new TextEncoder().encode("telemetry"),
+          contentType: "application/json",
+          unloading: true,
+        }),
+      ).rejects.toThrow("sendBeacon fallback is unavailable");
+      expect(fetch).toHaveBeenCalledOnce();
+    } finally {
+      if (sendBeaconDescriptor) {
+        Object.defineProperty(navigator, "sendBeacon", sendBeaconDescriptor);
+      } else {
+        Reflect.deleteProperty(navigator, "sendBeacon");
+      }
+    }
   });
 });

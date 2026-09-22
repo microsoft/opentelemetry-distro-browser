@@ -123,7 +123,7 @@ export class Sender {
       });
     }
 
-    const body = new Blob([request.body], { type: request.contentType });
+    const body = new Blob([request.body], { type: "text/plain;charset=UTF-8" });
     if (!this.sendBeacon(this.endpoint, body)) {
       throw new Error("sendBeacon could not queue the unload request.", { cause });
     }
