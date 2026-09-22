@@ -124,7 +124,14 @@ export interface PageViewSource {
 export interface PageViewContext extends PageViewSource {
   /** Publishes a new current page view and notifies subscribers. */
   setCurrentPageView(pageView: PageView): void;
-  /** Drops the current page view and every subscription. */
+  /**
+   * Drops the current page view, so a consumer stops correlating against a finished navigation.
+   *
+   * @remarks
+   * Subscriptions are deliberately kept: the instrumentation calls this on `disable()`, and a
+   * correlation processor that subscribed once must keep working across a disable/enable cycle.
+   * Unsubscribe through the function {@link PageViewSource.onPageViewChanged} returns.
+   */
   clear(): void;
 }
 
@@ -152,8 +159,9 @@ export interface PageViewInstrumentationConfig {
   readonly enabled?: boolean;
 
   /**
-   * Supplies the framework route pattern, such as `/orders/:id`. Called once per navigation, when
-   * the navigation is observed.
+   * Supplies the framework route pattern, such as `/orders/:id`. Called when the navigation is
+   * observed and again when it settles, so a router that commits its route asynchronously is
+   * still reflected. Must be cheap and free of side effects.
    *
    * @remarks
    * Prefer a route pattern over a resolved path: patterns aggregate, concrete paths do not. Return

@@ -15,7 +15,7 @@ import { type PageView, type PageViewContext, type PageViewListener } from "./ty
  */
 export function createPageViewContext(): PageViewContext {
   let current: PageView | undefined;
-  let listeners: PageViewListener[] = [];
+  const listeners: PageViewListener[] = [];
 
   return {
     getCurrentPageView(): PageView | undefined {
@@ -46,8 +46,9 @@ export function createPageViewContext(): PageViewContext {
     },
 
     clear(): void {
+      // Subscriptions survive: the instrumentation clears on `disable()`, and a processor that
+      // subscribed once must keep receiving page views if it is enabled again.
       current = undefined;
-      listeners = [];
     },
   };
 }

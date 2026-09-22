@@ -688,6 +688,121 @@ describe("PageViewInstrumentation", () => {
   });
 
   describe("review regressions", () => {
+    it("names a route change from the title the router sets after it", async () => {
+      const { instrumentation, provider } = createInstrumentation();
+      instrumentation.enable();
+      await settle();
+      const before = provider.records.length;
+
+      // A router commits its route and title after the URL changes, so a name captured at the
+      // start of the navigation would describe the previous page.
+      history.pushState(null, "", "/probe-title");
+      document.title = "Probe New Title";
+      await settle();
+
+      expect(attributesOf(provider.records.at(-1) as LogRecord)[ATTR_PAGE_VIEW_NAME]).toBe(
+        "Probe New Title",
+      );
+      expect(provider.records.length).toBe(before + 1);
+    });
+
+    it("keeps page-view subscriptions across a disable and enable cycle", async () => {
+      const { instrumentation } = createInstrumentation();
+      const seen: string[] = [];
+      instrumentation.pageViews.onPageViewChanged((pv) => seen.push(pv.id));
+
+      instrumentation.enable();
+      await settle();
+      instrumentation.disable();
+      instrumentation.enable();
+      history.pushState(null, "", "/after-reenable");
+      await settle();
+
+      expect(seen.length).toBe(2);
+    });
+
+    it("does not report the document load twice when re-enabled", async () => {
+      const { instrumentation, provider } = createInstrumentation();
+
+      instrumentation.enable();
+      await settle();
+      instrumentation.disable();
+      instrumentation.enable();
+      await settle();
+
+      const documentRecords = provider.records.filter(
+        (record) => attributesOf(record)[ATTR_PAGE_VIEW_SAME_DOCUMENT] === false,
+      );
+      expect(documentRecords.length).toBe(1);
+
+      history.pushState(null, "", "/index-after-reenable");
+      await settle();
+      const indices = provider.records.map((record) => attributesOf(record)[ATTR_PAGE_VIEW_INDEX]);
+      expect(new Set(indices).size).toBe(indices.length);
+    });
+
+    it("gives an interrupted page view its own name, not its successor's", async () => {
+      const { instrumentation, provider } = createInstrumentation({
+        routeResolver: () => location.pathname,
+      });
+
+      instrumentation.enable();
+      await settle();
+      history.pushState(null, "", "/first");
+      // Interrupts before /first can settle, so /first is emitted from the /second handler.
+      history.pushState(null, "", "/second");
+      await settle();
+
+      const interrupted = provider.records.find(
+        (record) =>
+          attributesOf(record)[ATTR_PAGE_VIEW_DURATION_SOURCE] === "soft_navigation_interrupted",
+      );
+      expect(attributesOf(interrupted as LogRecord)[ATTR_PAGE_VIEW_NAME]).toBe("/first");
+    });
+
+    it("never lets a throwing hook escape into the application's pushState", async () => {
+      const { instrumentation, provider } = createInstrumentation({
+        sanitizeUrl: () => {
+          throw new Error("sanitize exploded");
+        },
+        generatePageViewId: () => {
+          throw new Error("id exploded");
+        },
+      });
+
+      instrumentation.enable();
+      await settle();
+
+      expect(() => history.pushState(null, "", "/throwing-hooks")).not.toThrow();
+      await settle();
+
+      const record = provider.records.at(-1) as LogRecord;
+      expect(attributesOf(record)[ATTR_URL_FULL]).toContain("/throwing-hooks");
+      expect(attributesOf(record)[ATTR_PAGE_VIEW_ID]).toMatch(/^[0-9a-f]{32}$/);
+    });
+
+    it("survives a throwing log pipeline without breaking navigation", async () => {
+      const instrumentation = new PageViewInstrumentation({ enabled: false });
+      active = instrumentation;
+      instrumentation.setLoggerProvider({
+        getLogger: () => ({
+          enabled: () => true,
+          emit: () => {
+            throw new Error("exporter exploded");
+          },
+        }),
+      });
+
+      instrumentation.enable();
+      await settle();
+      // Two rapid route changes: the second settles the first *synchronously* inside pushState,
+      // which is the only path where a throwing exporter can reach the application.
+      history.pushState(null, "", "/throwing-exporter-a");
+      expect(() => history.pushState(null, "", "/throwing-exporter")).not.toThrow();
+      await settle();
+      expect(instrumentation.pageViews.getCurrentPageView()?.url).toContain("/throwing-exporter");
+    });
+
     it("constructs and observes with default options", async () => {
       // `InstrumentationBase` enables from its own constructor, before subclass fields exist.
       const provider = new RecordingLoggerProvider();

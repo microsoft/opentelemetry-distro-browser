@@ -65,6 +65,11 @@ interface PendingPageView {
    * would orphan them and the record would never be emitted.
    */
   pageView: PageView;
+  /**
+   * The unsanitized URL this navigation landed on, used to tell whether the document still shows
+   * this page. `pageView.url` cannot serve: `sanitizeUrl` may rewrite it beyond recognition.
+   */
+  readonly rawUrl: string;
   /** Monotonic start, from `performance.now()`. */
   readonly startedAt: number;
   capTimerId?: number;
@@ -118,6 +123,12 @@ type RequestIdleCallbackLike = (
 export class PageViewInstrumentation extends InstrumentationBase<InternalPageViewInstrumentationConfig> {
   private enabledState = false;
   private historyPatched = false;
+  /**
+   * Whether this document's load was already reported. Deliberately not reset by `disable()`: a
+   * document loads once, so re-enabling must not emit a second record carrying the same
+   * `PerformanceNavigationTiming` duration.
+   */
+  private documentLoadReported = false;
   private readonly context: PageViewContext;
   private readonly ownsContext: boolean;
 
@@ -131,6 +142,8 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
   private onHashChange: (() => void) | undefined;
   private onPageHide: (() => void) | undefined;
   private onCurrentEntryChange: ((event: Event) => void) | undefined;
+  /** The target the `currententrychange` listener was attached to, so it can always be removed. */
+  private navigationApiTarget: NavigationApiLike | undefined;
 
   public constructor(config: InternalPageViewInstrumentationConfig = {}) {
     // `InstrumentationBase` calls `enable()` from its own constructor, which runs before this
@@ -202,6 +215,9 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
       this.onCurrentEntryChange = (event: Event): void => {
         this.handleSoftNavigation("currententrychange", event);
       };
+      // Remember the target: config is publicly replaceable through `setConfig`, so re-deriving
+      // it in `disable()` could return undefined and strand the listener.
+      this.navigationApiTarget = navigationApi;
       navigationApi.addEventListener("currententrychange", this.onCurrentEntryChange);
     } else {
       if (!this.historyPatched) {
@@ -251,8 +267,12 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
       this.onPageHide = undefined;
     }
     if (this.onCurrentEntryChange) {
-      this.getNavigationApi()?.removeEventListener("currententrychange", this.onCurrentEntryChange);
+      this.navigationApiTarget?.removeEventListener(
+        "currententrychange",
+        this.onCurrentEntryChange,
+      );
       this.onCurrentEntryChange = undefined;
+      this.navigationApiTarget = undefined;
     }
     if (this.historyPatched) {
       this._unwrap(history, "pushState");
@@ -266,10 +286,17 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
     if (this.ownsContext) {
       this.context.clear();
     }
-    this.pageViewIndex = 0;
+    // `pageViewIndex` is not reset: it is an ordinal within the document's lifetime, and
+    // restarting it would make a re-enabled instrumentation emit indices that collide with the
+    // ones it already reported.
   }
 
   private startHardNavigation(): void {
+    if (this.documentLoadReported) {
+      // Re-enabled within the same document. The load happened once and was already reported, so
+      // there is nothing to observe until the next route change.
+      return;
+    }
     const timing = this.getNavigationTiming();
     const documentNavigation = this.begin({
       navigationType: this.mapHardNavigationType(timing?.type),
@@ -489,28 +516,68 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
     startedAt: number;
   }): PendingPageView {
     const config = this.getConfig();
-    const sanitize = config.sanitizeUrl;
     const rawUrl = input.url ?? location.href;
     const resolved = this.resolveName();
 
     const pageView: PageView = {
-      id: (config.generatePageViewId ?? generatePageViewId)(),
+      id: this.mintId(config.generatePageViewId),
       index: this.pageViewIndex++,
       name: resolved.name,
       nameSource: resolved.source,
-      url: sanitize ? sanitize(rawUrl) : rawUrl,
-      referrer: input.referrer ? (sanitize ? sanitize(input.referrer) : input.referrer) : "",
+      url: this.sanitize(rawUrl),
+      referrer: input.referrer ? this.sanitize(input.referrer) : "",
       navigationType: input.navigationType,
       sameDocument: input.sameDocument,
       startTimeUnixMs: input.startTimeUnixMs,
     };
 
     this.lastUrl = rawUrl;
-    const pending: PendingPageView = { pageView, startedAt: input.startedAt };
+    const pending: PendingPageView = { pageView, rawUrl, startedAt: input.startedAt };
     this.pending = pending;
     // Publish before the record is emitted, so signals produced during the navigation correlate.
     this.context.setCurrentPageView(pageView);
     return pending;
+  }
+
+  /**
+   * Applies the `sanitizeUrl` hook.
+   *
+   * @remarks
+   * A throwing hook falls back to the unmodified URL. This runs synchronously inside the
+   * application's own `history.pushState` call, so it must never propagate.
+   */
+  private sanitize(url: string): string {
+    const sanitize = this.getConfig().sanitizeUrl;
+    if (!sanitize) {
+      return url;
+    }
+    const result = safeExecuteInTheMiddle(
+      () => sanitize(url),
+      (error) => {
+        if (error) {
+          this._diag.error("sanitizeUrl hook failed", error);
+        }
+      },
+      true,
+    );
+    return typeof result === "string" ? result : url;
+  }
+
+  /** Mints a page-view id, falling back to the built-in generator if a supplied one throws. */
+  private mintId(generate: (() => string) | undefined): string {
+    if (!generate) {
+      return generatePageViewId();
+    }
+    const result = safeExecuteInTheMiddle(
+      () => generate(),
+      (error) => {
+        if (error) {
+          this._diag.error("generatePageViewId hook failed", error);
+        }
+      },
+      true,
+    );
+    return typeof result === "string" && result ? result : generatePageViewId();
   }
 
   private resolveName(): { name: string; source: PageViewNameSource } {
@@ -552,6 +619,38 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
     this.emit(pending, performance.now() - pending.startedAt, source);
   }
 
+  /**
+   * Resolves the page name a final time, now that the navigation has settled.
+   *
+   * @remarks
+   * Skipped once the document has moved on: an interrupted page view is emitted from the handler
+   * for the navigation that replaced it, by which point the URL, the router and the title already
+   * describe the *next* page, so re-resolving would stamp the successor's name onto it.
+   *
+   * Republishes through the context when the name changed, so a correlation consumer holding the
+   * page view sees the same name that is about to be emitted rather than the provisional one.
+   */
+  private finalizeName(pending: PendingPageView): PageView {
+    if (location.href !== pending.rawUrl) {
+      return pending.pageView;
+    }
+    const resolved = this.resolveName();
+    if (
+      resolved.name === pending.pageView.name &&
+      resolved.source === pending.pageView.nameSource
+    ) {
+      return pending.pageView;
+    }
+    const updated: PageView = {
+      ...pending.pageView,
+      name: resolved.name,
+      nameSource: resolved.source,
+    };
+    pending.pageView = updated;
+    this.context.setCurrentPageView(updated);
+    return updated;
+  }
+
   private emit(
     pending: PendingPageView,
     durationMs: number,
@@ -562,7 +661,15 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
     }
     this.clearPending();
 
-    const pageView = pending.pageView;
+    if (!pending.pageView.sameDocument) {
+      // Records the document load exactly once, whichever path closed it out.
+      this.documentLoadReported = true;
+    }
+
+    // Re-resolve: a router typically sets `document.title` and commits its route *after* the URL
+    // changes, so the name captured when the navigation started is the previous page's. Resolving
+    // again here, once the navigation has settled, is what makes the name describe this page.
+    const pageView = this.finalizeName(pending);
     const logRecord: LogRecord = {
       eventName: EVENT_BROWSER_PAGE_VIEW,
       severityNumber: SEVERITY_NUMBER_INFO,
@@ -596,9 +703,20 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
       );
     }
 
-    this.logger.emit(logRecord);
+    // The log pipeline is application-supplied and reached synchronously from the app's own
+    // `history.pushState`, so a throwing processor or exporter must not break navigation.
+    safeExecuteInTheMiddle(
+      () => {
+        this.logger.emit(logRecord);
+      },
+      (error) => {
+        if (error) {
+          this._diag.error("failed to emit a page-view record", error);
+        }
+      },
+      true,
+    );
   }
-
   private clearPending(): void {
     const pending = this.pending;
     if (!pending) {
