@@ -52,22 +52,25 @@ describe("Sender", () => {
       "https://chinaeast2.dc.applicationinsights.azure.cn/v2.1/track",
     ],
     ["https://custom.example.test/v2.1/track", "https://custom.example.test/redirected"],
-  ])("remembers a trusted redirected endpoint for later sends: %s -> %s", async (endpoint, redirectedEndpoint) => {
-    const fetch = vi
-      .fn<typeof globalThis.fetch>()
-      .mockResolvedValueOnce(redirectedResponse(redirectedEndpoint))
-      .mockResolvedValueOnce(new Response(null, { status: 200 }));
-    const sender = new Sender({ endpoint, fetch });
-    const request = {
-      body: new TextEncoder().encode("telemetry"),
-      contentType: "application/json",
-    };
+  ])(
+    "remembers a trusted redirected endpoint for later sends: %s -> %s",
+    async (endpoint, redirectedEndpoint) => {
+      const fetch = vi
+        .fn<typeof globalThis.fetch>()
+        .mockResolvedValueOnce(redirectedResponse(redirectedEndpoint))
+        .mockResolvedValueOnce(new Response(null, { status: 200 }));
+      const sender = new Sender({ endpoint, fetch });
+      const request = {
+        body: new TextEncoder().encode("telemetry"),
+        contentType: "application/json",
+      };
 
-    await sender.send(request);
-    await sender.send(request);
+      await sender.send(request);
+      await sender.send(request);
 
-    expect(fetch.mock.calls[1][0]).toBe(redirectedEndpoint);
-  });
+      expect(fetch.mock.calls[1][0]).toBe(redirectedEndpoint);
+    },
+  );
 
   it.each([
     [
@@ -88,26 +91,30 @@ describe("Sender", () => {
     ],
     ["https://original.test/v2.1/track", "https://example.test/v2.1/track"],
     ["https://original.test/v2.1/track", "not a URL"],
-  ])("does not remember an untrusted redirected endpoint: %s -> %s", async (endpoint, redirectedEndpoint) => {
-    const fetch = vi
-      .fn<typeof globalThis.fetch>()
-      .mockResolvedValueOnce(redirectedResponse(redirectedEndpoint))
-      .mockResolvedValueOnce(new Response(null, { status: 200 }));
-    const sender = new Sender({ endpoint, fetch });
-    const request = {
-      body: new TextEncoder().encode("telemetry"),
-      contentType: "application/json",
-    };
+  ])(
+    "does not remember an untrusted redirected endpoint: %s -> %s",
+    async (endpoint, redirectedEndpoint) => {
+      const fetch = vi
+        .fn<typeof globalThis.fetch>()
+        .mockResolvedValueOnce(redirectedResponse(redirectedEndpoint))
+        .mockResolvedValueOnce(new Response(null, { status: 200 }));
+      const sender = new Sender({ endpoint, fetch });
+      const request = {
+        body: new TextEncoder().encode("telemetry"),
+        contentType: "application/json",
+      };
 
-    await sender.send(request);
-    await sender.send(request);
+      await sender.send(request);
+      await sender.send(request);
 
-    expect(fetch.mock.calls[1][0]).toBe(endpoint);
-  });
+      expect(fetch.mock.calls[1][0]).toBe(endpoint);
+    },
+  );
 
   it("continues remembering trusted changes across separate sends", async () => {
-    const redirectedEndpoints = Array.from({ length: 11 }, (_, index) =>
-      `https://redirect-${index}.in.applicationinsights.azure.com/v2.1/track`,
+    const redirectedEndpoints = Array.from(
+      { length: 11 },
+      (_, index) => `https://redirect-${index}.in.applicationinsights.azure.com/v2.1/track`,
     );
     const fetch = vi.fn<typeof globalThis.fetch>();
     for (const endpoint of redirectedEndpoints) {
