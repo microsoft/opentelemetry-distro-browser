@@ -24,12 +24,51 @@ describe("Sender", () => {
       retryAfterMs: 120_000,
     });
     expect(fetch).toHaveBeenCalledOnce();
-    expect(fetch).toHaveBeenCalledWith("https://example.test/v2.1/track", {
+    const [endpoint, init] = fetch.mock.calls[0];
+    expect(endpoint).toBe("https://example.test/v2.1/track");
+    expect(init).toMatchObject({
       method: "POST",
-      headers: { "content-type": "application/json" },
-      body,
+      headers: { "content-type": "application/json", "content-encoding": "gzip" },
       keepalive: false,
     });
+    await expect(decompress(init?.body as Uint8Array<ArrayBuffer>)).resolves.toEqual(body);
+  });
+
+  it("uses an uncompressed payload when CompressionStream is unavailable", async () => {
+    const compressionStreamDescriptor = Object.getOwnPropertyDescriptor(
+      globalThis,
+      "CompressionStream",
+    );
+    Object.defineProperty(globalThis, "CompressionStream", {
+      configurable: true,
+      value: undefined,
+    });
+
+    try {
+      const fetch = vi
+        .fn<typeof globalThis.fetch>()
+        .mockResolvedValue(new Response(null, { status: 200 }));
+      const sender = new Sender({
+        endpoint: "https://example.test/v2.1/track",
+        fetch,
+      });
+      const body = new TextEncoder().encode("telemetry");
+
+      await sender.send({ body, contentType: "application/json" });
+
+      expect(fetch).toHaveBeenCalledWith("https://example.test/v2.1/track", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body,
+        keepalive: false,
+      });
+    } finally {
+      if (compressionStreamDescriptor) {
+        Object.defineProperty(globalThis, "CompressionStream", compressionStreamDescriptor);
+      } else {
+        Reflect.deleteProperty(globalThis, "CompressionStream");
+      }
+    }
   });
 
   it("uses keepalive for an unload send", async () => {
@@ -46,7 +85,11 @@ describe("Sender", () => {
 
     expect(fetch).toHaveBeenCalledWith(
       "https://example.test/v2.1/track",
-      expect.objectContaining({ body, keepalive: true }),
+      expect.objectContaining({
+        body,
+        headers: { "content-type": "application/json" },
+        keepalive: true,
+      }),
     );
   });
 
@@ -448,3 +491,8 @@ describe("Sender", () => {
     }
   });
 });
+
+async function decompress(body: Uint8Array<ArrayBuffer>): Promise<Uint8Array<ArrayBuffer>> {
+  const stream = new Blob([body]).stream().pipeThrough(new DecompressionStream("gzip"));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
