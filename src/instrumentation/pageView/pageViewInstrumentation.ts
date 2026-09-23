@@ -137,6 +137,11 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
   private pending: PendingPageView | undefined;
   private pageViewIndex = 0;
   private lastUrl = "";
+  /**
+   * `history.length` as of the last navigation this instrumentation observed. A `popstate` that
+   * arrives with a higher count appended an entry and is therefore a push, not a traversal.
+   */
+  private historyLength = 0;
   private explicitName: string | undefined;
 
   private onLoad: (() => void) | undefined;
@@ -214,6 +219,7 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
     }
     this.enabledState = true;
     this.lastUrl = location.href;
+    this.historyLength = history.length;
 
     const navigationApi = this.getNavigationApi();
     if (navigationApi) {
@@ -422,6 +428,9 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
           return;
         }
         original.apply(this, args);
+        // Keep the entry count in step even when the call does not start a page view, so a later
+        // traversal is not mistaken for a push against a stale count.
+        instrumentation.historyLength = history.length;
         if (location.href !== instrumentation.lastUrl) {
           instrumentation.handleSoftNavigation(trigger);
         }
@@ -437,6 +446,9 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
       return;
     }
     const previousUrl = this.lastUrl;
+    // Read before anything else: the count is only meaningful relative to the last navigation.
+    const historyGrew = history.length > this.historyLength;
+    this.historyLength = history.length;
     const currentUrl =
       trigger === "currententrychange"
         ? (this.getNavigationApi()?.currentEntry?.url ?? location.href)
@@ -449,7 +461,7 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
     this.settle(DURATION_SOURCE_SOFT_INTERRUPTED);
 
     this.begin({
-      navigationType: this.mapSoftNavigationType(trigger, event),
+      navigationType: this.mapSoftNavigationType(trigger, historyGrew, event),
       sameDocument: true,
       referrer: previousUrl,
       url: currentUrl,
@@ -485,6 +497,7 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
 
   private mapSoftNavigationType(
     trigger: SoftNavigationTrigger,
+    historyGrew: boolean,
     event?: NavigationCurrentEntryChangeEventLike,
   ): PageViewNavigationType {
     if (trigger === "currententrychange") {
@@ -499,15 +512,18 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
           return PAGE_VIEW_TYPE_PUSH;
       }
     }
-    switch (trigger) {
-      case "replaceState":
-        return PAGE_VIEW_TYPE_REPLACE;
-      case "popstate":
-      case "hashchange":
-        return PAGE_VIEW_TYPE_TRAVERSE;
-      default:
-        return PAGE_VIEW_TYPE_PUSH;
+    if (trigger === "replaceState") {
+      return PAGE_VIEW_TYPE_REPLACE;
     }
+    if (trigger === "pushState") {
+      return PAGE_VIEW_TYPE_PUSH;
+    }
+    // `popstate` and `hashchange` cannot be told apart by name. Assigning `location.hash` pushes a
+    // new entry, yet Chromium fires `popstate` for it exactly as it does for a real traversal, so
+    // classifying by the event alone reports every fragment link as back/forward navigation. The
+    // entry count is the available signal: a push appends an entry, a traversal moves between
+    // entries that already exist.
+    return historyGrew ? PAGE_VIEW_TYPE_PUSH : PAGE_VIEW_TYPE_TRAVERSE;
   }
 
   /**
@@ -651,6 +667,9 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
     return typeof result === "string" && result ? result : generatePageViewId();
   }
 
+  /**
+   * Resolves the page name from the first source that produces one.
+   */
   private resolveName(): { name: string; source: PageViewNameSource } {
     const explicit = this.explicitName;
     if (explicit) {
@@ -681,6 +700,38 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
     return { name: location.pathname, source: NAME_SOURCE_URL_PATH };
   }
 
+  /**
+   * Re-resolves the name of a page view that was interrupted before it settled.
+   *
+   * @remarks
+   * Its sources went stale at different moments. `location` advanced synchronously with the
+   * navigation that replaced this page view, so the pathname already describes somewhere it was
+   * never at and is not read. The title is committed by the router when a route renders, and the
+   * replacing route has not rendered yet, so it still describes this page and is worth reading:
+   * that is the whole point, because the title a router sets for a route arrives after the
+   * navigation that started it and would otherwise never be picked up.
+   *
+   * The `routeResolver` hook is not called again either. It is application code of unknown
+   * timing, and a resolver that reads `location` would return the successor's route. A route that
+   * was already resolved is kept as it is, rather than being downgraded to a title.
+   */
+  private resolveInterruptedName(
+    pending: PendingPageView,
+  ): { name: string; source: PageViewNameSource } | undefined {
+    const explicit = this.explicitName;
+    if (explicit) {
+      return { name: explicit, source: NAME_SOURCE_EXPLICIT };
+    }
+
+    const source = pending.pageView.nameSource;
+    if (source === NAME_SOURCE_EXPLICIT || source === NAME_SOURCE_ROUTE) {
+      return undefined;
+    }
+
+    const title = document.title;
+    return title ? { name: title, source: NAME_SOURCE_DOCUMENT_TITLE } : undefined;
+  }
+
   /** Ends whatever page view is in flight, if any, with the supplied reason. */
   private settle(source: PageViewDurationSource): void {
     const pending = this.pending;
@@ -694,21 +745,25 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
    * Resolves the page name a final time, now that the navigation has settled.
    *
    * @remarks
-   * Skipped once the document has moved on: an interrupted page view is emitted from the handler
-   * for the navigation that replaced it, by which point the URL, the router and the title already
-   * describe the *next* page, so re-resolving would stamp the successor's name onto it.
+   * A router commits its route and title *after* the URL changes, so the name captured when the
+   * navigation started belongs to the previous page and has to be read again before the record is
+   * emitted.
+   *
+   * When the page view is interrupted, it is emitted from the handler for the navigation that
+   * replaced it, at which point `location` has already advanced while the title has not. See
+   * {@link resolveInterruptedName} for which sources are still trustworthy at that moment.
    *
    * Republishes through the context when the name changed, so a correlation consumer holding the
    * page view sees the same name that is about to be emitted rather than the provisional one.
    */
   private finalizeName(pending: PendingPageView): PageView {
-    if (location.href !== pending.rawUrl) {
-      return pending.pageView;
-    }
-    const resolved = this.resolveName();
+    const resolved =
+      location.href === pending.rawUrl
+        ? this.resolveName()
+        : this.resolveInterruptedName(pending);
     if (
-      resolved.name === pending.pageView.name &&
-      resolved.source === pending.pageView.nameSource
+      !resolved ||
+      (resolved.name === pending.pageView.name && resolved.source === pending.pageView.nameSource)
     ) {
       return pending.pageView;
     }

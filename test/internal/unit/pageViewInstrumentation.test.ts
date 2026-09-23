@@ -392,7 +392,7 @@ describe("PageViewInstrumentation", () => {
       expect(provider.records).toHaveLength(1);
     });
 
-    it("treats a hash change as a traversal", async () => {
+    it("treats a new hash navigation as a push, matching the Navigation API", async () => {
       const { instrumentation, provider } = createInstrumentation();
 
       instrumentation.enable();
@@ -403,6 +403,24 @@ describe("PageViewInstrumentation", () => {
       await settle();
 
       expect(provider.records).toHaveLength(1);
+      expect(attributesOf(provider.records[0] as LogRecord)[ATTR_PAGE_VIEW_TYPE]).toBe("push");
+    });
+
+    it("treats a traversal back to a hash entry as a traversal", async () => {
+      const { instrumentation, provider } = createInstrumentation();
+
+      instrumentation.enable();
+      await settle();
+      provider.records.length = 0;
+
+      // Traversing fires popstate first and hashchange second; the first starts the page view and
+      // the second is discarded as a duplicate, so the classification comes from popstate.
+      history.pushState(null, "", "#hash-a");
+      await settle();
+      provider.records.length = 0;
+      history.back();
+      await settle();
+
       expect(attributesOf(provider.records[0] as LogRecord)[ATTR_PAGE_VIEW_TYPE]).toBe("traverse");
     });
   });
@@ -771,8 +789,29 @@ describe("PageViewInstrumentation", () => {
       expect(attributesOf(interrupted as LogRecord)[ATTR_PAGE_VIEW_NAME]).toBe("/first");
     });
 
-    it("never lets a throwing hook escape into the application's pushState", async () => {
-      const { instrumentation, provider } = createInstrumentation({
+    it("keeps the title its router set on a page view interrupted before it settled", async () => {
+      const { instrumentation, provider } = createInstrumentation();
+
+      instrumentation.enable();
+      await settle();
+      const before = provider.records.length;
+
+      history.pushState(null, "", "/orders");
+      // The router renders and titles /orders, then the user leaves before it can settle.
+      document.title = "Orders";
+      history.pushState(null, "", "/checkout");
+      await settle();
+
+      const interrupted = provider.records
+        .slice(before)
+        .find(
+          (record) =>
+            attributesOf(record)[ATTR_PAGE_VIEW_DURATION_SOURCE] === "soft_navigation_interrupted",
+        );
+      expect(attributesOf(interrupted as LogRecord)[ATTR_PAGE_VIEW_NAME]).toBe("Orders");
+    });
+
+    it("never lets a throwing hook escape into the application's pushState", async () => {      const { instrumentation, provider } = createInstrumentation({
         sanitizeUrl: () => {
           throw new Error("sanitize exploded");
         },
