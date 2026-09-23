@@ -5,6 +5,7 @@ export default defineConfig({
   ...config,
   test: {
     ...config.test,
+    globalSetup: ["./test/integration/redirectServer.ts"],
     include: ["test/integration/**/*.test.ts"],
   },
 });
