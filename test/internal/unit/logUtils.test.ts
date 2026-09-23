@@ -38,6 +38,7 @@ describe("Azure Monitor log envelope mapping", () => {
           "exception.type": "TypeError",
           "exception.message": "Cannot read properties of undefined",
           "exception.stacktrace": "TypeError: Cannot read properties of undefined\n  at checkout",
+          "url.full": "https://shop.example.test/checkout",
           handled: false,
         },
       }),
@@ -58,7 +59,10 @@ describe("Azure Monitor log envelope mapping", () => {
           },
         ],
         severityLevel: 3,
-        properties: { handled: "false" },
+        properties: {
+          "url.full": "https://shop.example.test/checkout",
+          handled: "false",
+        },
         measurements: undefined,
       },
     });
@@ -66,7 +70,11 @@ describe("Azure Monitor log envelope mapping", () => {
 
   it("maps an unnamed log to MessageData", () => {
     const envelope = logToEnvelope(
-      makeLog({ body: "cart restored", severityNumber: 10, attributes: { itemCount: 3 } }),
+      makeLog({
+        body: "cart restored",
+        severityNumber: 10,
+        attributes: { "url.full": "https://shop.example.test/cart", itemCount: 3 },
+      }),
       instrumentationKey,
     );
 
@@ -76,7 +84,7 @@ describe("Azure Monitor log envelope mapping", () => {
         ver: 2,
         message: "cart restored",
         severityLevel: 1,
-        properties: undefined,
+        properties: { "url.full": "https://shop.example.test/cart" },
         measurements: { itemCount: 3 },
       },
     });
@@ -108,11 +116,41 @@ describe("Azure Monitor log envelope mapping", () => {
     });
   });
 
-  it("maps other named logs to EventData", () => {
+  it.each(["browser.console", "application.audit"])(
+    "maps named log %s to MessageData without losing its message or severity",
+    (eventName) => {
+      const envelope = logToEnvelope(
+        makeLog({
+          eventName,
+          body: "checkout completed",
+          severityNumber: 13,
+          severityText: "warn",
+          attributes: { currency: "USD", total: 42.5, items: ["sku-1", "sku-2"] },
+        }),
+        instrumentationKey,
+      );
+
+      expect(envelope.data).toEqual({
+        baseType: "MessageData",
+        baseData: {
+          ver: 2,
+          message: "checkout completed",
+          severityLevel: 2,
+          properties: {
+            currency: "USD",
+            items: '["sku-1","sku-2"]',
+          },
+          measurements: { total: 42.5 },
+        },
+      });
+    },
+  );
+
+  it("maps a name-only record to EventData", () => {
     const envelope = logToEnvelope(
       makeLog({
-        eventName: "checkout.completed",
-        attributes: { currency: "USD", total: 42.5, items: ["sku-1", "sku-2"] },
+        eventName: "browser.user_action.click",
+        attributes: { target: "button#add-to-cart" },
       }),
       instrumentationKey,
     );
@@ -121,9 +159,9 @@ describe("Azure Monitor log envelope mapping", () => {
       baseType: "EventData",
       baseData: {
         ver: 2,
-        name: "checkout.completed",
-        properties: { currency: "USD", items: '["sku-1","sku-2"]' },
-        measurements: { total: 42.5 },
+        name: "browser.user_action.click",
+        properties: { target: "button#add-to-cart" },
+        measurements: undefined,
       },
     });
   });

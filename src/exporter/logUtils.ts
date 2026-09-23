@@ -32,9 +32,9 @@ const promotedLogAttributes = new Set([
   EXCEPTION_MESSAGE,
   EXCEPTION_STACKTRACE,
   EXCEPTION_TYPE,
-  URL_FULL,
   NAVIGATION_DURATION,
 ]);
+const promotedPageViewAttributes = new Set([...promotedLogAttributes, URL_FULL]);
 
 function mapSeverity(severityNumber: number | undefined): SeverityLevel | undefined {
   if (!severityNumber || severityNumber < 1 || severityNumber > 24) return undefined;
@@ -49,7 +49,12 @@ export function logToEnvelope(
   logRecord: ReadableLogRecord,
   instrumentationKey: string,
 ): AzureMonitorEnvelope<MessageData | ExceptionData | PageViewData | CustomEventData> {
-  const customFields = mapAttributes(logRecord.attributes as Attributes, promotedLogAttributes);
+  const customFields = mapAttributes(
+    logRecord.attributes as Attributes,
+    logRecord.eventName === PAGE_VIEW_EVENT_NAME
+      ? promotedPageViewAttributes
+      : promotedLogAttributes,
+  );
   const tags = createTags(
     logRecord.spanContext?.traceId,
     logRecord.spanContext?.spanId,
@@ -93,7 +98,11 @@ export function logToEnvelope(
       duration: typeof duration === "number" ? millisecondsToTimeSpan(duration) : undefined,
       ...customFields,
     };
-  } else if (logRecord.eventName) {
+  } else if (
+    logRecord.eventName &&
+    logRecord.body === undefined &&
+    logRecord.severityNumber === undefined
+  ) {
     name = "Microsoft.ApplicationInsights.Event";
     baseType = "EventData";
     baseData = {
