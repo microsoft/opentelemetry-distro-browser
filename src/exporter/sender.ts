@@ -11,6 +11,17 @@ import {
 let pendingKeepaliveBodySize = 0;
 let pendingKeepaliveRequestCount = 0;
 
+const trustedIngestionHostSuffixGroups = [
+  [
+    ".livediagnostics.monitor.azure.com",
+    ".monitor.azure.com",
+    ".services.visualstudio.com",
+    ".applicationinsights.azure.com",
+  ],
+  [".monitor.azure.us", ".applicationinsights.azure.us"],
+  [".monitor.azure.cn", ".applicationinsights.azure.cn"],
+];
+
 export interface SenderOptions {
   readonly endpoint: string;
   readonly fetch?: typeof globalThis.fetch;
@@ -39,7 +50,7 @@ export interface BeaconSenderResult {
 export type SenderResultType = SenderResult | BeaconSenderResult;
 
 export class Sender {
-  private readonly endpoint: string;
+  private endpoint: string;
   private readonly fetch: typeof globalThis.fetch;
   private readonly sendBeacon: typeof globalThis.navigator.sendBeacon | undefined;
   private readonly disableBeacon: boolean;
@@ -98,6 +109,7 @@ export class Sender {
         throw error;
       }
 
+      this.rememberRedirectEndpoint(response);
       const retryAfterMs = parseRetryAfterHeader(response.headers.get("retry-after"));
       return {
         transport: "fetch",
@@ -110,6 +122,17 @@ export class Sender {
         pendingKeepaliveBodySize -= request.body.byteLength;
         pendingKeepaliveRequestCount--;
       }
+    }
+  }
+
+  private rememberRedirectEndpoint(response: Response): void {
+    if (!response.redirected || response.url === this.endpoint) {
+      return;
+    }
+
+    const redirectedEndpoint = getTrustedIngestionEndpoint(this.endpoint, response.url);
+    if (redirectedEndpoint !== undefined) {
+      this.endpoint = redirectedEndpoint;
     }
   }
 
@@ -134,6 +157,43 @@ export class Sender {
 
     return { transport: "beacon" };
   }
+}
+
+function getTrustedIngestionEndpoint(
+  currentEndpoint: string,
+  redirectedEndpoint: string,
+): string | undefined {
+  try {
+    const currentUrl = new URL(currentEndpoint);
+    const redirectedUrl = new URL(redirectedEndpoint);
+    if (currentUrl.protocol !== "https:" || redirectedUrl.protocol !== "https:") {
+      return undefined;
+    }
+
+    const currentHostname = normalizeHostname(currentUrl.hostname);
+    const redirectedHostname = normalizeHostname(redirectedUrl.hostname);
+    const currentPort = currentUrl.port || "443";
+    const redirectedPort = redirectedUrl.port || "443";
+    if (currentHostname === redirectedHostname) {
+      return currentPort === redirectedPort ? redirectedUrl.toString() : undefined;
+    }
+    if (currentPort !== "443" || redirectedPort !== "443") {
+      return undefined;
+    }
+
+    const sameCloud = trustedIngestionHostSuffixGroups.some(
+      (suffixGroup) =>
+        suffixGroup.some((suffix) => currentHostname.endsWith(suffix)) &&
+        suffixGroup.some((suffix) => redirectedHostname.endsWith(suffix)),
+    );
+    return sameCloud ? redirectedUrl.toString() : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function normalizeHostname(hostname: string): string {
+  return hostname.toLowerCase().replace(/\.+$/, "");
 }
 
 async function gzipPayload(
