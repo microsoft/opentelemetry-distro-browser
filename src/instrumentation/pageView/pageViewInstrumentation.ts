@@ -764,9 +764,7 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
    */
   private finalizeName(pending: PendingPageView): PageView {
     const resolved =
-      location.href === pending.rawUrl
-        ? this.resolveName()
-        : this.resolveInterruptedName(pending);
+      location.href === pending.rawUrl ? this.resolveName() : this.resolveInterruptedName(pending);
     if (
       !resolved ||
       (resolved.name === pending.pageView.name && resolved.source === pending.pageView.nameSource)

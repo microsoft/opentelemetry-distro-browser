@@ -811,7 +811,8 @@ describe("PageViewInstrumentation", () => {
       expect(attributesOf(interrupted as LogRecord)[ATTR_PAGE_VIEW_NAME]).toBe("Orders");
     });
 
-    it("never lets a throwing hook escape into the application's pushState", async () => {      const { instrumentation, provider } = createInstrumentation({
+    it("never lets a throwing hook escape into the application's pushState", async () => {
+      const { instrumentation, provider } = createInstrumentation({
         sanitizeUrl: () => {
           throw new Error("sanitize exploded");
         },
