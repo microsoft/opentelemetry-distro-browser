@@ -6,6 +6,8 @@ export default defineConfig({
     include: [
       "@opentelemetry/api",
       "@opentelemetry/api-logs",
+      "@opentelemetry/browser-instrumentation/experimental/fetch",
+      "@opentelemetry/browser-instrumentation/experimental/navigation",
       "@opentelemetry/browser-sdk",
       "@opentelemetry/core",
       "@opentelemetry/instrumentation",

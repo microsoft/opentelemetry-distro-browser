@@ -7,7 +7,8 @@ import {
   type Logger,
   type LoggerProvider,
 } from "@opentelemetry/api-logs";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from "vitest";
+import type { BrowserInstrumentation } from "../../../src/types.js";
 import {
   createPageViewContext,
   generatePageViewId,
@@ -90,6 +91,16 @@ afterEach(() => {
 
 describe("PageViewInstrumentation", () => {
   describe("instrumentation contract", () => {
+    it("satisfies the distribution's registration contract", () => {
+      const { instrumentation } = createInstrumentation();
+
+      // `useMicrosoftOpenTelemetry` accepts instrumentations through this structural contract, so
+      // a consumer must be able to hand this class straight to it.
+      expectTypeOf(instrumentation).toExtend<BrowserInstrumentation>();
+      const registered: BrowserInstrumentation = instrumentation;
+      expect(registered.getConfig().enabled).toBe(false);
+    });
+
     it("reports a distribution-owned scope and does not patch on construction", () => {
       const pushStateBefore = history.pushState;
       const { instrumentation } = createInstrumentation();

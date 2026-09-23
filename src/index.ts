@@ -16,7 +16,7 @@ export {
   userAgentDetector,
 } from "./resource/index.js";
 export type {
-  InstrumentationOptions,
+  BrowserInstrumentation,
   MicrosoftOpenTelemetryBrowser,
   MicrosoftOpenTelemetryBrowserOptions,
 } from "./types.js";
