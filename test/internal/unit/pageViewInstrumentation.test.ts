@@ -923,6 +923,24 @@ describe("PageViewInstrumentation", () => {
       expect(JSON.stringify(provider.records)).not.toContain("leaked-value");
     });
 
+    it("reports no referrer on a back/forward cache restore", async () => {
+      const { instrumentation, provider } = createInstrumentation();
+
+      instrumentation.enable();
+      await settle();
+      const before = provider.records.length;
+
+      window.dispatchEvent(new PageTransitionEvent("pagehide", { persisted: true }));
+      window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true }));
+      await settle();
+
+      // `document.referrer` is frozen at the original load, so carrying it here would claim a
+      // fresh arrival from a site the user did not just come from.
+      const restored = attributesOf(provider.records[before] as LogRecord);
+      expect(restored[ATTR_PAGE_VIEW_TYPE]).toBe("back_forward");
+      expect(restored).not.toHaveProperty(ATTR_PAGE_VIEW_REFERRER);
+    });
+
     it("starts a new page view with a new id when restored from the back/forward cache", async () => {
       const { instrumentation, provider } = createInstrumentation();
 

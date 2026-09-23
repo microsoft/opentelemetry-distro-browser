@@ -487,7 +487,13 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
     this.begin({
       navigationType: PAGE_VIEW_TYPE_BACK_FORWARD,
       sameDocument: false,
-      referrer: document.referrer,
+      // No referrer. `document.referrer` is frozen at the document's original load, so on a
+      // restore it names whatever referred the user here the first time -- which the document-load
+      // record already reported. Repeating it here would claim a fresh arrival from that site that
+      // never happened, and the page actually navigated back from is not exposed to the restored
+      // document. An omitted attribute is the honest answer; an empty referrer is dropped by
+      // `emit`.
+      referrer: "",
       startTimeUnixMs: Date.now(),
       startedAt: performance.now(),
     });
