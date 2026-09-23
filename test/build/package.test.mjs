@@ -78,6 +78,12 @@ test("the package exposes only ESM entry points without legacy entry fields", ()
         default: "./dist/esm/index.js",
       },
     },
+    "./instrumentations": {
+      import: {
+        types: "./dist/esm/instrumentations.d.ts",
+        default: "./dist/esm/instrumentations.js",
+      },
+    },
     "./package.json": "./package.json",
   });
   assert.equal(pkg.types, pkg.exports["."].import.types);
@@ -91,6 +97,9 @@ test("the build produces only ESM bundles, declarations, and source maps", async
     "index.js.map",
     "index.min.js",
     "index.min.js.map",
+    "instrumentations.d.ts",
+    "instrumentations.js",
+    "instrumentations.js.map",
   ]);
 });
 
@@ -413,4 +422,54 @@ test("every JavaScript bundle ships a source map", async () => {
     assert.ok(sourceMap.sources.length > 0);
     assert.ok(sourceMap.sourcesContent.some((source) => typeof source === "string" && source));
   }
+});
+
+test("the instrumentations subpath stays out of the root bundle", async () => {
+  for (const file of ["index.js", "index.min.js"]) {
+    const bundle = await readFile(new URL(`dist/esm/${file}`, root), "utf8");
+    // Matches import specifiers rather than any occurrence of the name: the unminified bundle
+    // keeps doc comments, and documentation that names the upstream package is not a dependency
+    // on it.
+    const specifier = /(?:^|[^\w$])(?:import|from)\s*\(?\s*["'][^"']*browser-instrumentation/m;
+    assert.equal(
+      specifier.test(bundle),
+      false,
+      `${file} must not import @opentelemetry/browser-instrumentation`,
+    );
+  }
+});
+
+test("the instrumentations subpath imports each instrumentation on demand", async () => {
+  const bundle = await readFile(
+    new URL(pkg.exports["./instrumentations"].import.default, root),
+    "utf8",
+  );
+  // Static imports would make every instrumentation part of a consumer's bundle even when their
+  // configuration leaves it off, and would evaluate resource-timing's top-level `window` access
+  // outside a browser.
+  assert.equal(/^import\s/m.test(bundle), false);
+  for (const name of [
+    "fetch",
+    "xhr",
+    "console",
+    "errors",
+    "navigation",
+    "navigation-timing",
+    "resource-timing",
+    "user-action",
+    "web-vitals",
+  ])
+    assert.match(
+      bundle,
+      new RegExp(`import\\(['"]@opentelemetry/browser-instrumentation/experimental/${name}['"]\\)`),
+    );
+});
+
+test("the instrumentations subpath ships its declarations", async () => {
+  const declaration = await readFile(
+    new URL(pkg.exports["./instrumentations"].import.types, root),
+    "utf8",
+  );
+  for (const name of ["getInstrumentations", "InstrumentationOptions"])
+    assert.match(declaration, new RegExp(`\\b${name}\\b`));
 });
