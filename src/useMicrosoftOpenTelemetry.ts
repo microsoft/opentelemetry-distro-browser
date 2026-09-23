@@ -4,10 +4,40 @@
 import { diag, trace } from "@opentelemetry/api";
 import { logs } from "@opentelemetry/api-logs";
 import { startBrowserSdk } from "@opentelemetry/browser-sdk";
+import { PageViewInstrumentation } from "./instrumentation/pageView/index.js";
 import type {
+  BrowserInstrumentation,
   MicrosoftOpenTelemetryBrowser,
   MicrosoftOpenTelemetryBrowserOptions,
 } from "./types.js";
+
+/**
+ * Builds the instrumentations this distribution owns and turns on by itself.
+ *
+ * @remarks
+ * Distribution-owned instrumentations are selected by configuration rather than by import,
+ * because a bundler resolves imports before the application ever supplies its options. Page view
+ * is on unless it is switched off.
+ *
+ * Returns nothing outside a browser. This entry point is routinely imported by a server-rendered
+ * build, and these instrumentations observe the DOM, so constructing one there would throw during
+ * initialization and take the host application down with it.
+ *
+ * Each is constructed with `enabled: false` so that collection starts only once the registration
+ * loop below has bound its trace and log providers.
+ */
+function createOwnedInstrumentations(
+  options: MicrosoftOpenTelemetryBrowserOptions,
+): BrowserInstrumentation[] {
+  if (typeof document === "undefined" || typeof location === "undefined") return [];
+
+  const owned: BrowserInstrumentation[] = [];
+  const pageView = options.pageView ?? {};
+  if (pageView.enabled !== false) {
+    owned.push(new PageViewInstrumentation({ ...pageView, enabled: false }));
+  }
+  return owned;
+}
 
 /**
  * Initializes traces and logs using Microsoft browser distribution options.
@@ -20,7 +50,12 @@ export function useMicrosoftOpenTelemetry(
     traces: { processors: options.spanProcessors },
     logs: { processors: options.logRecordProcessors },
   });
-  const instrumentations = options.instrumentations?.slice() ?? [];
+  // Distribution-owned instrumentations come last, so an application-supplied instance observing
+  // the same API is installed first and is disabled last.
+  const instrumentations = [
+    ...(options.instrumentations ?? []),
+    ...createOwnedInstrumentations(options),
+  ];
   if (instrumentations.length === 0) return sdk;
 
   let shutdownPromise: Promise<void> | undefined;
