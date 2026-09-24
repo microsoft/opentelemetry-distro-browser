@@ -98,9 +98,9 @@ export interface MicrosoftOpenTelemetryBrowserOptions {
    * Omitted or disabled session tracking does not access session storage or start session timers.
    */
   session?: { enabled?: boolean };
-  /** Span processors to register with the tracer provider. */
+  /** Span processors to register with the tracer provider. An empty array skips trace initialization. */
   spanProcessors?: SpanProcessor[];
-  /** Log record processors to register with the logger provider. */
+  /** Log record processors to register with the logger provider. An empty array skips log initialization. */
   logRecordProcessors?: LogRecordProcessor[];
   /**
    * Individually imported OpenTelemetry instrumentation instances to register.

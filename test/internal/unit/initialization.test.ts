@@ -2,7 +2,8 @@
 // Licensed under the MIT License.
 
 import { ROOT_CONTEXT, context, diag, propagation, trace } from "@opentelemetry/api";
-import { logs } from "@opentelemetry/api-logs";
+import { logs, SeverityNumber } from "@opentelemetry/api-logs";
+import type { LogRecordProcessor } from "@opentelemetry/sdk-logs";
 import { startBrowserSdk } from "@opentelemetry/browser-sdk";
 import { OTLPLogExporter } from "@opentelemetry/exporter-logs-otlp-http";
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
@@ -40,11 +41,13 @@ afterEach(async () => {
 });
 
 it("prepends session enrichment without changing the caller's processor arrays", async () => {
+  const pipeline = createInMemoryPipeline();
   const options: MicrosoftOpenTelemetryBrowserOptions = {
+    ...pipeline.options,
     session: { enabled: true },
-    spanProcessors: [],
-    logRecordProcessors: [],
   };
+  Object.freeze(options.spanProcessors);
+  Object.freeze(options.logRecordProcessors);
   const upstreamHandle = { shutdown: vi.fn(async () => {}) };
   vi.mocked(startBrowserSdk).mockReturnValueOnce(upstreamHandle);
 
@@ -52,11 +55,21 @@ it("prepends session enrichment without changing the caller's processor arrays",
   handles.add(handle);
   expect(useMicrosoftOpenTelemetry).not.toBe(startBrowserSdk);
   expect(startBrowserSdk).toHaveBeenCalledExactlyOnceWith({
-    traces: { processors: [expect.objectContaining({ onStart: expect.any(Function) })] },
-    logs: { processors: [expect.objectContaining({ onEmit: expect.any(Function) })] },
+    traces: {
+      processors: [
+        expect.objectContaining({ onStart: expect.any(Function) }),
+        pipeline.spanProcessor,
+      ],
+    },
+    logs: {
+      processors: [
+        expect.objectContaining({ onEmit: expect.any(Function) }),
+        pipeline.logProcessor,
+      ],
+    },
   });
-  expect(options.spanProcessors).toEqual([]);
-  expect(options.logRecordProcessors).toEqual([]);
+  expect(options.spanProcessors).toEqual([pipeline.spanProcessor]);
+  expect(options.logRecordProcessors).toEqual([pipeline.logProcessor]);
 
   await handle.shutdown();
   expect(upstreamHandle.shutdown).toHaveBeenCalledOnce();
@@ -115,14 +128,21 @@ it("exports correlated manual telemetry through custom processors", async () => 
   expect(pipeline.options.logRecordProcessors).toEqual([pipeline.logProcessor]);
 });
 
-it.each([
-  { enabled: true, processors: undefined },
-  { enabled: true, processors: [] },
-  { enabled: false, processors: undefined },
-  { enabled: false, processors: [] },
-])(
-  "preserves default export versus explicit processor arrays (%j)",
-  async ({ enabled, processors }) => {
+it.each(
+  [true, false].flatMap((enabled) =>
+    [undefined, []].flatMap((spanProcessors) =>
+      [undefined, []].map((logRecordProcessors) => ({
+        enabled,
+        spanProcessors,
+        logRecordProcessors,
+      })),
+    ),
+  ),
+)(
+  "preserves per-signal disabling and default export (%j)",
+  async ({ enabled, spanProcessors, logRecordProcessors }) => {
+    const registerTrace = vi.spyOn(trace, "setGlobalTracerProvider");
+    const registerLogs = vi.spyOn(logs, "setGlobalLoggerProvider");
     const spanExport = vi
       .spyOn(OTLPTraceExporter.prototype, "export")
       .mockImplementation((_spans, callback) => callback({ code: 0 }));
@@ -131,24 +151,82 @@ it.each([
       .mockImplementation((_records, callback) => callback({ code: 0 }));
     const handle = await useMicrosoftOpenTelemetry({
       session: { enabled },
-      spanProcessors: processors,
-      logRecordProcessors: processors,
+      pageView: { enabled: false },
+      spanProcessors,
+      logRecordProcessors,
     });
     handles.add(handle);
-    trace.getTracer("default-export").startSpan("default").end();
-    logs.getLogger("default-export").emit({ eventName: "default" });
+    expect(registerTrace).toHaveBeenCalledTimes(spanProcessors === undefined ? 1 : 0);
+    expect(registerLogs).toHaveBeenCalledTimes(logRecordProcessors === undefined ? 1 : 0);
+    const span = trace.getTracer("default-export").startSpan("default");
+    expect(span.isRecording()).toBe(spanProcessors === undefined);
+    span.end();
+    const logger = logs.getLogger("default-export");
+    expect(logger.enabled()).toBe(logRecordProcessors === undefined);
+    logger.emit({ eventName: "default" });
     await handle.shutdown();
-    if (processors === undefined) {
-      expect(spanExport).toHaveBeenCalledOnce();
-      expect(logExport).toHaveBeenCalledOnce();
-      const id = spanExport.mock.calls[0][0][0].attributes["session.id"];
-      if (enabled) expect(id).toMatch(/^[0-9a-f]{32}$/);
-      else expect(id).toBeUndefined();
-      expect(logExport.mock.calls[0][0][0].attributes["session.id"]).toBe(id);
-    } else {
-      expect(spanExport).not.toHaveBeenCalled();
-      expect(logExport).not.toHaveBeenCalled();
+    expect(spanExport).toHaveBeenCalledTimes(spanProcessors === undefined ? 1 : 0);
+    expect(logExport).toHaveBeenCalledTimes(logRecordProcessors === undefined ? 1 : 0);
+    const ids = [
+      ...spanExport.mock.calls.flatMap(([spans]) => spans),
+      ...logExport.mock.calls.flatMap(([records]) => records),
+    ].map((record) => record.attributes["session.id"]);
+    for (const id of ids) {
+      if (enabled) {
+        expect(id).toMatch(/^[0-9a-f]{32}$/);
+        expect(id).toBe(ids[0]);
+      } else expect(id).toBeUndefined();
     }
+  },
+);
+
+it.each([true, false])(
+  "preserves caller log filtering with sessions enabled=%s",
+  async (enabled) => {
+    const pipeline = createInMemoryPipeline();
+    const firstEmit = vi.fn();
+    const onEmit = vi.spyOn(pipeline.logProcessor, "onEmit");
+    const filter = vi.fn<NonNullable<LogRecordProcessor["enabled"]>>(
+      (options) =>
+        options.eventName === "allowed" && options.severityNumber === SeverityNumber.WARN,
+    );
+    const handle = await useMicrosoftOpenTelemetry({
+      session: { enabled },
+      pageView: { enabled: false },
+      spanProcessors: [],
+      logRecordProcessors: [
+        {
+          enabled: () => false,
+          onEmit: firstEmit,
+          forceFlush: async () => {},
+          shutdown: async () => {},
+        },
+        Object.assign(pipeline.logProcessor, { enabled: filter }),
+      ],
+    });
+    handles.add(handle);
+    const logger = logs.getLogger("filtered", "1.0");
+    const rejected = {
+      eventName: "blocked",
+      severityNumber: SeverityNumber.WARN,
+      context: ROOT_CONTEXT,
+    };
+    expect(logger.enabled(rejected)).toBe(false);
+    logger.emit(rejected);
+    logger.emit({ eventName: "allowed", severityNumber: SeverityNumber.INFO });
+    expect(firstEmit).not.toHaveBeenCalled();
+    expect(onEmit).not.toHaveBeenCalled();
+    const accepted = { ...rejected, eventName: "allowed" };
+    expect(logger.enabled(accepted)).toBe(true);
+    logger.emit(accepted);
+    expect(filter).toHaveBeenLastCalledWith({
+      ...accepted,
+      instrumentationScope: expect.objectContaining({ name: "filtered", version: "1.0" }),
+    });
+    expect(onEmit).toHaveBeenCalledOnce();
+    const id = onEmit.mock.calls[0][0].attributes["session.id"];
+    if (enabled) expect(id).toMatch(/^[0-9a-f]{32}$/);
+    else expect(id).toBeUndefined();
   },
 );
 

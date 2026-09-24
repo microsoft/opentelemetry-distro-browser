@@ -465,7 +465,13 @@ it("stops session timers while failed initialization waits for provider shutdown
         },
       },
     ],
-    logRecordProcessors: [],
+    logRecordProcessors: [
+      {
+        onEmit() {},
+        async forceFlush() {},
+        async shutdown() {},
+      },
+    ],
     instrumentations: [
       {
         setTracerProvider() {},

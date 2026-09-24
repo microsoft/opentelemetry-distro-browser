@@ -96,16 +96,18 @@ export async function useMicrosoftOpenTelemetry(
     await session?.start();
     sdk = startBrowserSdk({
       traces: {
-        processors: session
-          ? [new SessionSpanProcessor(sessionProvider), ...(spanProcessors ?? [])]
-          : spanProcessors,
+        processors:
+          session && spanProcessors?.length !== 0
+            ? [new SessionSpanProcessor(sessionProvider), ...(spanProcessors ?? [])]
+            : spanProcessors,
         // Supplying enrichment processors must not disable upstream default export.
         ...(session && spanProcessors === undefined ? { exportConfig: {} } : {}),
       },
       logs: {
-        processors: session
-          ? [new SessionLogRecordProcessor(sessionProvider), ...(logRecordProcessors ?? [])]
-          : logRecordProcessors,
+        processors:
+          session && logRecordProcessors?.length !== 0
+            ? [new SessionLogRecordProcessor(sessionProvider), ...(logRecordProcessors ?? [])]
+            : logRecordProcessors,
         ...(session && logRecordProcessors === undefined ? { exportConfig: {} } : {}),
       },
     });

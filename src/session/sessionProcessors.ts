@@ -14,6 +14,11 @@ export class SessionSpanProcessor extends UpstreamSessionSpanProcessor {
 }
 
 export class SessionLogRecordProcessor extends UpstreamSessionLogRecordProcessor {
+  // Enrichment must not enable logging; the SDK still invokes onEmit for accepted records.
+  enabled(): boolean {
+    return false;
+  }
+
   override onEmit(...args: Parameters<UpstreamSessionLogRecordProcessor["onEmit"]>): void {
     if (args[0].attributes["session.id"] === undefined) super.onEmit(...args);
   }
