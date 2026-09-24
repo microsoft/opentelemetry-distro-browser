@@ -40,13 +40,15 @@ export const options: MicrosoftOpenTelemetryBrowserOptions = {
 };
 export const initialize: (
   config: MicrosoftOpenTelemetryBrowserOptions,
-) => MicrosoftOpenTelemetryBrowser = useMicrosoftOpenTelemetry;
+) => Promise<MicrosoftOpenTelemetryBrowser> = useMicrosoftOpenTelemetry;
 // @ts-expect-error The previous distribution-specific option is no longer supported.
 useMicrosoftOpenTelemetry({ samplingRatio: 1 });
 // @ts-expect-error Service/resource configuration is not part of the supported options yet.
 useMicrosoftOpenTelemetry({ serviceName: "consumer" });
 // @ts-expect-error Upstream SDK controls are not exposed by the distro.
 useMicrosoftOpenTelemetry({ disabled: true });
+// @ts-expect-error Sessions are managed internally with fixed defaults.
+useMicrosoftOpenTelemetry({ session: { enabled: false } });
 // @ts-expect-error Configure exporters through standard processors, not distro-specific options.
 useMicrosoftOpenTelemetry({ otlp: { endpoint: "https://example.test" } });
 // @ts-expect-error Configure exporters through standard processors, not upstream exportConfig.

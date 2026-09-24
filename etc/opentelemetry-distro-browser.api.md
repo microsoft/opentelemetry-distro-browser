@@ -46,7 +46,7 @@ export interface MicrosoftOpenTelemetryBrowserOptions {
 export const OPENTELEMETRY_BROWSER_VERSION: string;
 
 // @public
-export function useMicrosoftOpenTelemetry(options?: MicrosoftOpenTelemetryBrowserOptions): MicrosoftOpenTelemetryBrowser;
+export function useMicrosoftOpenTelemetry(options?: MicrosoftOpenTelemetryBrowserOptions): Promise<MicrosoftOpenTelemetryBrowser>;
 
 // @public
 export class UserAgentDetector implements ResourceDetector {

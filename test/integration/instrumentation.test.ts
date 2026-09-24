@@ -63,7 +63,7 @@ for (const file of ["index.js", "index.min.js"]) {
     });
     const navigationDisable = vi.spyOn(navigation, "disable");
     const httpDisable = vi.spyOn(http, "disable");
-    const handle = distro.useMicrosoftOpenTelemetry({
+    const handle = await distro.useMicrosoftOpenTelemetry({
       ...pipeline.options,
       instrumentations: Object.freeze([navigation, http]),
     });
@@ -121,7 +121,7 @@ for (const file of ["index.js", "index.min.js"]) {
     const pipeline = createInMemoryPipeline();
     const navigation = new NavigationInstrumentation();
     const enable = vi.spyOn(navigation, "enable");
-    const handle = distro.useMicrosoftOpenTelemetry({
+    const handle = await distro.useMicrosoftOpenTelemetry({
       ...pipeline.options,
       instrumentations: [navigation],
     });
@@ -142,7 +142,7 @@ for (const file of ["index.js", "index.min.js"]) {
     const pipeline = createInMemoryPipeline();
     const fetchBefore = globalThis.fetch;
     const pushBefore = history.pushState;
-    const handle = distro.useMicrosoftOpenTelemetry(pipeline.options);
+    const handle = await distro.useMicrosoftOpenTelemetry(pipeline.options);
     handles.add(handle);
     expect(globalThis.fetch).toBe(fetchBefore);
     expect(history.pushState).toBe(pushBefore);

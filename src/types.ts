@@ -60,7 +60,7 @@ export interface MicrosoftOpenTelemetryBrowserOptions {
  */
 export interface MicrosoftOpenTelemetryBrowser {
   /**
-   * Disables registered instrumentations, then shuts down trace and log providers.
+   * Disables registered instrumentations, then shuts down trace and log providers and sessions.
    * Does not unregister global APIs. Cleanup continues if an instrumentation throws,
    * and the returned promise rejects with the cleanup failure(s).
    */

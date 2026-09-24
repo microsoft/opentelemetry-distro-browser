@@ -103,7 +103,7 @@ async function exerciseNpmPackage(distro) {
     spanProcessors: [new SimpleSpanProcessor(spans)],
     logRecordProcessors: [new SimpleLogRecordProcessor({ exporter: records })],
   };
-  const telemetry = distro.useMicrosoftOpenTelemetry(options);
+  const telemetry = await distro.useMicrosoftOpenTelemetry(options);
   try {
     tracer.startSpan("manual").end();
     logger.emit({ eventName: "manual" });
@@ -191,7 +191,7 @@ test("standard OTLP processors export alongside other processors", async (t) => 
       exporter: new OTLPLogExporter({ url: `${endpoint}/v1/logs`, headers }),
     }),
   ]);
-  const telemetry = distro.useMicrosoftOpenTelemetry({
+  const telemetry = await distro.useMicrosoftOpenTelemetry({
     spanProcessors,
     logRecordProcessors,
   });
@@ -281,6 +281,10 @@ test("individual upstream instrumentation imports do not retain other instrument
 test("detector-only imports do not retain telemetry SDKs or exporters", async () => {
   const chunk = await bundleConsumer(
     'export { browserDetector, userAgentDetector } from "distro";',
+  );
+  assert.doesNotMatch(
+    chunk.code,
+    /SessionManager|SessionSpanProcessor|SessionLogRecordProcessor|opentelemetry-session/,
   );
   for (const [id, module] of Object.entries(chunk.modules)) {
     if (module.renderedLength > 0) {
