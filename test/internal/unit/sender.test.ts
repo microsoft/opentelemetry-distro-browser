@@ -3,6 +3,7 @@
 
 import { describe, expect, it, vi } from "vitest";
 import { Sender } from "../../../src/exporter/sender.js";
+import type { AzureMonitorEnvelope } from "../../../src/exporter/telemetryModels.js";
 
 describe("Sender", () => {
   it("posts a payload and returns the Breeze response", async () => {
@@ -619,7 +620,221 @@ describe("Sender", () => {
       }
     }
   });
+
+  it("retries a retriable response with bounded exponential jitter", async () => {
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(new Response("unavailable", { status: 503 }))
+      .mockResolvedValueOnce(new Response(null, { status: 200 }));
+    const delay = vi.fn<(delayMs: number) => Promise<void>>().mockResolvedValue(undefined);
+    const sender = new Sender({
+      endpoint: "https://example.test/v2.1/track",
+      fetch,
+      delay,
+      random: () => 0.5,
+    });
+
+    await expect(
+      sender.send({ body: new TextEncoder().encode("telemetry"), contentType: "application/json" }),
+    ).resolves.toMatchObject({ statusCode: 200 });
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(delay).toHaveBeenCalledWith(750);
+  });
+
+  it("retries a browser transport failure", async () => {
+    const fetchError = new TypeError("Failed to fetch");
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockRejectedValueOnce(fetchError)
+      .mockResolvedValueOnce(new Response(null, { status: 200 }));
+    const delay = vi.fn<(delayMs: number) => Promise<void>>().mockResolvedValue(undefined);
+    const sender = new Sender({
+      endpoint: "https://example.test/v2.1/track",
+      fetch,
+      delay,
+      random: () => 0,
+    });
+
+    await expect(
+      sender.send({ body: new TextEncoder().encode("telemetry"), contentType: "application/json" }),
+    ).resolves.toMatchObject({ statusCode: 200 });
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(delay).toHaveBeenCalledOnce();
+  });
+
+  it("does not retry an arbitrary fetch exception", async () => {
+    const fetchError = new Error("serialization failed");
+    const fetch = vi.fn<typeof globalThis.fetch>().mockRejectedValue(fetchError);
+    const delay = vi.fn<(delayMs: number) => Promise<void>>().mockResolvedValue(undefined);
+    const sender = new Sender({
+      endpoint: "https://example.test/v2.1/track",
+      fetch,
+      delay,
+    });
+
+    await expect(
+      sender.send({ body: new TextEncoder().encode("telemetry"), contentType: "application/json" }),
+    ).rejects.toBe(fetchError);
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(delay).not.toHaveBeenCalled();
+  });
+
+  it("honors Retry-After for a retriable response", async () => {
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(new Response(null, { status: 429, headers: { "retry-after": "2" } }))
+      .mockResolvedValueOnce(new Response(null, { status: 200 }));
+    const delay = vi.fn<(delayMs: number) => Promise<void>>().mockResolvedValue(undefined);
+    const sender = new Sender({
+      endpoint: "https://example.test/v2.1/track",
+      fetch,
+      delay,
+    });
+
+    await sender.send({
+      body: new TextEncoder().encode("telemetry"),
+      contentType: "application/json",
+    });
+
+    expect(delay).toHaveBeenCalledWith(2_000);
+  });
+
+  it("retries only retriable envelopes from a partial response", async () => {
+    const envelopes = [createEnvelope("first"), createEnvelope("second"), createEnvelope("third")];
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            itemsReceived: 3,
+            itemsAccepted: 0,
+            errors: [
+              { index: 0, statusCode: 500, message: "Server error" },
+              { index: 1, statusCode: 400, message: "Invalid envelope" },
+              { index: 2, statusCode: 500, message: "Telemetry sampled out." },
+            ],
+          }),
+          { status: 206 },
+        ),
+      )
+      .mockResolvedValueOnce(new Response(null, { status: 200 }));
+    const sender = new Sender({
+      endpoint: "https://example.test/v2.1/track",
+      fetch,
+      delay: () => Promise.resolve(),
+      random: () => 0,
+    });
+
+    await sender.send({
+      body: new TextEncoder().encode(JSON.stringify(envelopes)),
+      contentType: "application/json",
+      envelopes,
+    });
+
+    expect(fetch).toHaveBeenCalledTimes(2);
+    const retryInit = fetch.mock.calls[1][1];
+    await expect(decompress(retryInit?.body as Uint8Array<ArrayBuffer>)).resolves.toEqual(
+      new TextEncoder().encode(JSON.stringify([envelopes[0]])),
+    );
+  });
+
+  it("does not retry a non-retriable response", async () => {
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValue(new Response("invalid", { status: 400 }));
+    const delay = vi.fn<(delayMs: number) => Promise<void>>().mockResolvedValue(undefined);
+    const sender = new Sender({
+      endpoint: "https://example.test/v2.1/track",
+      fetch,
+      delay,
+    });
+
+    await expect(
+      sender.send({ body: new TextEncoder().encode("telemetry"), contentType: "application/json" }),
+    ).resolves.toMatchObject({ statusCode: 400 });
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(delay).not.toHaveBeenCalled();
+  });
+
+  it("does not retry a malformed partial response", async () => {
+    const envelopes = [createEnvelope("first")];
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValue(new Response("invalid response", { status: 206 }));
+    const delay = vi.fn<(delayMs: number) => Promise<void>>().mockResolvedValue(undefined);
+    const sender = new Sender({
+      endpoint: "https://example.test/v2.1/track",
+      fetch,
+      delay,
+    });
+
+    await expect(
+      sender.send({
+        body: new TextEncoder().encode(JSON.stringify(envelopes)),
+        contentType: "application/json",
+        envelopes,
+      }),
+    ).resolves.toMatchObject({ statusCode: 206 });
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(delay).not.toHaveBeenCalled();
+  });
+
+  it("stops after the maximum retry count", async () => {
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockImplementation(() => Promise.resolve(new Response("unavailable", { status: 503 })));
+    const delay = vi.fn<(delayMs: number) => Promise<void>>().mockResolvedValue(undefined);
+    const sender = new Sender({
+      endpoint: "https://example.test/v2.1/track",
+      fetch,
+      delay,
+      random: () => 0,
+    });
+
+    await expect(
+      sender.send({ body: new TextEncoder().encode("telemetry"), contentType: "application/json" }),
+    ).resolves.toMatchObject({ statusCode: 503 });
+    expect(fetch).toHaveBeenCalledTimes(4);
+    expect(delay).toHaveBeenCalledTimes(3);
+  });
+
+  it("does not schedule a retry during unload", async () => {
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValue(new Response("unavailable", { status: 503 }));
+    const delay = vi.fn<(delayMs: number) => Promise<void>>().mockResolvedValue(undefined);
+    const sender = new Sender({
+      endpoint: "https://example.test/v2.1/track",
+      fetch,
+      delay,
+    });
+
+    await expect(
+      sender.send({
+        body: new TextEncoder().encode("telemetry"),
+        contentType: "application/json",
+        unloading: true,
+      }),
+    ).resolves.toMatchObject({ statusCode: 503 });
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(delay).not.toHaveBeenCalled();
+  });
 });
+
+function createEnvelope(name: string): AzureMonitorEnvelope {
+  return {
+    name,
+    time: "2026-09-23T00:00:00.000Z",
+    iKey: "00000000-0000-0000-0000-000000000000",
+    sampleRate: 100,
+    tags: {},
+    ver: 1,
+    data: {
+      baseType: "EventData",
+      baseData: { ver: 2, name },
+    },
+  };
+}
 
 async function decompress(body: Uint8Array<ArrayBuffer>): Promise<Uint8Array<ArrayBuffer>> {
   const stream = new Blob([body]).stream().pipeThrough(new DecompressionStream("gzip"));
