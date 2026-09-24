@@ -26,6 +26,7 @@ export const instrumentation: BrowserInstrumentation = {
   disable() {},
 };
 export const options: MicrosoftOpenTelemetryBrowserOptions = {
+  session: { enabled: true },
   instrumentations: Object.freeze([instrumentation]),
   spanProcessors: [
     new BatchSpanProcessor(
@@ -47,8 +48,9 @@ useMicrosoftOpenTelemetry({ samplingRatio: 1 });
 useMicrosoftOpenTelemetry({ serviceName: "consumer" });
 // @ts-expect-error Upstream SDK controls are not exposed by the distro.
 useMicrosoftOpenTelemetry({ disabled: true });
-// @ts-expect-error Sessions are managed internally with fixed defaults.
 useMicrosoftOpenTelemetry({ session: { enabled: false } });
+// @ts-expect-error Session timeouts remain internal fixed defaults.
+useMicrosoftOpenTelemetry({ session: { inactivityTimeout: 60 } });
 // @ts-expect-error Configure exporters through standard processors, not distro-specific options.
 useMicrosoftOpenTelemetry({ otlp: { endpoint: "https://example.test" } });
 // @ts-expect-error Configure exporters through standard processors, not upstream exportConfig.

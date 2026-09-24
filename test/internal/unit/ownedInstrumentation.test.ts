@@ -84,6 +84,7 @@ describe("distribution-owned instrumentation", () => {
     const pageView = { routeResolver: () => "/original-route" };
     const pushState = history.pushState;
     const pending = useMicrosoftOpenTelemetry({
+      session: { enabled: true },
       spanProcessors: [],
       logRecordProcessors: processors,
       pageView,

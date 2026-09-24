@@ -4,10 +4,7 @@
 import { diag, trace } from "@opentelemetry/api";
 import { logs } from "@opentelemetry/api-logs";
 import { startBrowserSdk } from "@opentelemetry/browser-sdk";
-import {
-  createSessionLogRecordProcessor,
-  createSessionSpanProcessor,
-} from "@opentelemetry/browser-sdk/session";
+import { SessionLogRecordProcessor, SessionSpanProcessor } from "./session/sessionProcessors.js";
 import { createSession } from "./session/createSession.js";
 import { PageViewInstrumentation } from "./instrumentation/pageView/index.js";
 import type {
@@ -45,14 +42,14 @@ function createOwnedInstrumentations(
 }
 
 /**
- * Restores the session, then initializes traces, logs, and selected instrumentations.
+ * Restores the session when enabled, then initializes traces, logs, and selected instrumentations.
  * Await completion before emitting telemetry.
  * @public
  */
 export async function useMicrosoftOpenTelemetry(
   options: MicrosoftOpenTelemetryBrowserOptions = {},
 ): Promise<MicrosoftOpenTelemetryBrowser> {
-  const session = createSession();
+  const session = options.session?.enabled === true ? createSession() : undefined;
   const spanProcessors = options.spanProcessors?.slice();
   const logRecordProcessors = options.logRecordProcessors?.slice();
   // Distribution-owned instrumentations come last, so an application-supplied instance observing
@@ -65,7 +62,7 @@ export async function useMicrosoftOpenTelemetry(
   let stopping = false;
   // Upstream stale tracers can still call processors after provider shutdown.
   const sessionProvider = {
-    getSessionId: () => (stopping ? null : session.getSessionId()),
+    getSessionId: () => (stopping ? null : (session?.getSessionId() ?? null)),
   };
 
   let shutdownPromise: Promise<void> | undefined;
@@ -74,7 +71,7 @@ export async function useMicrosoftOpenTelemetry(
       stopping = true;
       const errors: unknown[] = [];
       try {
-        session.shutdown();
+        session?.shutdown();
       } catch (error) {
         errors.push(error);
       }
@@ -96,19 +93,20 @@ export async function useMicrosoftOpenTelemetry(
   }
 
   try {
-    await session.start();
+    await session?.start();
     sdk = startBrowserSdk({
       traces: {
-        processors: [createSessionSpanProcessor(sessionProvider), ...(spanProcessors ?? [])],
+        processors: session
+          ? [new SessionSpanProcessor(sessionProvider), ...(spanProcessors ?? [])]
+          : spanProcessors,
         // Supplying enrichment processors must not disable upstream default export.
-        ...(spanProcessors === undefined ? { exportConfig: {} } : {}),
+        ...(session && spanProcessors === undefined ? { exportConfig: {} } : {}),
       },
       logs: {
-        processors: [
-          createSessionLogRecordProcessor(sessionProvider),
-          ...(logRecordProcessors ?? []),
-        ],
-        ...(logRecordProcessors === undefined ? { exportConfig: {} } : {}),
+        processors: session
+          ? [new SessionLogRecordProcessor(sessionProvider), ...(logRecordProcessors ?? [])]
+          : logRecordProcessors,
+        ...(session && logRecordProcessors === undefined ? { exportConfig: {} } : {}),
       },
     });
     const tracerProvider = trace.getTracerProvider();

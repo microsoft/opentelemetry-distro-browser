@@ -36,7 +36,10 @@ it.each(["index.js", "index.min.js"])(
     const pipeline = createInMemoryPipeline();
     const tracer = trace.getTracer("browser-consumer");
     const logger = logs.getLogger("browser-consumer");
-    const telemetry = await distro.useMicrosoftOpenTelemetry(pipeline.options);
+    const telemetry = await distro.useMicrosoftOpenTelemetry({
+      ...pipeline.options,
+      session: { enabled: true },
+    });
     try {
       const span = tracer.startSpan("before-init");
       logger.emit({
@@ -57,6 +60,22 @@ it.each(["index.js", "index.min.js"])(
       for (const record of [...spans, ...records]) {
         expect(record.attributes["session.id"]).toBe(sessionId);
       }
+      tracer
+        .startSpan("application-session", {
+          attributes: { "session.id": "application-span" },
+        })
+        .end();
+      logger.emit({
+        eventName: "application-session",
+        attributes: { "session.id": "application-log" },
+      });
+      await Promise.all([pipeline.spanProcessor.forceFlush(), pipeline.logProcessor.forceFlush()]);
+      expect(pipeline.spanExporter.getFinishedSpans().at(-1)?.attributes["session.id"]).toBe(
+        "application-span",
+      );
+      expect(pipeline.logExporter.getFinishedLogRecords().at(-1)?.attributes["session.id"]).toBe(
+        "application-log",
+      );
     } finally {
       await telemetry.shutdown();
     }

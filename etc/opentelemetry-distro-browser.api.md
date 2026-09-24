@@ -41,6 +41,9 @@ export interface MicrosoftOpenTelemetryBrowserOptions {
     instrumentations?: readonly BrowserInstrumentation[];
     logRecordProcessors?: LogRecordProcessor[];
     pageView?: PageViewInstrumentationConfig;
+    session?: {
+        enabled?: boolean;
+    };
     spanProcessors?: SpanProcessor[];
 }
 

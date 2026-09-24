@@ -91,6 +91,13 @@ export interface BrowserInstrumentation {
  * @public
  */
 export interface MicrosoftOpenTelemetryBrowserOptions {
+  /**
+   * Opt-in session tracking. Set enabled to true to persist sessions in localStorage and
+   * supply missing session.id attributes on spans and logs. Uses a 30-minute inactivity
+   * timeout with no maximum lifetime; application-provided IDs are preserved.
+   * Omitted or disabled session tracking does not access session storage or start session timers.
+   */
+  session?: { enabled?: boolean };
   /** Span processors to register with the tracer provider. */
   spanProcessors?: SpanProcessor[];
   /** Log record processors to register with the logger provider. */
@@ -129,7 +136,8 @@ export interface MicrosoftOpenTelemetryBrowserOptions {
  */
 export interface MicrosoftOpenTelemetryBrowser {
   /**
-   * Disables registered instrumentations, then shuts down trace and log providers and sessions.
+   * Stops session timers immediately, then disables registered instrumentations and shuts down
+   * trace and log providers.
    * Does not unregister global APIs. Cleanup continues if an instrumentation throws,
    * and the returned promise rejects with the cleanup failure(s).
    */

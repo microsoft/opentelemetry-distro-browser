@@ -21,7 +21,10 @@ it("exposes distro-owned configuration and lifecycle contracts", () => {
     Promise<MicrosoftOpenTelemetryBrowser>
   >();
   expectTypeOf<keyof MicrosoftOpenTelemetryBrowserOptions>().toEqualTypeOf<
-    "spanProcessors" | "logRecordProcessors" | "instrumentations" | "pageView"
+    "spanProcessors" | "logRecordProcessors" | "instrumentations" | "pageView" | "session"
+  >();
+  expectTypeOf<MicrosoftOpenTelemetryBrowserOptions["session"]>().toEqualTypeOf<
+    { enabled?: boolean } | undefined
   >();
   expectTypeOf<MicrosoftOpenTelemetryBrowserOptions["spanProcessors"]>().toEqualTypeOf<
     SpanProcessor[] | undefined

@@ -41,6 +41,7 @@ afterEach(async () => {
 
 it("prepends session enrichment without changing the caller's processor arrays", async () => {
   const options: MicrosoftOpenTelemetryBrowserOptions = {
+    session: { enabled: true },
     spanProcessors: [],
     logRecordProcessors: [],
   };
@@ -114,9 +115,14 @@ it("exports correlated manual telemetry through custom processors", async () => 
   expect(pipeline.options.logRecordProcessors).toEqual([pipeline.logProcessor]);
 });
 
-it.each([undefined, []])(
+it.each([
+  { enabled: true, processors: undefined },
+  { enabled: true, processors: [] },
+  { enabled: false, processors: undefined },
+  { enabled: false, processors: [] },
+])(
   "preserves default export versus explicit processor arrays (%j)",
-  async (processors) => {
+  async ({ enabled, processors }) => {
     const spanExport = vi
       .spyOn(OTLPTraceExporter.prototype, "export")
       .mockImplementation((_spans, callback) => callback({ code: 0 }));
@@ -124,6 +130,7 @@ it.each([undefined, []])(
       .spyOn(OTLPLogExporter.prototype, "export")
       .mockImplementation((_records, callback) => callback({ code: 0 }));
     const handle = await useMicrosoftOpenTelemetry({
+      session: { enabled },
       spanProcessors: processors,
       logRecordProcessors: processors,
     });
@@ -135,7 +142,8 @@ it.each([undefined, []])(
       expect(spanExport).toHaveBeenCalledOnce();
       expect(logExport).toHaveBeenCalledOnce();
       const id = spanExport.mock.calls[0][0][0].attributes["session.id"];
-      expect(id).toMatch(/^[0-9a-f]{32}$/);
+      if (enabled) expect(id).toMatch(/^[0-9a-f]{32}$/);
+      else expect(id).toBeUndefined();
       expect(logExport.mock.calls[0][0][0].attributes["session.id"]).toBe(id);
     } else {
       expect(spanExport).not.toHaveBeenCalled();

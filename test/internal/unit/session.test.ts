@@ -10,6 +10,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import {
   useMicrosoftOpenTelemetry,
   type MicrosoftOpenTelemetryBrowser,
+  type MicrosoftOpenTelemetryBrowserOptions,
 } from "../../../src/index.js";
 
 vi.mock("@opentelemetry/browser-sdk", { spy: true });
@@ -50,10 +51,14 @@ afterEach(async () => {
   }
 });
 
-async function initialize(shutdown: () => Promise<void> = async () => {}) {
+async function initialize(
+  shutdown: () => Promise<void> = async () => {},
+  options: Pick<MicrosoftOpenTelemetryBrowserOptions, "session"> = { session: { enabled: true } },
+) {
   const spans: Span[] = [];
   const records: ReadWriteLogRecord[] = [];
   const handle = await useMicrosoftOpenTelemetry({
+    ...options,
     pageView: { enabled: false },
     spanProcessors: [
       {
@@ -86,7 +91,7 @@ async function initialize(shutdown: () => Promise<void> = async () => {}) {
   return { handle, emit, spans, records };
 }
 
-it("automatically generates and persists the same session ID before user processors run", async () => {
+it("generates and persists the same session ID when explicitly enabled", async () => {
   const { emit } = await initialize();
   const id = emit();
   expect(id).toMatch(/^[0-9a-f]{32}$/);
@@ -96,6 +101,47 @@ it("automatically generates and persists the same session ID before user process
   });
   expect(emit()).toBe(id);
 });
+
+it.each([undefined, {}, { enabled: false }])(
+  "does not access storage, create timers, or enrich telemetry without opt-in (%j)",
+  async (session) => {
+    localStorage.setItem(
+      storageKey,
+      JSON.stringify({ id: "previous", startTimestamp: Date.now() }),
+    );
+    const access = vi.spyOn(window, "localStorage", "get");
+    const { emit, spans, records } = await initialize(undefined, { session });
+    expect(emit()).toBeUndefined();
+    trace
+      .getTracer("application")
+      .startSpan("manual", {
+        attributes: { "session.id": "application-span" },
+      })
+      .end();
+    logs.getLogger("application").emit({ attributes: { "session.id": "application-log" } });
+    expect(spans.at(-1)?.attributes["session.id"]).toBe("application-span");
+    expect(records.at(-1)?.attributes["session.id"]).toBe("application-log");
+    expect(access).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  },
+);
+
+it.each(["application-session", ""])(
+  "preserves application-provided session IDs (%j) and enriches only missing IDs",
+  async (id) => {
+    const { emit, spans, records } = await initialize();
+    trace
+      .getTracer("application")
+      .startSpan("manual", { attributes: { "session.id": id } })
+      .end();
+    logs.getLogger("application").emit({ attributes: { "session.id": id } });
+    expect(spans.at(-1)?.attributes["session.id"]).toBe(id);
+    expect(records.at(-1)?.attributes["session.id"]).toBe(id);
+    const generated = emit();
+    expect(generated).toMatch(/^[0-9a-f]{32}$/);
+    expect(generated).not.toBe(id);
+  },
+);
 
 it("awaits persisted restoration before starting providers or enabling instrumentation", async () => {
   const restored = { id: "restored-session", startTimestamp: Date.now() - 1000 };
@@ -108,6 +154,7 @@ it("awaits persisted restoration before starting providers or enabling instrumen
   const spanIds: unknown[] = [];
   const logIds: unknown[] = [];
   const pending = useMicrosoftOpenTelemetry({
+    session: { enabled: true },
     pageView: { enabled: false },
     spanProcessors: [
       {
@@ -286,7 +333,7 @@ it.each(["getItem", "setItem"] as const)(
     vi.spyOn(Storage.prototype, operation).mockImplementation(() => {
       throw failure;
     });
-    await expect(useMicrosoftOpenTelemetry()).rejects.toBe(failure);
+    await expect(useMicrosoftOpenTelemetry({ session: { enabled: true } })).rejects.toBe(failure);
     expect(startBrowserSdk).not.toHaveBeenCalled();
   },
 );
@@ -296,7 +343,7 @@ it("stops session timers on SDK startup failure", async () => {
   vi.mocked(startBrowserSdk).mockImplementationOnce(() => {
     throw failure;
   });
-  await expect(useMicrosoftOpenTelemetry()).rejects.toBe(failure);
+  await expect(useMicrosoftOpenTelemetry({ session: { enabled: true } })).rejects.toBe(failure);
   expect(vi.getTimerCount()).toBe(0);
 });
 
@@ -307,6 +354,7 @@ it("stops session timers even when instrumentation and SDK shutdown fail", async
     shutdown: vi.fn().mockRejectedValue(sdkFailure),
   });
   const handle = await useMicrosoftOpenTelemetry({
+    session: { enabled: true },
     pageView: { enabled: false },
     instrumentations: [
       {
@@ -331,6 +379,7 @@ it("cleans up session timers when instrumentation initialization rolls back", as
   const failure = new Error("enable failed");
   await expect(
     useMicrosoftOpenTelemetry({
+      session: { enabled: true },
       spanProcessors: [],
       logRecordProcessors: [],
       instrumentations: [
@@ -403,6 +452,7 @@ it("stops session timers while failed initialization waits for provider shutdown
   const disableFailure = new Error("disable failed");
   const report = vi.spyOn(diag, "error").mockImplementation(() => {});
   const initialization = useMicrosoftOpenTelemetry({
+    session: { enabled: true },
     pageView: { enabled: false },
     spanProcessors: [
       {
