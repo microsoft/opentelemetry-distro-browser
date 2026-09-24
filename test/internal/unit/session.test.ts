@@ -98,6 +98,7 @@ it("generates and persists the same session ID when explicitly enabled", async (
   expect(JSON.parse(localStorage.getItem(storageKey)!)).toEqual({
     id,
     startTimestamp: Date.now(),
+    lastActivityTimestamp: Date.now(),
   });
   expect(emit()).toBe(id);
 });
@@ -210,21 +211,141 @@ it.each(["", "{malformed-private-payload", "null"])(
     expect(JSON.parse(localStorage.getItem(storageKey)!)).toEqual({
       id,
       startTimestamp: Date.now(),
+      lastActivityTimestamp: Date.now(),
     });
     expect(warn).toHaveBeenCalledExactlyOnceWith("Invalid stored session; creating a new session.");
   },
 );
 
-it("restores the persisted session across initialization and restarts inactivity countdown", async () => {
+it.each([1799_999, 1800_000, 1800_001])(
+  "restores only sessions idle for less than 30 minutes across reloads (%i ms)",
+  async (idleMs) => {
+    const first = await initialize();
+    const id = first.emit();
+    await first.handle.shutdown();
+    resetApis();
+    await vi.advanceTimersByTimeAsync(idleMs);
+    const second = await initialize();
+    if (idleMs < 1800_000) expect(second.emit()).toBe(id);
+    else expect(second.emit()).not.toBe(id);
+  },
+);
+
+it.each(["span", "log"])(
+  "persists recent %s activity so an old but active session survives reload",
+  async (signal) => {
+    const first = await initialize();
+    const id = first.emit();
+    const started = Date.now();
+    for (let i = 0; i < 2; i++) {
+      await vi.advanceTimersByTimeAsync(20 * 60_000);
+      if (signal === "span") trace.getTracer("activity").startSpan("activity").end();
+      else logs.getLogger("activity").emit({ eventName: "activity" });
+    }
+    expect(JSON.parse(localStorage.getItem(storageKey)!)).toEqual({
+      id,
+      startTimestamp: started,
+      lastActivityTimestamp: Date.now(),
+    });
+    await first.handle.shutdown();
+    resetApis();
+    await vi.advanceTimersByTimeAsync(20 * 60_000);
+    const second = await initialize();
+    expect(second.emit()).toBe(id);
+  },
+);
+
+it.each([1799_999, 1800_000])(
+  "uses creation time to conservatively expire legacy sessions without activity timestamps (%i ms)",
+  async (age) => {
+    vi.setSystemTime(10_000_000);
+    localStorage.setItem(
+      storageKey,
+      JSON.stringify({
+        id: "legacy-session",
+        startTimestamp: Date.now() - age,
+      }),
+    );
+    const { emit } = await initialize();
+    if (age < 1800_000) expect(emit()).toBe("legacy-session");
+    else expect(emit()).not.toBe("legacy-session");
+  },
+);
+
+it.each([null, "bad", -1, 1e100])(
+  "rejects invalid or future persisted activity timestamps (%j)",
+  async (lastActivityTimestamp) => {
+    localStorage.setItem(
+      storageKey,
+      JSON.stringify({
+        id: "invalid-session",
+        startTimestamp: Date.now(),
+        lastActivityTimestamp,
+      }),
+    );
+    const warn = vi.spyOn(diag, "warn").mockImplementation(() => {});
+    const { emit } = await initialize();
+    expect(emit()).not.toBe("invalid-session");
+    expect(warn).toHaveBeenCalledExactlyOnceWith("Invalid stored session; creating a new session.");
+  },
+);
+
+it("does not persist timer renewal or shutdown as user activity", async () => {
+  const first = await initialize();
+  first.emit();
+  const activity = Date.now();
+  await vi.advanceTimersByTimeAsync(2 * 1800_000);
+  const idleSession = JSON.parse(localStorage.getItem(storageKey)!);
+  expect(idleSession.lastActivityTimestamp).toBe(activity);
+  await first.handle.shutdown();
+  expect(JSON.parse(localStorage.getItem(storageKey)!).lastActivityTimestamp).toBe(activity);
+  resetApis();
+  const second = await initialize();
+  expect(second.emit()).not.toBe(idleSession.id);
+});
+
+it("coalesces activity writes within the same millisecond", async () => {
+  const { emit } = await initialize();
+  const write = vi.spyOn(Storage.prototype, "setItem");
+  await vi.advanceTimersByTimeAsync(1);
+  emit();
+  emit();
+  expect(write).toHaveBeenCalledOnce();
+  await vi.advanceTimersByTimeAsync(1);
+  emit();
+  expect(write).toHaveBeenCalledTimes(2);
+});
+
+it("does not extend persisted activity merely by restoring a session", async () => {
   const first = await initialize();
   const id = first.emit();
+  const lastActivity = Date.now();
   await first.handle.shutdown();
   resetApis();
-  await vi.advanceTimersByTimeAsync(2 * 1800_000);
-  const second = await initialize();
-  expect(second.emit()).toBe(id);
-  await vi.advanceTimersByTimeAsync(1800_000);
-  expect(second.emit()).not.toBe(id);
+  await vi.advanceTimersByTimeAsync(20 * 60_000);
+  const restored = await initialize();
+  expect(JSON.parse(localStorage.getItem(storageKey)!).lastActivityTimestamp).toBe(lastActivity);
+  await restored.handle.shutdown();
+  resetApis();
+  await vi.advanceTimersByTimeAsync(10 * 60_000);
+  expect((await initialize()).emit()).not.toBe(id);
+});
+
+it("keeps the in-memory session if persisting later activity becomes unavailable", async () => {
+  const { emit } = await initialize();
+  const id = emit();
+  const warn = vi.spyOn(diag, "warn").mockImplementation(() => {});
+  const write = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+    throw new DOMException("denied", "QuotaExceededError");
+  });
+  await vi.advanceTimersByTimeAsync(1000);
+  expect(emit()).toBe(id);
+  await vi.advanceTimersByTimeAsync(1000);
+  expect(emit()).toBe(id);
+  expect(write).toHaveBeenCalledOnce();
+  expect(warn).toHaveBeenCalledExactlyOnceWith(
+    "Session storage unavailable; using an in-memory session.",
+  );
 });
 
 it.each([
@@ -246,6 +367,7 @@ it.each([
   expect(JSON.parse(localStorage.getItem(storageKey)!)).toEqual({
     id,
     startTimestamp: Date.now(),
+    lastActivityTimestamp: Date.now(),
   });
   expect(warn).toHaveBeenCalledExactlyOnceWith("Invalid stored session; creating a new session.");
 });

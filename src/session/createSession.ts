@@ -6,12 +6,14 @@ import {
   createDefaultSessionIdGenerator,
   createSessionManager,
 } from "@opentelemetry/browser-sdk/session";
-import type { SessionStore } from "@opentelemetry/browser-sdk/session";
+import type { Session, SessionStore } from "@opentelemetry/browser-sdk/session";
 
 const storageKey = "opentelemetry-session";
+const inactivityTimeoutSeconds = 30 * 60;
 
-function createDefaultStore(): SessionStore {
+function createDefaultStore() {
   let unavailable = false;
+  let lastActivityTimestamp = Date.now();
 
   function useStorage<T>(operation: () => T, fallback: T): T {
     if (unavailable) return fallback;
@@ -30,7 +32,7 @@ function createDefaultStore(): SessionStore {
     return fallback;
   }
 
-  return {
+  const store: SessionStore = {
     get() {
       // The upstream store collapses malformed JSON and stored null into an absent key.
       const stored = useStorage(() => localStorage.getItem(storageKey), null);
@@ -52,23 +54,64 @@ function createDefaultStore(): SessionStore {
         Number.isFinite(session.startTimestamp) &&
         session.startTimestamp >= 0
       ) {
-        return Promise.resolve({ id: session.id, startTimestamp: session.startTimestamp });
+        // Older records only contain creation time; do not give them a fresh inactivity window.
+        const lastActivity =
+          "lastActivityTimestamp" in session
+            ? session.lastActivityTimestamp
+            : session.startTimestamp;
+        if (
+          typeof lastActivity === "number" &&
+          Number.isFinite(lastActivity) &&
+          lastActivity >= 0 &&
+          lastActivity <= Date.now()
+        ) {
+          if (Date.now() - lastActivity >= inactivityTimeoutSeconds * 1000) {
+            return Promise.resolve(null);
+          }
+          lastActivityTimestamp = lastActivity;
+          return Promise.resolve({ id: session.id, startTimestamp: session.startTimestamp });
+        }
       }
       diag.warn("Invalid stored session; creating a new session.");
       return Promise.resolve(null);
     },
     save(session) {
       // The manager does not await saves; unexpected storage failures must throw synchronously.
-      useStorage(() => localStorage.setItem(storageKey, JSON.stringify(session)), undefined);
+      useStorage(
+        () =>
+          localStorage.setItem(storageKey, JSON.stringify({ ...session, lastActivityTimestamp })),
+        undefined,
+      );
       return Promise.resolve();
+    },
+  };
+  return {
+    store,
+    recordActivity: (session: Session) => {
+      const now = Date.now();
+      if (now === lastActivityTimestamp) return;
+      lastActivityTimestamp = now;
+      // Timer-driven session rotation is not activity; only telemetry updates this timestamp.
+      void store.save(session);
     },
   };
 }
 
+/** Adds persisted last-activity expiry to the upstream manager's in-page session lifecycle. */
 export function createSession() {
-  return createSessionManager({
-    inactivityTimeout: 30 * 60,
+  const { store, recordActivity } = createDefaultStore();
+  const manager = createSessionManager({
+    inactivityTimeout: inactivityTimeoutSeconds,
     sessionIdGenerator: createDefaultSessionIdGenerator(),
-    sessionStore: createDefaultStore(),
+    sessionStore: store,
   });
+  return {
+    start: () => manager.start(),
+    shutdown: () => manager.shutdown(),
+    getSessionId() {
+      const session = manager.getSession();
+      recordActivity(session);
+      return session.id;
+    },
+  };
 }
