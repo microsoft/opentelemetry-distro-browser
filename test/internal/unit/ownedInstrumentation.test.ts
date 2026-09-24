@@ -3,8 +3,6 @@
 
 import { logs } from "@opentelemetry/api-logs";
 import { context, diag, propagation, trace } from "@opentelemetry/api";
-import { LocalStorageSessionStore } from "@opentelemetry/browser-sdk/session";
-import type { Session } from "@opentelemetry/browser-sdk/session";
 import type { LogRecordProcessor } from "@opentelemetry/sdk-logs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useMicrosoftOpenTelemetry } from "../../../src/useMicrosoftOpenTelemetry.js";
@@ -29,6 +27,8 @@ class RecordingProcessor implements LogRecordProcessor {
 }
 
 const originalUrl = location.href;
+const storageKey = "opentelemetry-session";
+let previousSession: string | null;
 let sdk: MicrosoftOpenTelemetryBrowser | undefined;
 
 /** Resolves after the browser has painted and the main thread has gone idle. */
@@ -48,6 +48,7 @@ function pageViewCount(processor: RecordingProcessor): number {
 
 beforeEach(() => {
   history.replaceState(null, "", originalUrl);
+  previousSession = localStorage.getItem(storageKey);
 });
 
 afterEach(async () => {
@@ -60,15 +61,15 @@ afterEach(async () => {
   diag.disable();
   vi.restoreAllMocks();
   history.replaceState(null, "", originalUrl);
+  if (previousSession === null) localStorage.removeItem(storageKey);
+  else localStorage.setItem(storageKey, previousSession);
 });
 
 describe("distribution-owned instrumentation", () => {
   it("restores the session before enabling page views and snapshots settings while awaiting", async () => {
-    let restore!: (session: Session) => void;
-    vi.spyOn(LocalStorageSessionStore.prototype, "get").mockReturnValueOnce(
-      new Promise<Session>((resolve) => {
-        restore = resolve;
-      }),
+    localStorage.setItem(
+      storageKey,
+      JSON.stringify({ id: "restored-page-view-session", startTimestamp: Date.now() }),
     );
     const records: { eventName?: string; attributes: Record<string, unknown> }[] = [];
     const processors: LogRecordProcessor[] = [
@@ -87,12 +88,10 @@ describe("distribution-owned instrumentation", () => {
       logRecordProcessors: processors,
       pageView,
     });
-    await settle();
     expect(records).toEqual([]);
     expect(history.pushState).toBe(pushState);
     processors.length = 0;
     pageView.routeResolver = () => "/changed-route";
-    restore({ id: "restored-page-view-session", startTimestamp: Date.now() });
     sdk = await pending;
     await settle();
     expect(records).toEqual([

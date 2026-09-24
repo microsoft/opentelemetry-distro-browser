@@ -73,6 +73,11 @@ export async function useMicrosoftOpenTelemetry(
     return (shutdownPromise ??= (async () => {
       stopping = true;
       const errors: unknown[] = [];
+      try {
+        session.shutdown();
+      } catch (error) {
+        errors.push(error);
+      }
       for (let i = sdk ? instrumentations.length - 1 : -1; i >= 0; i--) {
         try {
           instrumentations[i].disable();
@@ -84,8 +89,6 @@ export async function useMicrosoftOpenTelemetry(
         await sdk?.shutdown();
       } catch (error) {
         errors.push(error);
-      } finally {
-        session.shutdown();
       }
       if (errors.length === 1) throw errors[0];
       if (errors.length > 1) throw new AggregateError(errors, "Telemetry shutdown failed");

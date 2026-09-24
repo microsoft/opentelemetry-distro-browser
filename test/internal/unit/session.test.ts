@@ -4,8 +4,6 @@
 import { context, diag, propagation, trace } from "@opentelemetry/api";
 import { logs } from "@opentelemetry/api-logs";
 import { startBrowserSdk } from "@opentelemetry/browser-sdk";
-import { LocalStorageSessionStore } from "@opentelemetry/browser-sdk/session";
-import type { Session } from "@opentelemetry/browser-sdk/session";
 import type { ReadWriteLogRecord } from "@opentelemetry/sdk-logs";
 import type { Span } from "@opentelemetry/sdk-trace-base";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -52,7 +50,7 @@ afterEach(async () => {
   }
 });
 
-async function initialize() {
+async function initialize(shutdown: () => Promise<void> = async () => {}) {
   const spans: Span[] = [];
   const records: ReadWriteLogRecord[] = [];
   const handle = await useMicrosoftOpenTelemetry({
@@ -64,7 +62,7 @@ async function initialize() {
         },
         onEnd() {},
         async forceFlush() {},
-        async shutdown() {},
+        shutdown,
       },
     ],
     logRecordProcessors: [
@@ -101,12 +99,8 @@ it("automatically generates and persists the same session ID before user process
 
 it("awaits persisted restoration before starting providers or enabling instrumentation", async () => {
   const restored = { id: "restored-session", startTimestamp: Date.now() - 1000 };
-  let restore!: (session: Session) => void;
-  vi.spyOn(LocalStorageSessionStore.prototype, "get").mockReturnValueOnce(
-    new Promise<Session>((resolve) => {
-      restore = resolve;
-    }),
-  );
+  localStorage.setItem(storageKey, JSON.stringify(restored));
+  const read = vi.spyOn(Storage.prototype, "getItem");
   const enable = vi.fn(() => {
     trace.getTracer("instrumentation").startSpan("first").end();
     logs.getLogger("instrumentation").emit({ eventName: "first" });
@@ -145,11 +139,34 @@ it("awaits persisted restoration before starting providers or enabling instrumen
   });
   expect(startBrowserSdk).not.toHaveBeenCalled();
   expect(enable).not.toHaveBeenCalled();
-  restore(restored);
   handles.add(await pending);
+  expect(read).toHaveBeenCalledExactlyOnceWith(storageKey);
   expect(spanIds).toEqual([restored.id]);
   expect(logIds).toEqual([restored.id]);
 });
+
+it("creates a session without an invalid-storage warning when the storage key is absent", async () => {
+  const warn = vi.spyOn(diag, "warn").mockImplementation(() => {});
+  const { emit } = await initialize();
+  expect(emit()).toMatch(/^[0-9a-f]{32}$/);
+  expect(warn).not.toHaveBeenCalled();
+});
+
+it.each(["", "{malformed-private-payload", "null"])(
+  "replaces corrupt stored JSON (%j) with a diagnostic that excludes the payload",
+  async (stored) => {
+    localStorage.setItem(storageKey, stored);
+    const warn = vi.spyOn(diag, "warn").mockImplementation(() => {});
+    const { emit } = await initialize();
+    const id = emit();
+    expect(id).toMatch(/^[0-9a-f]{32}$/);
+    expect(JSON.parse(localStorage.getItem(storageKey)!)).toEqual({
+      id,
+      startTimestamp: Date.now(),
+    });
+    expect(warn).toHaveBeenCalledExactlyOnceWith("Invalid stored session; creating a new session.");
+  },
+);
 
 it("restores the persisted session across initialization and restarts inactivity countdown", async () => {
   const first = await initialize();
@@ -262,14 +279,17 @@ it.each(["getter", "read", "write", "missing"])(
   },
 );
 
-it("does not mask unexpected storage errors or start providers on restoration failure", async () => {
-  const failure = new Error("unexpected storage failure");
-  vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
-    throw failure;
-  });
-  await expect(useMicrosoftOpenTelemetry()).rejects.toBe(failure);
-  expect(startBrowserSdk).not.toHaveBeenCalled();
-});
+it.each(["getItem", "setItem"] as const)(
+  "does not mask unexpected storage errors or start providers on %s failure",
+  async (operation) => {
+    const failure = new Error("unexpected storage failure");
+    vi.spyOn(Storage.prototype, operation).mockImplementation(() => {
+      throw failure;
+    });
+    await expect(useMicrosoftOpenTelemetry()).rejects.toBe(failure);
+    expect(startBrowserSdk).not.toHaveBeenCalled();
+  },
+);
 
 it("stops session timers on SDK startup failure", async () => {
   const failure = new Error("SDK startup failed");
@@ -337,4 +357,94 @@ it("stale tracer and logger handles do not restart session timers after shutdown
   tracer.startSpan("after-shutdown").end();
   logger.emit({ eventName: "after-shutdown" });
   expect(vi.getTimerCount()).toBe(0);
+});
+
+it("stops session timers and persistence before pending provider shutdown completes", async () => {
+  let finishShutdown!: () => void;
+  const deferred = new Promise<void>((resolve) => {
+    finishShutdown = resolve;
+  });
+  const providerShutdown = vi.fn(() => deferred);
+  const { handle, emit } = await initialize(providerShutdown);
+  emit();
+  const tracer = trace.getTracer("stale");
+  const logger = logs.getLogger("stale");
+  const write = vi.spyOn(Storage.prototype, "setItem");
+  const shutdown = handle.shutdown();
+  let completed = false;
+  void shutdown.then(() => {
+    completed = true;
+  });
+  try {
+    expect(providerShutdown).toHaveBeenCalledOnce();
+    expect(vi.getTimerCount()).toBe(0);
+    await vi.advanceTimersByTimeAsync(2 * 1800_000);
+    tracer.startSpan("during-shutdown").end();
+    logger.emit({ eventName: "during-shutdown" });
+    expect(vi.getTimerCount()).toBe(0);
+    expect(write).not.toHaveBeenCalled();
+    expect(completed).toBe(false);
+  } finally {
+    finishShutdown();
+    await shutdown;
+  }
+});
+
+it("stops session timers while failed initialization waits for provider shutdown", async () => {
+  let finishShutdown!: () => void;
+  const deferred = new Promise<void>((resolve) => {
+    finishShutdown = resolve;
+  });
+  let notifyShutdownStarted!: () => void;
+  const shutdownStarted = new Promise<void>((resolve) => {
+    notifyShutdownStarted = resolve;
+  });
+  const failure = new Error("enable failed");
+  const disableFailure = new Error("disable failed");
+  const report = vi.spyOn(diag, "error").mockImplementation(() => {});
+  const initialization = useMicrosoftOpenTelemetry({
+    pageView: { enabled: false },
+    spanProcessors: [
+      {
+        onStart() {},
+        onEnd() {},
+        async forceFlush() {},
+        shutdown() {
+          notifyShutdownStarted();
+          return deferred;
+        },
+      },
+    ],
+    logRecordProcessors: [],
+    instrumentations: [
+      {
+        setTracerProvider() {},
+        getConfig: () => ({ enabled: false }),
+        enable() {
+          throw failure;
+        },
+        disable() {
+          throw disableFailure;
+        },
+      },
+    ],
+  });
+  const rejected = expect(initialization).rejects.toBe(failure);
+  try {
+    await shutdownStarted;
+    const write = vi.spyOn(Storage.prototype, "setItem");
+    expect(vi.getTimerCount()).toBe(0);
+    await vi.advanceTimersByTimeAsync(2 * 1800_000);
+    trace.getTracer("rollback").startSpan("after-rollback").end();
+    logs.getLogger("rollback").emit({ eventName: "after-rollback" });
+    expect(vi.getTimerCount()).toBe(0);
+    expect(write).not.toHaveBeenCalled();
+  } finally {
+    finishShutdown();
+    await rejected;
+  }
+  expect(report).toHaveBeenCalledExactlyOnceWith(
+    "Telemetry initialization cleanup failed",
+    disableFailure,
+  );
 });

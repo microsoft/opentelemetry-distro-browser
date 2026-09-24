@@ -4,17 +4,17 @@
 import { diag } from "@opentelemetry/api";
 import {
   createDefaultSessionIdGenerator,
-  createLocalStorageSessionStore,
   createSessionManager,
 } from "@opentelemetry/browser-sdk/session";
 import type { SessionStore } from "@opentelemetry/browser-sdk/session";
 
+const storageKey = "opentelemetry-session";
+
 function createDefaultStore(): SessionStore {
-  const store = createLocalStorageSessionStore();
   let unavailable = false;
 
-  function useStorage<T>(operation: () => Promise<T>, fallback: T): Promise<T> {
-    if (unavailable) return Promise.resolve(fallback);
+  function useStorage<T>(operation: () => T, fallback: T): T {
+    if (unavailable) return fallback;
     try {
       if (typeof localStorage !== "undefined") return operation();
     } catch (error) {
@@ -27,15 +27,23 @@ function createDefaultStore(): SessionStore {
     }
     unavailable = true;
     diag.warn("Session storage unavailable; using an in-memory session.");
-    return Promise.resolve(fallback);
+    return fallback;
   }
 
   return {
-    async get() {
-      const session: unknown = await useStorage(() => store.get(), null);
-      if (session === null) return null;
+    get() {
+      // The upstream store collapses malformed JSON and stored null into an absent key.
+      const stored = useStorage(() => localStorage.getItem(storageKey), null);
+      if (stored === null) return Promise.resolve(null);
+      let session: unknown;
+      try {
+        session = JSON.parse(stored);
+      } catch (error) {
+        if (!(error instanceof SyntaxError)) throw error;
+      }
       if (
         typeof session === "object" &&
+        session !== null &&
         "id" in session &&
         typeof session.id === "string" &&
         session.id.length > 0 &&
@@ -44,12 +52,16 @@ function createDefaultStore(): SessionStore {
         Number.isFinite(session.startTimestamp) &&
         session.startTimestamp >= 0
       ) {
-        return { id: session.id, startTimestamp: session.startTimestamp };
+        return Promise.resolve({ id: session.id, startTimestamp: session.startTimestamp });
       }
       diag.warn("Invalid stored session; creating a new session.");
-      return null;
+      return Promise.resolve(null);
     },
-    save: (session) => useStorage(() => store.save(session), undefined),
+    save(session) {
+      // The manager does not await saves; unexpected storage failures must throw synchronously.
+      useStorage(() => localStorage.setItem(storageKey, JSON.stringify(session)), undefined);
+      return Promise.resolve();
+    },
   };
 }
 
