@@ -5,6 +5,63 @@ import type { TracerProvider } from "@opentelemetry/api";
 import type { LoggerProvider } from "@opentelemetry/api-logs";
 import type { LogRecordProcessor } from "@opentelemetry/sdk-logs";
 import type { SpanProcessor } from "@opentelemetry/sdk-trace-base";
+import type { ConsoleInstrumentationConfig } from "@opentelemetry/browser-instrumentation/experimental/console";
+import type { ErrorsInstrumentationConfig } from "@opentelemetry/browser-instrumentation/experimental/errors";
+import type { FetchInstrumentationConfig } from "@opentelemetry/browser-instrumentation/experimental/fetch";
+import type { NavigationInstrumentationConfig } from "@opentelemetry/browser-instrumentation/experimental/navigation";
+import type { NavigationTimingInstrumentationConfig } from "@opentelemetry/browser-instrumentation/experimental/navigation-timing";
+import type { ResourceTimingInstrumentationConfig } from "@opentelemetry/browser-instrumentation/experimental/resource-timing";
+import type { UserActionInstrumentationConfig } from "@opentelemetry/browser-instrumentation/experimental/user-action";
+import type { WebVitalsInstrumentationConfig } from "@opentelemetry/browser-instrumentation/experimental/web-vitals";
+import type { XhrInstrumentationConfig } from "@opentelemetry/browser-instrumentation/experimental/xhr";
+import type { PageViewInstrumentationConfig } from "./instrumentation/pageView/types.js";
+
+/**
+ * Selects and configures the instrumentations that `getInstrumentations` constructs.
+ *
+ * @remarks
+ * Each key configures one instrumentation, and its value is that instrumentation's own
+ * configuration type, so every setting it supports is available and stays in step with its source
+ * without being restated here.
+ *
+ * `fetch` and `xhr` are constructed unless `enabled` is `false`. Every other instrumentation is
+ * constructed only when `enabled` is `true`. Nothing is constructed until `getInstrumentations`
+ * is called, so a caller that never calls it registers no instrumentations at all.
+ *
+ * The instrumentations below come from `@opentelemetry/browser-instrumentation`. This distribution
+ * selects which of them are constructed and supplies defaults; it does not implement or wrap them.
+ * Their source module defaults `enabled` to `true` for all of them.
+ *
+ * @public
+ */
+export interface InstrumentationOptions {
+  /** Configuration for `@opentelemetry/browser-instrumentation/experimental/errors`. */
+  errors?: ErrorsInstrumentationConfig;
+
+  /** Configuration for `@opentelemetry/browser-instrumentation/experimental/fetch`. */
+  fetch?: FetchInstrumentationConfig;
+
+  /** Configuration for `@opentelemetry/browser-instrumentation/experimental/xhr`. */
+  xhr?: XhrInstrumentationConfig;
+
+  /** Configuration for `@opentelemetry/browser-instrumentation/experimental/navigation`. */
+  navigation?: NavigationInstrumentationConfig;
+
+  /** Configuration for `@opentelemetry/browser-instrumentation/experimental/navigation-timing`. */
+  navigationTiming?: NavigationTimingInstrumentationConfig;
+
+  /** Configuration for `@opentelemetry/browser-instrumentation/experimental/resource-timing`. */
+  resourceTiming?: ResourceTimingInstrumentationConfig;
+
+  /** Configuration for `@opentelemetry/browser-instrumentation/experimental/user-action`. */
+  userAction?: UserActionInstrumentationConfig;
+
+  /** Configuration for `@opentelemetry/browser-instrumentation/experimental/web-vitals`. */
+  webVitals?: WebVitalsInstrumentationConfig;
+
+  /** Configuration for `@opentelemetry/browser-instrumentation/experimental/console`. */
+  console?: ConsoleInstrumentationConfig;
+}
 
 /**
  * The trace and log registration contract implemented by OpenTelemetry instrumentations.
@@ -52,6 +109,18 @@ export interface MicrosoftOpenTelemetryBrowserOptions {
    * Configure collection filters and sanitization on each instance before registration.
    */
   instrumentations?: readonly BrowserInstrumentation[];
+  /**
+   * Page-view collection, which this distribution owns and turns on by itself.
+   *
+   * @remarks
+   * Emits one `browser.page_view` log record per navigation, covering the initial document load
+   * and subsequent route changes, and mints a per-navigation correlation id.
+   *
+   * Collection is on by default; set `enabled: false` to turn it off. Doing so stops collection
+   * but does not remove the implementation from the bundle, because a bundler resolves imports
+   * long before this object exists.
+   */
+  pageView?: PageViewInstrumentationConfig;
 }
 
 /**

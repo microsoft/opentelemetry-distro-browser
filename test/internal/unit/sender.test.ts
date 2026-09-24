@@ -34,6 +34,135 @@ describe("Sender", () => {
     await expect(decompress(init?.body as Uint8Array<ArrayBuffer>)).resolves.toEqual(body);
   });
 
+  it.each([
+    [
+      "https://dc.services.visualstudio.com/v2.1/track",
+      "https://eastus-8.in.applicationinsights.azure.com/v2.1/track",
+    ],
+    [
+      "https://westus.monitor.azure.com/v2.1/track",
+      "https://eastus-8.in.applicationinsights.azure.com/v2.1/track",
+    ],
+    [
+      "https://usgovvirginia.monitor.azure.us/v2.1/track",
+      "https://usgovvirginia.dc.applicationinsights.azure.us/v2.1/track",
+    ],
+    [
+      "https://chinaeast2.monitor.azure.cn/v2.1/track",
+      "https://chinaeast2.dc.applicationinsights.azure.cn/v2.1/track",
+    ],
+    ["https://custom.example.test/v2.1/track", "https://custom.example.test/redirected"],
+  ])(
+    "remembers a trusted redirected endpoint for later sends: %s -> %s",
+    async (endpoint, redirectedEndpoint) => {
+      const fetch = vi
+        .fn<typeof globalThis.fetch>()
+        .mockResolvedValueOnce(redirectedResponse(redirectedEndpoint))
+        .mockResolvedValueOnce(new Response(null, { status: 200 }));
+      const sender = new Sender({ endpoint, fetch });
+      const request = {
+        body: new TextEncoder().encode("telemetry"),
+        contentType: "application/json",
+      };
+
+      await sender.send(request);
+      await sender.send(request);
+
+      expect(fetch.mock.calls[1][0]).toBe(redirectedEndpoint);
+    },
+  );
+
+  it.each([
+    [
+      "https://dc.services.visualstudio.com/v2.1/track",
+      "http://eastus-8.in.applicationinsights.azure.com/v2.1/track",
+    ],
+    [
+      "https://dc.services.visualstudio.com/v2.1/track",
+      "https://applicationinsights.azure.com.example.test/v2.1/track",
+    ],
+    [
+      "https://dc.services.visualstudio.com/v2.1/track",
+      "https://usgovvirginia.dc.applicationinsights.azure.us/v2.1/track",
+    ],
+    [
+      "https://dc.services.visualstudio.com/v2.1/track",
+      "https://germanywestcentral.dc.applicationinsights.azure.de/v2.1/track",
+    ],
+    ["https://original.test/v2.1/track", "https://example.test/v2.1/track"],
+    ["https://original.test/v2.1/track", "not a URL"],
+  ])(
+    "does not remember an untrusted redirected endpoint: %s -> %s",
+    async (endpoint, redirectedEndpoint) => {
+      const fetch = vi
+        .fn<typeof globalThis.fetch>()
+        .mockResolvedValueOnce(redirectedResponse(redirectedEndpoint))
+        .mockResolvedValueOnce(new Response(null, { status: 200 }));
+      const sender = new Sender({ endpoint, fetch });
+      const request = {
+        body: new TextEncoder().encode("telemetry"),
+        contentType: "application/json",
+      };
+
+      await sender.send(request);
+      await sender.send(request);
+
+      expect(fetch.mock.calls[1][0]).toBe(endpoint);
+    },
+  );
+
+  it("continues remembering trusted changes across separate sends", async () => {
+    const redirectedEndpoints = Array.from(
+      { length: 11 },
+      (_, index) => `https://redirect-${index}.in.applicationinsights.azure.com/v2.1/track`,
+    );
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    for (const endpoint of redirectedEndpoints) {
+      fetch.mockResolvedValueOnce(redirectedResponse(endpoint));
+    }
+    fetch.mockResolvedValueOnce(new Response(null, { status: 200 }));
+    const sender = new Sender({
+      endpoint: "https://dc.services.visualstudio.com/v2.1/track",
+      fetch,
+    });
+    const request = {
+      body: new TextEncoder().encode("telemetry"),
+      contentType: "application/json",
+    };
+
+    for (const _endpoint of redirectedEndpoints) {
+      await sender.send(request);
+    }
+    await sender.send(request);
+
+    expect(fetch.mock.calls.at(-1)?.[0]).toBe(redirectedEndpoints.at(-1));
+  });
+
+  it("uses the remembered endpoint for beacon fallback", async () => {
+    const redirectedEndpoint = "https://eastus-8.in.applicationinsights.azure.com/v2.1/track";
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(redirectedResponse(redirectedEndpoint));
+    const sendBeacon = vi.fn<typeof globalThis.navigator.sendBeacon>().mockReturnValue(true);
+    const sender = new Sender({
+      endpoint: "https://dc.services.visualstudio.com/v2.1/track",
+      fetch,
+      sendBeacon,
+    });
+
+    await sender.send({
+      body: new TextEncoder().encode("telemetry"),
+      contentType: "application/json",
+    });
+    await sender.send({
+      body: new Uint8Array(60 * 1024 + 1),
+      contentType: "application/json",
+      unloading: true,
+    });
+
+    expect(sendBeacon.mock.calls[0][0]).toBe(redirectedEndpoint);
+  });
+
   it("uses an uncompressed payload when CompressionStream is unavailable", async () => {
     const compressionStreamDescriptor = Object.getOwnPropertyDescriptor(
       globalThis,
@@ -495,4 +624,13 @@ describe("Sender", () => {
 async function decompress(body: Uint8Array<ArrayBuffer>): Promise<Uint8Array<ArrayBuffer>> {
   const stream = new Blob([body]).stream().pipeThrough(new DecompressionStream("gzip"));
   return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+
+function redirectedResponse(url: string): Response {
+  const response = new Response(null, { status: 200 });
+  Object.defineProperties(response, {
+    redirected: { value: true },
+    url: { value: url },
+  });
+  return response;
 }

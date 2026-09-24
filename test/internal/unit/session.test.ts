@@ -56,6 +56,7 @@ async function initialize() {
   const spans: Span[] = [];
   const records: ReadWriteLogRecord[] = [];
   const handle = await useMicrosoftOpenTelemetry({
+    pageView: { enabled: false },
     spanProcessors: [
       {
         onStart: (span) => {
@@ -113,6 +114,7 @@ it("awaits persisted restoration before starting providers or enabling instrumen
   const spanIds: unknown[] = [];
   const logIds: unknown[] = [];
   const pending = useMicrosoftOpenTelemetry({
+    pageView: { enabled: false },
     spanProcessors: [
       {
         onStart: (span) => {
@@ -285,6 +287,7 @@ it("stops session timers even when instrumentation and SDK shutdown fail", async
     shutdown: vi.fn().mockRejectedValue(sdkFailure),
   });
   const handle = await useMicrosoftOpenTelemetry({
+    pageView: { enabled: false },
     instrumentations: [
       {
         setTracerProvider() {},

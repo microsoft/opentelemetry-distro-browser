@@ -6,6 +6,7 @@
 
 import { DetectedResource } from '@opentelemetry/resources';
 import { LoggerProvider } from '@opentelemetry/api-logs';
+import { LogRecord } from '@opentelemetry/api-logs';
 import { LogRecordProcessor } from '@opentelemetry/sdk-logs';
 import { ResourceDetector } from '@opentelemetry/resources';
 import { SpanProcessor } from '@opentelemetry/sdk-trace-base';
@@ -39,11 +40,22 @@ export interface MicrosoftOpenTelemetryBrowser {
 export interface MicrosoftOpenTelemetryBrowserOptions {
     instrumentations?: readonly BrowserInstrumentation[];
     logRecordProcessors?: LogRecordProcessor[];
+    pageView?: PageViewInstrumentationConfig;
     spanProcessors?: SpanProcessor[];
 }
 
 // @public
 export const OPENTELEMETRY_BROWSER_VERSION: string;
+
+// @public
+export interface PageViewInstrumentationConfig {
+    readonly applyCustomLogRecordData?: (logRecord: LogRecord) => void;
+    readonly enabled?: boolean;
+    readonly routeResolver?: () => string | undefined;
+    readonly sanitizeUrl?: (url: string) => string;
+    readonly softNavigationSettleTimeoutMs?: number;
+    readonly useNavigationApiIfAvailable?: boolean;
+}
 
 // @public
 export function useMicrosoftOpenTelemetry(options?: MicrosoftOpenTelemetryBrowserOptions): Promise<MicrosoftOpenTelemetryBrowser>;

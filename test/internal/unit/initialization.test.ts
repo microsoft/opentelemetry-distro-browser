@@ -56,6 +56,9 @@ it("prepends session enrichment without changing the caller's processor arrays",
   });
   expect(options.spanProcessors).toEqual([]);
   expect(options.logRecordProcessors).toEqual([]);
+
+  await handle.shutdown();
+  expect(upstreamHandle.shutdown).toHaveBeenCalledOnce();
 });
 
 it("propagates initialization failures without returning a success-shaped handle", async () => {

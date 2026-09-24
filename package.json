@@ -13,6 +13,12 @@
         "default": "./dist/esm/index.js"
       }
     },
+    "./instrumentations": {
+      "import": {
+        "types": "./dist/esm/instrumentations.d.ts",
+        "default": "./dist/esm/instrumentations.js"
+      }
+    },
     "./package.json": "./package.json"
   },
   "files": [
@@ -45,8 +51,8 @@
     "test:watch": "vitest",
     "test:coverage": "npm run test:unit -- --coverage",
     "test:build": "node --test test/build/package.test.mjs",
-    "api:check": "api-extractor run",
-    "api:update": "npm run build && api-extractor run --local",
+    "api:check": "api-extractor run && api-extractor run --config api-extractor.instrumentations.json",
+    "api:update": "npm run build && api-extractor run --local && api-extractor run --local --config api-extractor.instrumentations.json",
     "size": "size-limit",
     "size:report": "size-limit --json > reports/bundle-size.json",
     "check": "npm run format && npm run lint && npm run typecheck && npm run test:coverage && npm run build && npm run test:build && npm run test:integration && npm run api:check && npm run size && npm run size:report",

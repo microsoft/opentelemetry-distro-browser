@@ -124,6 +124,9 @@ for (const file of ["index.js", "index.min.js"]) {
     const handle = await distro.useMicrosoftOpenTelemetry({
       ...pipeline.options,
       instrumentations: [navigation],
+      // This covers rebinding, so the distribution's own page view is switched off to keep the
+      // emitted set exact. Left on, upstream navigation and page view both report the route.
+      pageView: { enabled: false },
     });
     handles.add(handle);
     history.pushState(null, "", "/rebound");
@@ -137,17 +140,36 @@ for (const file of ["index.js", "index.min.js"]) {
     expect(enable).not.toHaveBeenCalled();
   });
 
-  it(`leaves browser APIs untouched when no instrumentations are supplied through ${file}`, async () => {
+  it(`leaves browser APIs untouched when everything is switched off through ${file}`, async () => {
     const distro = await loadDistro();
     const pipeline = createInMemoryPipeline();
     const fetchBefore = globalThis.fetch;
     const pushBefore = history.pushState;
-    const handle = await distro.useMicrosoftOpenTelemetry(pipeline.options);
+    // Page view is owned by the distribution and on by default, so switching it off is what
+    // leaves the page untouched.
+    const handle = await distro.useMicrosoftOpenTelemetry({
+      ...pipeline.options,
+      pageView: { enabled: false },
+    });
     handles.add(handle);
     expect(globalThis.fetch).toBe(fetchBefore);
     expect(history.pushState).toBe(pushBefore);
     history.pushState(null, "", "/unobserved");
     await pipeline.logProcessor.forceFlush();
     expect(pipeline.logExporter.getFinishedLogRecords()).toEqual([]);
+  });
+
+  it(`collects page views with no instrumentation supplied through ${file}`, async () => {
+    const distro = await loadDistro();
+    const pipeline = createInMemoryPipeline();
+    const handle = await distro.useMicrosoftOpenTelemetry(pipeline.options);
+    handles.add(handle);
+    history.pushState(null, "", "/owned-by-the-distro");
+    await pipeline.logProcessor.forceFlush();
+    expect(
+      pipeline.logExporter
+        .getFinishedLogRecords()
+        .some((record) => record.eventName === "browser.page_view"),
+    ).toBe(true);
   });
 }

@@ -10,6 +10,7 @@ import {
   type BrowserInstrumentation,
   type MicrosoftOpenTelemetryBrowser,
   type MicrosoftOpenTelemetryBrowserOptions,
+  type PageViewInstrumentationConfig,
 } from "../../../src/index.js";
 
 it("exposes distro-owned configuration and lifecycle contracts", () => {
@@ -20,7 +21,7 @@ it("exposes distro-owned configuration and lifecycle contracts", () => {
     Promise<MicrosoftOpenTelemetryBrowser>
   >();
   expectTypeOf<keyof MicrosoftOpenTelemetryBrowserOptions>().toEqualTypeOf<
-    "spanProcessors" | "logRecordProcessors" | "instrumentations"
+    "spanProcessors" | "logRecordProcessors" | "instrumentations" | "pageView"
   >();
   expectTypeOf<MicrosoftOpenTelemetryBrowserOptions["spanProcessors"]>().toEqualTypeOf<
     SpanProcessor[] | undefined
@@ -30,6 +31,9 @@ it("exposes distro-owned configuration and lifecycle contracts", () => {
   >();
   expectTypeOf<MicrosoftOpenTelemetryBrowserOptions["instrumentations"]>().toEqualTypeOf<
     readonly BrowserInstrumentation[] | undefined
+  >();
+  expectTypeOf<MicrosoftOpenTelemetryBrowserOptions["pageView"]>().toEqualTypeOf<
+    PageViewInstrumentationConfig | undefined
   >();
   expectTypeOf<Instrumentation>().toExtend<BrowserInstrumentation>();
   expectTypeOf<MicrosoftOpenTelemetryBrowser>().not.toHaveProperty("forceFlush");

@@ -9,10 +9,40 @@ import {
   createSessionSpanProcessor,
 } from "@opentelemetry/browser-sdk/session";
 import { createSession } from "./session/createSession.js";
+import { PageViewInstrumentation } from "./instrumentation/pageView/index.js";
 import type {
+  BrowserInstrumentation,
   MicrosoftOpenTelemetryBrowser,
   MicrosoftOpenTelemetryBrowserOptions,
 } from "./types.js";
+
+/**
+ * Builds the instrumentations this distribution owns and turns on by itself.
+ *
+ * @remarks
+ * Distribution-owned instrumentations are selected by configuration rather than by import,
+ * because a bundler resolves imports before the application ever supplies its options. Page view
+ * is on unless it is switched off.
+ *
+ * Returns nothing outside a browser. This entry point is routinely imported by a server-rendered
+ * build, and these instrumentations observe the DOM, so constructing one there would throw during
+ * initialization and take the host application down with it.
+ *
+ * Each is constructed with `enabled: false` so that collection starts only once the registration
+ * loop below has bound its trace and log providers.
+ */
+function createOwnedInstrumentations(
+  options: MicrosoftOpenTelemetryBrowserOptions,
+): BrowserInstrumentation[] {
+  if (typeof document === "undefined" || typeof location === "undefined") return [];
+
+  const owned: BrowserInstrumentation[] = [];
+  const pageView = options.pageView ?? {};
+  if (pageView.enabled !== false) {
+    owned.push(new PageViewInstrumentation({ ...pageView, enabled: false }));
+  }
+  return owned;
+}
 
 /**
  * Restores the session, then initializes traces, logs, and selected instrumentations.
@@ -25,7 +55,12 @@ export async function useMicrosoftOpenTelemetry(
   const session = createSession();
   const spanProcessors = options.spanProcessors?.slice();
   const logRecordProcessors = options.logRecordProcessors?.slice();
-  const instrumentations = options.instrumentations?.slice() ?? [];
+  // Distribution-owned instrumentations come last, so an application-supplied instance observing
+  // the same API is installed first and is disabled last.
+  const instrumentations = [
+    ...(options.instrumentations ?? []),
+    ...createOwnedInstrumentations(options),
+  ];
   let sdk: MicrosoftOpenTelemetryBrowser | undefined;
   let stopping = false;
   // Upstream stale tracers can still call processors after provider shutdown.

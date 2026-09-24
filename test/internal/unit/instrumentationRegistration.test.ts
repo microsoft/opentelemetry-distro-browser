@@ -9,6 +9,7 @@ import {
   useMicrosoftOpenTelemetry,
   type BrowserInstrumentation,
   type MicrosoftOpenTelemetryBrowser,
+  type MicrosoftOpenTelemetryBrowserOptions,
 } from "../../../src/index.js";
 
 vi.mock("@opentelemetry/browser-sdk", () => ({ startBrowserSdk: vi.fn() }));
@@ -36,10 +37,19 @@ function createInstrumentation(enabled: boolean | undefined = false) {
   };
 }
 
-async function initialize(instrumentations: readonly BrowserInstrumentation[]) {
+async function initialize(
+  instrumentations: readonly BrowserInstrumentation[],
+  options: Partial<MicrosoftOpenTelemetryBrowserOptions> = {},
+) {
   const sdk = { shutdown: vi.fn(async () => {}) };
   vi.mocked(startBrowserSdk).mockReturnValueOnce(sdk);
-  const handle = await useMicrosoftOpenTelemetry({ instrumentations });
+  // Page view is owned by the distribution and on by default. These tests cover the registration
+  // mechanics for caller-supplied instances, so it is switched off to keep the list exact.
+  const handle = await useMicrosoftOpenTelemetry({
+    instrumentations,
+    pageView: { enabled: false },
+    ...options,
+  });
   handles.add(handle);
   return { handle, sdk };
 }
@@ -94,6 +104,11 @@ it("owns shutdown even when no instrumentation is selected", async () => {
   await handle.shutdown();
   await handle.shutdown();
   expect(sdk.shutdown).toHaveBeenCalledOnce();
+});
+
+it("wraps the upstream handle for the instrumentation the distribution owns", async () => {
+  const { handle, sdk } = await initialize([], { pageView: undefined });
+  expect(handle).not.toBe(sdk);
 });
 
 it("snapshots the supplied list and cleans up once in reverse registration order", async () => {

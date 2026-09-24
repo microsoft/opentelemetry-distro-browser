@@ -13,6 +13,7 @@ export default defineConfig({
       "@opentelemetry/core",
       "@opentelemetry/exporter-logs-otlp-http",
       "@opentelemetry/exporter-trace-otlp-http",
+      "@opentelemetry/instrumentation",
       "@opentelemetry/resources",
       "@opentelemetry/sdk-logs",
       "@opentelemetry/sdk-trace-base",
