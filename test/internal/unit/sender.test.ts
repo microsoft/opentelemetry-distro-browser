@@ -729,6 +729,7 @@ describe("Sender", () => {
   });
 
   it("honors Retry-After for a retriable response", async () => {
+    const dateNow = vi.spyOn(Date, "now").mockReturnValue(0);
     const fetch = vi
       .fn<typeof globalThis.fetch>()
       .mockResolvedValueOnce(new Response(null, { status: 429, headers: { "retry-after": "2" } }))
@@ -740,10 +741,12 @@ describe("Sender", () => {
       delay,
     });
 
-    await sender.send({
-      body: new TextEncoder().encode("telemetry"),
-      contentType: "application/json",
-    });
+    await sender
+      .send({
+        body: new TextEncoder().encode("telemetry"),
+        contentType: "application/json",
+      })
+      .finally(() => dateNow.mockRestore());
 
     expect(delay).toHaveBeenCalledWith(2_000);
   });
