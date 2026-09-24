@@ -69,6 +69,7 @@ export class Sender {
   private readonly maxPayloadSize: number | undefined;
   private readonly delay: (delayMs: number) => Promise<void>;
   private readonly random: () => number;
+  private throttleDeadline = 0;
 
   public constructor(options: SenderOptions) {
     this.endpoint = options.endpoint;
@@ -92,8 +93,12 @@ export class Sender {
       );
     }
     if (request.unloading === true) {
-      return this.sendOnce(request);
+      const result = await this.sendOnce(request);
+      this.rememberThrottleDeadline(result);
+      return result;
     }
+
+    await this.waitForThrottle();
 
     let currentRequest = request;
     for (let attempt = 1; ; attempt++) {
@@ -104,10 +109,15 @@ export class Sender {
         if (!(error instanceof BrowserTransportError)) {
           throw error;
         }
+        if (error.retryAfterMs !== undefined) {
+          this.rememberThrottleDelay(error.retryAfterMs);
+        }
         if (attempt >= MAX_SEND_ATTEMPTS) {
           throw error.cause;
         }
-        await this.delay(getRetryDelay(attempt - 1, this.random()));
+        await this.delay(
+          error.retryAfterMs ?? getRetryDelay(attempt - 1, this.random()),
+        );
         continue;
       }
 
@@ -116,12 +126,34 @@ export class Sender {
       }
 
       const retryRequest = getRetryRequest(currentRequest, result);
+      this.rememberThrottleDeadline(result);
       if (!retryRequest || attempt >= MAX_SEND_ATTEMPTS) {
         return result;
       }
 
       await this.delay(result.retryAfterMs ?? getRetryDelay(attempt - 1, this.random()));
       currentRequest = retryRequest;
+    }
+  }
+
+  private rememberThrottleDeadline(result: SenderResultType): void {
+    if (
+      result.transport === "fetch" &&
+      result.retryAfterMs !== undefined &&
+      isRetriable(result.statusCode)
+    ) {
+      this.rememberThrottleDelay(result.retryAfterMs);
+    }
+  }
+
+  private rememberThrottleDelay(delayMs: number): void {
+    this.throttleDeadline = Math.max(this.throttleDeadline, Date.now() + delayMs);
+  }
+
+  private async waitForThrottle(): Promise<void> {
+    const remainingDelay = this.throttleDeadline - Date.now();
+    if (remainingDelay > 0) {
+      await this.delay(remainingDelay);
     }
   }
 
@@ -172,10 +204,25 @@ export class Sender {
 
       this.rememberRedirectEndpoint(response);
       const retryAfterMs = parseRetryAfterHeader(response.headers.get("retry-after"));
+      let result: string;
+      try {
+        result = await response.text();
+      } catch (error) {
+        if (!isBrowserTransportFailure(error)) {
+          throw error;
+        }
+        if (unloading) {
+          return this.sendWithBeacon(request, error);
+        }
+        throw new BrowserTransportError(
+          error,
+          isRetriable(response.status) ? retryAfterMs : undefined,
+        );
+      }
       return {
         transport: "fetch",
         statusCode: response.status,
-        result: await response.text(),
+        result,
         ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
       };
     } finally {
@@ -314,7 +361,10 @@ async function gzipPayload(
 }
 
 class BrowserTransportError extends Error {
-  public constructor(public override readonly cause: unknown) {
+  public constructor(
+    public override readonly cause: unknown,
+    public readonly retryAfterMs?: number,
+  ) {
     super("Browser transport failed", { cause });
   }
 }

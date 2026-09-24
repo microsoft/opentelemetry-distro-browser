@@ -662,6 +662,30 @@ describe("Sender", () => {
     expect(delay).toHaveBeenCalledOnce();
   });
 
+  it("retries a response body transport failure using Retry-After", async () => {
+    const response = new Response(null, {
+      status: 503,
+      headers: { "retry-after": "2" },
+    });
+    vi.spyOn(response, "text").mockRejectedValue(new TypeError("network error"));
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(response)
+      .mockResolvedValueOnce(new Response(null, { status: 200 }));
+    const delay = vi.fn<(delayMs: number) => Promise<void>>().mockResolvedValue(undefined);
+    const sender = new Sender({
+      endpoint: "https://example.test/v2.1/track",
+      fetch,
+      delay,
+    });
+
+    await expect(
+      sender.send({ body: new TextEncoder().encode("telemetry"), contentType: "application/json" }),
+    ).resolves.toMatchObject({ statusCode: 200 });
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(delay).toHaveBeenCalledWith(2_000);
+  });
+
   it("does not retry an arbitrary fetch exception", async () => {
     const fetchError = new Error("serialization failed");
     const fetch = vi.fn<typeof globalThis.fetch>().mockRejectedValue(fetchError);
@@ -697,6 +721,40 @@ describe("Sender", () => {
     });
 
     expect(delay).toHaveBeenCalledWith(2_000);
+  });
+
+  it("honors a Retry-After throttle deadline across sends", async () => {
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(new Response(null, { status: 429, headers: { "retry-after": "2" } }))
+      .mockResolvedValue(new Response(null, { status: 200 }));
+    const releaseDelays: Array<() => void> = [];
+    const delay = vi.fn(
+      () => new Promise<void>((resolve) => releaseDelays.push(resolve)),
+    );
+    const sender = new Sender({
+      endpoint: "https://example.test/v2.1/track",
+      fetch,
+      delay,
+    });
+    const request = {
+      body: new TextEncoder().encode("telemetry"),
+      contentType: "application/json",
+    };
+
+    const firstSend = sender.send(request);
+    await vi.waitFor(() => expect(delay).toHaveBeenCalledTimes(1));
+
+    const secondSend = sender.send(request);
+    await vi.waitFor(() => expect(delay).toHaveBeenCalledTimes(2));
+    expect(fetch).toHaveBeenCalledOnce();
+
+    for (const release of releaseDelays) release();
+    await expect(Promise.all([firstSend, secondSend])).resolves.toEqual([
+      expect.objectContaining({ statusCode: 200 }),
+      expect.objectContaining({ statusCode: 200 }),
+    ]);
+    expect(fetch).toHaveBeenCalledTimes(3);
   });
 
   it("retries only retriable envelopes from a partial response", async () => {
