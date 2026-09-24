@@ -115,9 +115,7 @@ export class Sender {
         if (attempt >= MAX_SEND_ATTEMPTS) {
           throw error.cause;
         }
-        await this.delay(
-          error.retryAfterMs ?? getRetryDelay(attempt - 1, this.random()),
-        );
+        await this.delay(error.retryAfterMs ?? getRetryDelay(attempt - 1, this.random()));
         continue;
       }
 

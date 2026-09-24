@@ -729,9 +729,7 @@ describe("Sender", () => {
       .mockResolvedValueOnce(new Response(null, { status: 429, headers: { "retry-after": "2" } }))
       .mockResolvedValue(new Response(null, { status: 200 }));
     const releaseDelays: Array<() => void> = [];
-    const delay = vi.fn(
-      () => new Promise<void>((resolve) => releaseDelays.push(resolve)),
-    );
+    const delay = vi.fn(() => new Promise<void>((resolve) => releaseDelays.push(resolve)));
     const sender = new Sender({
       endpoint: "https://example.test/v2.1/track",
       fetch,
