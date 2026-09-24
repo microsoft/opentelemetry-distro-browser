@@ -98,10 +98,10 @@ export class Sender {
       return result;
     }
 
-    await this.waitForThrottle();
-
     let currentRequest = request;
     for (let attempt = 1; ; attempt++) {
+      await this.waitForThrottle();
+
       let result: SenderResultType;
       try {
         result = await this.sendOnce(currentRequest);
@@ -109,13 +109,18 @@ export class Sender {
         if (!(error instanceof BrowserTransportError)) {
           throw error;
         }
+        if (error.statusCode !== undefined && !isRetriable(error.statusCode)) {
+          throw error.cause;
+        }
         if (error.retryAfterMs !== undefined) {
           this.rememberThrottleDelay(error.retryAfterMs);
         }
         if (attempt >= MAX_SEND_ATTEMPTS) {
           throw error.cause;
         }
-        await this.delay(error.retryAfterMs ?? getRetryDelay(attempt - 1, this.random()));
+        if (error.retryAfterMs === undefined) {
+          await this.delay(getRetryDelay(attempt - 1, this.random()));
+        }
         continue;
       }
 
@@ -129,7 +134,9 @@ export class Sender {
         return result;
       }
 
-      await this.delay(result.retryAfterMs ?? getRetryDelay(attempt - 1, this.random()));
+      if (result.retryAfterMs === undefined) {
+        await this.delay(getRetryDelay(attempt - 1, this.random()));
+      }
       currentRequest = retryRequest;
     }
   }
@@ -149,9 +156,13 @@ export class Sender {
   }
 
   private async waitForThrottle(): Promise<void> {
-    const remainingDelay = this.throttleDeadline - Date.now();
-    if (remainingDelay > 0) {
-      await this.delay(remainingDelay);
+    let observedDeadline = this.throttleDeadline;
+    while (observedDeadline > Date.now()) {
+      await this.delay(observedDeadline - Date.now());
+      if (this.throttleDeadline <= observedDeadline) {
+        return;
+      }
+      observedDeadline = this.throttleDeadline;
     }
   }
 
@@ -209,13 +220,13 @@ export class Sender {
         if (!isBrowserTransportFailure(error)) {
           throw error;
         }
+        if (!isRetriable(response.status)) {
+          throw error;
+        }
         if (unloading) {
           return this.sendWithBeacon(request, error);
         }
-        throw new BrowserTransportError(
-          error,
-          isRetriable(response.status) ? retryAfterMs : undefined,
-        );
+        throw new BrowserTransportError(error, response.status, retryAfterMs);
       }
       return {
         transport: "fetch",
@@ -361,6 +372,7 @@ async function gzipPayload(
 class BrowserTransportError extends Error {
   public constructor(
     public override readonly cause: unknown,
+    public readonly statusCode?: number,
     public readonly retryAfterMs?: number,
   ) {
     super("Browser transport failed", { cause });

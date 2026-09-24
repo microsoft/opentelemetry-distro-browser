@@ -686,6 +686,31 @@ describe("Sender", () => {
     expect(delay).toHaveBeenCalledWith(2_000);
   });
 
+  it.each([200, 400])(
+    "does not retry a response body transport failure for status %i",
+    async (statusCode) => {
+      const bodyError = new TypeError("network error");
+      const response = new Response(null, { status: statusCode });
+      vi.spyOn(response, "text").mockRejectedValue(bodyError);
+      const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response);
+      const delay = vi.fn<(delayMs: number) => Promise<void>>().mockResolvedValue(undefined);
+      const sender = new Sender({
+        endpoint: "https://example.test/v2.1/track",
+        fetch,
+        delay,
+      });
+
+      await expect(
+        sender.send({
+          body: new TextEncoder().encode("telemetry"),
+          contentType: "application/json",
+        }),
+      ).rejects.toBe(bodyError);
+      expect(fetch).toHaveBeenCalledOnce();
+      expect(delay).not.toHaveBeenCalled();
+    },
+  );
+
   it("does not retry an arbitrary fetch exception", async () => {
     const fetchError = new Error("serialization failed");
     const fetch = vi.fn<typeof globalThis.fetch>().mockRejectedValue(fetchError);
@@ -753,6 +778,47 @@ describe("Sender", () => {
       expect.objectContaining({ statusCode: 200 }),
     ]);
     expect(fetch).toHaveBeenCalledTimes(3);
+  });
+
+  it("rechecks an extended throttle deadline before retrying", async () => {
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(new Response(null, { status: 503 }))
+      .mockResolvedValueOnce(new Response(null, { status: 429, headers: { "retry-after": "120" } }))
+      .mockResolvedValue(new Response(null, { status: 200 }));
+    const releaseDelays: Array<() => void> = [];
+    const delay = vi.fn<(delayMs: number) => Promise<void>>(
+      () => new Promise<void>((resolve) => releaseDelays.push(resolve)),
+    );
+    const sender = new Sender({
+      endpoint: "https://example.test/v2.1/track",
+      fetch,
+      delay,
+      random: () => 0,
+    });
+    const request = {
+      body: new TextEncoder().encode("telemetry"),
+      contentType: "application/json",
+    };
+
+    const firstSend = sender.send(request);
+    await vi.waitFor(() => expect(delay).toHaveBeenCalledTimes(1));
+    const secondSend = sender.send(request);
+    await vi.waitFor(() => expect(delay).toHaveBeenCalledTimes(2));
+
+    releaseDelays[0]();
+    await vi.waitFor(() => expect(delay).toHaveBeenCalledTimes(3));
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(delay.mock.calls[2][0]).toBeGreaterThan(119_000);
+    expect(delay.mock.calls[2][0]).toBeLessThanOrEqual(120_000);
+
+    releaseDelays[1]();
+    releaseDelays[2]();
+    await expect(Promise.all([firstSend, secondSend])).resolves.toEqual([
+      expect.objectContaining({ statusCode: 200 }),
+      expect.objectContaining({ statusCode: 200 }),
+    ]);
+    expect(fetch).toHaveBeenCalledTimes(4);
   });
 
   it("retries only retriable envelopes from a partial response", async () => {
