@@ -216,9 +216,10 @@ in the help documentation and our privacy statement. Your use of the software op
 consent to these practices.
 
 Telemetry collection starts only when an application initializes the SDK and configures an
-exporter. Individual automatic sources can be disabled through `instrumentationOptions`; call
-`shutdown()` on the returned handle to stop collection and export. See [PRIVACY.md](PRIVACY.md) for
-additional guidance for applications that use this SDK.
+exporter. Omit optional entries from `instrumentations` to disable them, and set
+`pageView.enabled` to `false` to disable automatic page-view collection. Call `shutdown()` on the
+returned handle to stop collection and export. See [PRIVACY.md](PRIVACY.md) for additional guidance
+for applications that use this SDK.
 
 ## Trademarks
 

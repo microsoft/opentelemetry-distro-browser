@@ -23,14 +23,14 @@ information, see the
 
 ## Development Setup
 
-1. Install [Node.js](https://nodejs.org/) 20 or later.
-2. Install the PoC dependencies.
-3. Build and test the project before opening a pull request.
+1. Install a [Node.js](https://nodejs.org/) version supported by `package.json`.
+2. Install dependencies and Chromium.
+3. Run the repository checks before opening a pull request.
 
 ```powershell
-cd poc
 npm ci
-npm test
+npm run test:install-browsers
+npm run check
 ```
 
 Microsoft contributors must use the required Microsoft package proxy. The committed lockfile omits
@@ -42,4 +42,4 @@ npm registry.
 - Describe the problem and the approach clearly.
 - Link related issues when applicable.
 - Update documentation when public behavior or setup changes.
-- Keep the repository planning and README documents aligned with the implementation.
+- Keep the repository planning, API reports, and README documents aligned with the implementation.
