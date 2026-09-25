@@ -116,12 +116,10 @@ async function exerciseNpmPackage(distro) {
   try {
     tracer.startSpan("manual").end();
     logger.emit({ eventName: "manual" });
-    await Promise.all(
-      [...options.spanProcessors, ...options.logRecordProcessors].map((p) => p.forceFlush()),
-    );
+    await telemetry.forceFlush();
     assert.equal(spans.getFinishedSpans()[0]?.name, "manual");
     assert.equal(records.getFinishedLogRecords()[0]?.eventName, "manual");
-    assert.equal("forceFlush" in telemetry, false);
+    assert.equal("forceFlush" in telemetry, true);
   } finally {
     try {
       await telemetry.shutdown();
@@ -139,6 +137,8 @@ test("the only initializer is a distro-owned wrapper", async () => {
   const distro = await import(pkg.name);
   assert.notEqual(distro.useMicrosoftOpenTelemetry, startBrowserSdk);
   assert.deepEqual(Object.keys(distro).sort(), [
+    "AzureMonitorLogRecordExporter",
+    "AzureMonitorSpanExporter",
     "BrowserDetector",
     "OPENTELEMETRY_BROWSER_VERSION",
     "UserAgentDetector",

@@ -15,6 +15,7 @@ import type { ResourceTimingInstrumentationConfig } from "@opentelemetry/browser
 import type { UserActionInstrumentationConfig } from "@opentelemetry/browser-instrumentation/experimental/user-action";
 import type { WebVitalsInstrumentationConfig } from "@opentelemetry/browser-instrumentation/experimental/web-vitals";
 import type { XhrInstrumentationConfig } from "@opentelemetry/browser-instrumentation/experimental/xhr";
+import type { AzureMonitorOptions } from "./exporter/base.js";
 import type { PageViewInstrumentationConfig } from "./instrumentation/pageView/types.js";
 
 /**
@@ -119,6 +120,8 @@ export interface MicrosoftOpenTelemetryBrowserTraceOptions {
  * @public
  */
 export interface MicrosoftOpenTelemetryBrowserOptions {
+  /** Azure Monitor destination. When provided, Azure Monitor export is enabled. */
+  azureMonitor?: AzureMonitorOptions;
   /**
    * Resource describing the entity producing telemetry.
    *
@@ -175,6 +178,8 @@ export interface MicrosoftOpenTelemetryBrowserOptions {
  * @public
  */
 export interface MicrosoftOpenTelemetryBrowser {
+  /** Flushes pending trace and log telemetry. */
+  forceFlush(): Promise<void>;
   /**
    * Stops session timers immediately, then disables registered instrumentations and shuts down
    * trace and log providers.

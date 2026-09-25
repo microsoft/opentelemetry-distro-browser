@@ -6,6 +6,11 @@ import { logs } from "@opentelemetry/api-logs";
 import { startBrowserSdk } from "@opentelemetry/browser-sdk";
 import { SessionLogRecordProcessor, SessionSpanProcessor } from "./session/sessionProcessors.js";
 import { createSession } from "./session/createSession.js";
+import { BatchLogRecordProcessor } from "@opentelemetry/sdk-logs";
+import { BatchSpanProcessor } from "@opentelemetry/sdk-trace-base";
+import { setUnloading } from "./exporter/common.js";
+import { AzureMonitorLogRecordExporter } from "./exporter/log.js";
+import { AzureMonitorSpanExporter } from "./exporter/trace.js";
 import { PageViewInstrumentation } from "./instrumentation/pageView/index.js";
 import {
   ATTR_TELEMETRY_DISTRO_NAME,
@@ -54,9 +59,23 @@ function createOwnedInstrumentations(
 export async function useMicrosoftOpenTelemetry(
   options: MicrosoftOpenTelemetryBrowserOptions = {},
 ): Promise<MicrosoftOpenTelemetryBrowser> {
+  const spanProcessors = options.azureMonitor
+    ? [
+        new BatchSpanProcessor(new AzureMonitorSpanExporter(options.azureMonitor)),
+        ...(options.spanProcessors ?? []),
+      ]
+    : options.spanProcessors;
+  const logRecordProcessors = options.azureMonitor
+    ? [
+        new BatchLogRecordProcessor({
+          exporter: new AzureMonitorLogRecordExporter(options.azureMonitor),
+        }),
+        ...(options.logRecordProcessors ?? []),
+      ]
+    : options.logRecordProcessors;
   const session = options.session?.enabled === true ? createSession() : undefined;
-  const spanProcessors = options.spanProcessors?.slice();
-  const logRecordProcessors = options.logRecordProcessors?.slice();
+  const spanProcessors = spanProcessors?.slice();
+  const logRecordProcessors = logRecordProcessors?.slice();
   const traceOptions = options.traces;
   // Distribution-owned instrumentations come last, so an application-supplied instance observing
   // the same API is installed first and is disabled last.
@@ -72,9 +91,38 @@ export async function useMicrosoftOpenTelemetry(
   };
 
   let shutdownPromise: Promise<void> | undefined;
+  let unloading = false;
+  const flushForUnload = (): void => {
+    if (unloading) return;
+    unloading = true;
+    setUnloading(true);
+    void forceFlush()
+      .catch((error: unknown) => {
+        diag.error("Telemetry unload flush failed", error);
+      })
+      .finally(() => {
+        unloading = false;
+        setUnloading(false);
+      });
+  };
+  const visibilityChange = (): void => {
+    if (globalThis.document?.visibilityState === "hidden") flushForUnload();
+  };
+  globalThis.addEventListener?.("pagehide", flushForUnload);
+  globalThis.document?.addEventListener("visibilitychange", visibilityChange);
+
+  async function forceFlush(): Promise<void> {
+    await Promise.all([
+      ...(spanProcessors ?? []).map((processor) => processor.forceFlush()),
+      ...(logRecordProcessors ?? []).map((processor) => processor.forceFlush()),
+    ]);
+  }
+
   function shutdown(): Promise<void> {
     return (shutdownPromise ??= (async () => {
       stopping = true;
+      globalThis.removeEventListener?.("pagehide", flushForUnload);
+      globalThis.document?.removeEventListener("visibilitychange", visibilityChange);
       const errors: unknown[] = [];
       try {
         session?.shutdown();
@@ -97,6 +145,12 @@ export async function useMicrosoftOpenTelemetry(
       if (errors.length > 1) throw new AggregateError(errors, "Telemetry shutdown failed");
     })());
   }
+
+  const handle = { forceFlush, shutdown };
+  if (instrumentations.length === 0) return handle;
+
+  const handle = { forceFlush, shutdown };
+  if (instrumentations.length === 0) return handle;
 
   try {
     await session?.start();
@@ -146,5 +200,5 @@ export async function useMicrosoftOpenTelemetry(
     throw error;
   }
 
-  return { shutdown };
+  return handle;
 }

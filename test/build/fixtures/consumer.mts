@@ -46,6 +46,11 @@ export const options: MicrosoftOpenTelemetryBrowserOptions = {
     }),
   ],
 };
+const connectionString =
+  "InstrumentationKey=00000000-0000-0000-0000-000000000000;IngestionEndpoint=https://example.test";
+export const azureMonitorOptions: MicrosoftOpenTelemetryBrowserOptions = {
+  azureMonitor: { connectionString },
+};
 export const initialize: (
   config: MicrosoftOpenTelemetryBrowserOptions,
 ) => Promise<MicrosoftOpenTelemetryBrowser> = useMicrosoftOpenTelemetry;
@@ -66,9 +71,10 @@ useMicrosoftOpenTelemetry({ exportConfig: { url: "https://example.test" } });
 useMicrosoftOpenTelemetry({ traces: { processors: [] } });
 // @ts-expect-error Processors are top-level distro options, not upstream signal configuration.
 useMicrosoftOpenTelemetry({ logs: { processors: [] } });
+// @ts-expect-error Azure Monitor connection strings belong to its exporters, not the initializer.
+useMicrosoftOpenTelemetry({ connectionString: "InstrumentationKey=00000000" });
 
 export async function shutdown(handle: MicrosoftOpenTelemetryBrowser): Promise<void> {
-  await handle.shutdown();
-  // @ts-expect-error The upstream lifecycle handle does not expose forceFlush().
   await handle.forceFlush();
+  await handle.shutdown();
 }

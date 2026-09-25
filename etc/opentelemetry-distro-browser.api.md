@@ -6,14 +6,43 @@
 
 import { ContextManager } from '@opentelemetry/api';
 import { DetectedResource } from '@opentelemetry/resources';
+import { ExportResult } from '@opentelemetry/core';
 import { LoggerProvider } from '@opentelemetry/api-logs';
 import { LogRecord } from '@opentelemetry/api-logs';
+import { LogRecordExporter } from '@opentelemetry/sdk-logs';
 import { LogRecordProcessor } from '@opentelemetry/sdk-logs';
 import { Resource } from '@opentelemetry/resources';
+import { ReadableLogRecord } from '@opentelemetry/sdk-logs';
+import { ReadableSpan } from '@opentelemetry/sdk-trace-base';
 import { ResourceDetector } from '@opentelemetry/resources';
+import { SpanExporter } from '@opentelemetry/sdk-trace-base';
 import { SpanProcessor } from '@opentelemetry/sdk-trace-base';
 import { TextMapPropagator } from '@opentelemetry/api';
 import { TracerProvider } from '@opentelemetry/api';
+
+// Warning: (ae-forgotten-export) The symbol "AzureMonitorExporterBase" needs to be exported by the entry point index.d.ts
+//
+// @public
+export class AzureMonitorLogRecordExporter extends AzureMonitorExporterBase implements LogRecordExporter {
+    constructor(options: AzureMonitorOptions);
+    // (undocumented)
+    export(logs: ReadableLogRecord[], callback: (result: ExportResult) => void): void;
+}
+
+// @public
+export interface AzureMonitorOptions {
+    // (undocumented)
+    readonly connectionString: string;
+    // (undocumented)
+    readonly disableBeacon?: boolean;
+}
+
+// @public
+export class AzureMonitorSpanExporter extends AzureMonitorExporterBase implements SpanExporter {
+    constructor(options: AzureMonitorOptions);
+    // (undocumented)
+    export(spans: ReadableSpan[], callback: (result: ExportResult) => void): void;
+}
 
 // @public
 export class BrowserDetector implements ResourceDetector {
@@ -36,11 +65,13 @@ export interface BrowserInstrumentation {
 
 // @public
 export interface MicrosoftOpenTelemetryBrowser {
+    forceFlush(): Promise<void>;
     shutdown(): Promise<void>;
 }
 
 // @public
 export interface MicrosoftOpenTelemetryBrowserOptions {
+    azureMonitor?: AzureMonitorOptions;
     instrumentations?: readonly BrowserInstrumentation[];
     logRecordProcessors?: LogRecordProcessor[];
     pageView?: PageViewInstrumentationConfig;

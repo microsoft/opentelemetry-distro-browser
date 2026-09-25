@@ -28,13 +28,19 @@ import type {
   SeverityLevel,
 } from "./telemetryModels.js";
 
-const promotedLogAttributes = new Set([
+const promotedLogAttributes = /* @__PURE__ */ new Set([
   EXCEPTION_MESSAGE,
   EXCEPTION_STACKTRACE,
   EXCEPTION_TYPE,
   NAVIGATION_DURATION,
 ]);
-const promotedPageViewAttributes = new Set([...promotedLogAttributes, URL_FULL]);
+const promotedPageViewAttributes = /* @__PURE__ */ new Set([
+  EXCEPTION_MESSAGE,
+  EXCEPTION_STACKTRACE,
+  EXCEPTION_TYPE,
+  NAVIGATION_DURATION,
+  URL_FULL,
+]);
 
 function mapSeverity(severityNumber: number | undefined): SeverityLevel | undefined {
   if (!severityNumber || severityNumber < 1 || severityNumber > 24) return undefined;
