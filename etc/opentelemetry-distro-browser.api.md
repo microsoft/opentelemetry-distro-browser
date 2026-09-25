@@ -20,28 +20,32 @@ import { SpanProcessor } from '@opentelemetry/sdk-trace-base';
 import { TextMapPropagator } from '@opentelemetry/api';
 import { TracerProvider } from '@opentelemetry/api';
 
-// Warning: (ae-forgotten-export) The symbol "AzureMonitorExporterBase" needs to be exported by the entry point index.d.ts
-//
 // @public
-export class AzureMonitorLogRecordExporter extends AzureMonitorExporterBase implements LogRecordExporter {
+export class AzureMonitorLogRecordExporter implements LogRecordExporter {
     constructor(options: AzureMonitorOptions);
     // (undocumented)
     export(logs: ReadableLogRecord[], callback: (result: ExportResult) => void): void;
+    // (undocumented)
+    forceFlush(): Promise<void>;
+    // (undocumented)
+    shutdown(): Promise<void>;
 }
 
 // @public
 export interface AzureMonitorOptions {
-    // (undocumented)
     readonly connectionString: string;
-    // (undocumented)
     readonly disableBeacon?: boolean;
 }
 
 // @public
-export class AzureMonitorSpanExporter extends AzureMonitorExporterBase implements SpanExporter {
+export class AzureMonitorSpanExporter implements SpanExporter {
     constructor(options: AzureMonitorOptions);
     // (undocumented)
     export(spans: ReadableSpan[], callback: (result: ExportResult) => void): void;
+    // (undocumented)
+    forceFlush(): Promise<void>;
+    // (undocumented)
+    shutdown(): Promise<void>;
 }
 
 // @public

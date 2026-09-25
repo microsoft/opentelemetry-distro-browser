@@ -58,6 +58,15 @@ async function requestEnvelopes(fetch: ReturnType<typeof vi.fn>, call: number): 
 }
 
 describe("AzureMonitorSpanExporter", () => {
+  it("rejects a connection string with an invalid instrumentation key", () => {
+    expect(
+      () =>
+        new AzureMonitorSpanExporter({
+          connectionString: "InstrumentationKey=not-an-instrumentation-key",
+        }),
+    ).toThrow("valid InstrumentationKey UUID");
+  });
+
   it("maps spans, posts Breeze envelopes, and reports success", async () => {
     const fetch = vi.fn<typeof globalThis.fetch>(async () => new Response("", { status: 200 }));
     vi.stubGlobal("fetch", fetch);
@@ -103,6 +112,34 @@ describe("AzureMonitorSpanExporter", () => {
         }),
       }),
     ]);
+  });
+
+  it("reports permanent and retry-exhausted partial rejections as failed", async () => {
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    const partialResponse = (statusCode: number) =>
+      new Response(
+        JSON.stringify({
+          itemsReceived: 1,
+          itemsAccepted: 0,
+          errors: [{ index: 0, statusCode, message: "Rejected" }],
+        }),
+        { status: 206 },
+      );
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(partialResponse(400))
+      .mockResolvedValue(partialResponse(500));
+    vi.stubGlobal("fetch", fetch);
+
+    await expect(exportSpan(new AzureMonitorSpanExporter({ connectionString }))).resolves.toEqual({
+      code: ExportResultCode.FAILED,
+      error: expect.any(Error),
+    });
+    await expect(exportSpan(new AzureMonitorSpanExporter({ connectionString }))).resolves.toEqual({
+      code: ExportResultCode.FAILED,
+      error: expect.any(Error),
+    });
+    expect(fetch).toHaveBeenCalledTimes(5);
   });
 
   it("converts HTTP and transport failures to failed ExportResults", async () => {

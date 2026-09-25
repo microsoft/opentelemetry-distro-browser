@@ -3,8 +3,9 @@
 
 import type { ExportResult } from "@opentelemetry/core";
 import { ExportResultCode } from "@opentelemetry/core";
+import { isSamplingRejection, parseBreezeResponse } from "./breezeUtils.js";
 import { isUnloading } from "./common.js";
-import { parseConnectionString } from "./connectionStringParser.js";
+import { isValidInstrumentationKey, parseConnectionString } from "./connectionStringParser.js";
 import { Sender, type SenderResultType } from "./sender.js";
 import type { AzureMonitorEnvelope } from "./telemetryModels.js";
 
@@ -15,7 +16,12 @@ const CONTENT_TYPE = "application/json";
  * @public
  */
 export interface AzureMonitorOptions {
+  /** Azure Monitor connection string containing a valid UUID instrumentation key. */
   readonly connectionString: string;
+  /**
+   * Disables `sendBeacon` fallback when a keepalive request cannot be queued during page unload.
+   * This can prevent pending telemetry from being delivered when the page closes.
+   */
   readonly disableBeacon?: boolean;
 }
 
@@ -28,8 +34,10 @@ export class AzureMonitorExportClient {
     const { instrumentationKey, ingestionEndpoint } = parseConnectionString(
       options.connectionString,
     );
-    if (!instrumentationKey) {
-      throw new Error("The Azure Monitor connection string must contain an InstrumentationKey.");
+    if (!instrumentationKey || !isValidInstrumentationKey(instrumentationKey)) {
+      throw new Error(
+        "The Azure Monitor connection string must contain a valid InstrumentationKey UUID.",
+      );
     }
     this.instrumentationKey = instrumentationKey;
     this.sender = new Sender({
@@ -75,23 +83,20 @@ export class AzureMonitorExportClient {
 }
 
 function toExportResult(result: SenderResultType): ExportResult {
-  if (result.transport === "beacon" || (result.statusCode >= 200 && result.statusCode < 300)) {
+  if (result.transport === "beacon") {
     return { code: ExportResultCode.SUCCESS };
+  }
+  if (result.statusCode >= 200 && result.statusCode < 300 && result.statusCode !== 206) {
+    return { code: ExportResultCode.SUCCESS };
+  }
+  if (result.statusCode === 206) {
+    const response = parseBreezeResponse(result.result);
+    if (response && response.errors.every(isSamplingRejection)) {
+      return { code: ExportResultCode.SUCCESS };
+    }
   }
   return {
     code: ExportResultCode.FAILED,
     error: new Error(`Azure Monitor ingestion failed with HTTP status ${result.statusCode}.`),
   };
-}
-
-export abstract class AzureMonitorExporterBase {
-  protected constructor(protected readonly client: AzureMonitorExportClient) {}
-
-  public forceFlush(): Promise<void> {
-    return this.client.forceFlush();
-  }
-
-  public shutdown(): Promise<void> {
-    return this.client.shutdown();
-  }
 }
