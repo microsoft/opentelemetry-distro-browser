@@ -74,8 +74,6 @@ export async function useMicrosoftOpenTelemetry(
       ]
     : options.logRecordProcessors?.slice();
   const session = options.session?.enabled === true ? createSession() : undefined;
-  const spanProcessors = spanProcessors?.slice();
-  const logRecordProcessors = logRecordProcessors?.slice();
   const traceOptions = options.traces;
   // Distribution-owned instrumentations come last, so an application-supplied instance observing
   // the same API is installed first and is disabled last.
