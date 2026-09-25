@@ -47,9 +47,7 @@ describe("Azure Monitor log envelope mapping", () => {
     );
 
     expect(envelope.name).toBe("Microsoft.ApplicationInsights.Exception");
-    expect(envelope.tags["ai.internal.sdkVersion"]).toBe(
-      `mot${OPENTELEMETRY_BROWSER_VERSION}`,
-    );
+    expect(envelope.tags["ai.internal.sdkVersion"]).toBe(`mot${OPENTELEMETRY_BROWSER_VERSION}`);
     expect(envelope.data).toEqual({
       baseType: "ExceptionData",
       baseData: {
