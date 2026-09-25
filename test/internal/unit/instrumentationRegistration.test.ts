@@ -106,8 +106,8 @@ it("owns shutdown even when no instrumentation is selected", async () => {
   expect(sdk.shutdown).toHaveBeenCalledOnce();
 });
 
-it("wraps the upstream handle to provide distro lifecycle when nothing is registered", () => {
-  const { handle, sdk } = initialize([]);
+it("wraps the upstream handle to provide distro lifecycle when nothing is registered", async () => {
+  const { handle, sdk } = await initialize([]);
   expect(handle).not.toBe(sdk);
   expect(handle.forceFlush).toBeTypeOf("function");
 });

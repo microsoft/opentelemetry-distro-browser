@@ -21,9 +21,9 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-function makeSpan(): ReadableSpan {
+function makeSpan(name = "checkout"): ReadableSpan {
   return {
-    name: "checkout",
+    name,
     kind: SpanKind.CLIENT,
     spanContext: () => spanContext,
     startTime: [1_735_689_600, 0],
@@ -38,9 +38,23 @@ function makeSpan(): ReadableSpan {
 }
 
 function exportSpan(exporter: AzureMonitorSpanExporter) {
+  return exportSpans(exporter, [makeSpan()]);
+}
+
+function exportSpans(exporter: AzureMonitorSpanExporter, spans: ReadableSpan[]) {
   return new Promise<{ code: ExportResultCode; error?: Error }>((resolve) => {
-    exporter.export([makeSpan()], resolve);
+    exporter.export(spans, resolve);
   });
+}
+
+async function requestEnvelopes(fetch: ReturnType<typeof vi.fn>, call: number): Promise<unknown[]> {
+  const request = fetch.mock.calls[call][1] as RequestInit;
+  const response = new Response(request.body);
+  const body =
+    new Headers(request.headers).get("content-encoding") === "gzip"
+      ? await new Response(response.body!.pipeThrough(new DecompressionStream("gzip"))).text()
+      : await response.text();
+  return JSON.parse(body) as unknown[];
 }
 
 describe("AzureMonitorSpanExporter", () => {
@@ -52,18 +66,43 @@ describe("AzureMonitorSpanExporter", () => {
     await expect(exportSpan(exporter)).resolves.toEqual({ code: ExportResultCode.SUCCESS });
     expect(fetch).toHaveBeenCalledOnce();
     expect(fetch.mock.calls[0][0]).toBe("https://example.test/v2/track");
-    const request = fetch.mock.calls[0][1] as RequestInit;
-    const response = new Response(request.body);
-    const body =
-      new Headers(request.headers).get("content-encoding") === "gzip"
-        ? await new Response(response.body!.pipeThrough(new DecompressionStream("gzip"))).text()
-        : await response.text();
-    const envelopes = JSON.parse(body);
+    const envelopes = await requestEnvelopes(fetch, 0);
     expect(envelopes).toHaveLength(1);
     expect(envelopes[0]).toMatchObject({
       name: "Microsoft.ApplicationInsights.RemoteDependency",
       iKey: "00000000-0000-0000-0000-000000000000",
     });
+  });
+
+  it("retries only rejected retriable envelopes from a partial response", async () => {
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            itemsReceived: 2,
+            itemsAccepted: 1,
+            errors: [{ index: 1, statusCode: 500, message: "Server error" }],
+          }),
+          { status: 206 },
+        ),
+      )
+      .mockResolvedValueOnce(new Response("", { status: 200 }));
+    vi.stubGlobal("fetch", fetch);
+    const exporter = new AzureMonitorSpanExporter({ connectionString });
+
+    await expect(
+      exportSpans(exporter, [makeSpan("accepted"), makeSpan("retried")]),
+    ).resolves.toEqual({ code: ExportResultCode.SUCCESS });
+    expect(fetch).toHaveBeenCalledTimes(2);
+    await expect(requestEnvelopes(fetch, 1)).resolves.toEqual([
+      expect.objectContaining({
+        data: expect.objectContaining({
+          baseData: expect.objectContaining({ name: "retried" }),
+        }),
+      }),
+    ]);
   });
 
   it("converts HTTP and transport failures to failed ExportResults", async () => {

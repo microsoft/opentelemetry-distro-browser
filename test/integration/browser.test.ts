@@ -19,7 +19,7 @@ afterEach(() => {
 it("sends telemetry from a browser interaction to Azure Monitor ingestion", async () => {
   const runId = crypto.randomUUID();
   const ingestionEndpoint = `${inject("ingestionEndpoint")}${encodeURIComponent(runId)}`;
-  const telemetry = (
+  const telemetry = await (
     await import(/* @vite-ignore */ new URL("../../dist/esm/index.js", import.meta.url).href)
   ).useMicrosoftOpenTelemetry({
     azureMonitor: {

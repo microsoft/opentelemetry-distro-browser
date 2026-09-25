@@ -90,16 +90,17 @@ it("prepends session enrichment without changing the caller's processor arrays",
   expect(upstreamHandle.shutdown).toHaveBeenCalledOnce();
 });
 
-it("adds Azure Monitor batch exporters to both signals", async () => {
+it("adds Azure Monitor batch exporters after session enrichment and before caller processors", async () => {
   const pipeline = createInMemoryPipeline();
   const upstreamHandle = { shutdown: vi.fn(async () => {}) };
   vi.mocked(startBrowserSdk).mockReturnValueOnce(upstreamHandle);
 
-  const handle = useMicrosoftOpenTelemetry({
+  const handle = await useMicrosoftOpenTelemetry({
     azureMonitor: {
       connectionString:
         "InstrumentationKey=00000000-0000-0000-0000-000000000000;IngestionEndpoint=https://example.test",
     },
+    session: { enabled: true },
     spanProcessors: pipeline.options.spanProcessors,
     logRecordProcessors: pipeline.options.logRecordProcessors,
     pageView: { enabled: false },
@@ -108,12 +109,18 @@ it("adds Azure Monitor batch exporters to both signals", async () => {
   expect(startBrowserSdk).toHaveBeenCalledOnce();
   const sdkOptions = vi.mocked(startBrowserSdk).mock.calls[0]?.[0];
   if (!sdkOptions) throw new Error("Expected browser SDK options");
-  expect(sdkOptions.traces?.processors).toHaveLength(2);
-  expect(sdkOptions.traces?.processors?.[0]).toBeInstanceOf(BatchSpanProcessor);
-  expect(sdkOptions.traces?.processors?.[1]).toBe(pipeline.spanProcessor);
-  expect(sdkOptions.logs?.processors).toHaveLength(2);
-  expect(sdkOptions.logs?.processors?.[0]).toBeInstanceOf(BatchLogRecordProcessor);
-  expect(sdkOptions.logs?.processors?.[1]).toBe(pipeline.logProcessor);
+  expect(sdkOptions.traces?.processors).toHaveLength(3);
+  expect(sdkOptions.traces?.processors?.[0]).toEqual(
+    expect.objectContaining({ onStart: expect.any(Function) }),
+  );
+  expect(sdkOptions.traces?.processors?.[1]).toBeInstanceOf(BatchSpanProcessor);
+  expect(sdkOptions.traces?.processors?.[2]).toBe(pipeline.spanProcessor);
+  expect(sdkOptions.logs?.processors).toHaveLength(3);
+  expect(sdkOptions.logs?.processors?.[0]).toEqual(
+    expect.objectContaining({ onEmit: expect.any(Function) }),
+  );
+  expect(sdkOptions.logs?.processors?.[1]).toBeInstanceOf(BatchLogRecordProcessor);
+  expect(sdkOptions.logs?.processors?.[2]).toBe(pipeline.logProcessor);
 
   await handle.shutdown();
   expect(upstreamHandle.shutdown).toHaveBeenCalledOnce();
@@ -223,7 +230,7 @@ it("force flushes both signal processors", async () => {
   const pipeline = createInMemoryPipeline();
   const spanFlush = vi.spyOn(pipeline.spanProcessor, "forceFlush");
   const logFlush = vi.spyOn(pipeline.logProcessor, "forceFlush");
-  const handle = useMicrosoftOpenTelemetry(pipeline.options);
+  const handle = await useMicrosoftOpenTelemetry(pipeline.options);
   handles.add(handle);
 
   await handle.forceFlush();

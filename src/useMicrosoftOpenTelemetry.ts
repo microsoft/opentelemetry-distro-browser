@@ -64,7 +64,7 @@ export async function useMicrosoftOpenTelemetry(
         new BatchSpanProcessor(new AzureMonitorSpanExporter(options.azureMonitor)),
         ...(options.spanProcessors ?? []),
       ]
-    : options.spanProcessors;
+    : options.spanProcessors?.slice();
   const logRecordProcessors = options.azureMonitor
     ? [
         new BatchLogRecordProcessor({
@@ -72,7 +72,7 @@ export async function useMicrosoftOpenTelemetry(
         }),
         ...(options.logRecordProcessors ?? []),
       ]
-    : options.logRecordProcessors;
+    : options.logRecordProcessors?.slice();
   const session = options.session?.enabled === true ? createSession() : undefined;
   const spanProcessors = spanProcessors?.slice();
   const logRecordProcessors = logRecordProcessors?.slice();
@@ -83,7 +83,7 @@ export async function useMicrosoftOpenTelemetry(
     ...(options.instrumentations ?? []),
     ...createOwnedInstrumentations(options),
   ];
-  let sdk: MicrosoftOpenTelemetryBrowser | undefined;
+  let sdk: ReturnType<typeof startBrowserSdk> | undefined;
   let stopping = false;
   // Upstream stale tracers can still call processors after provider shutdown.
   const sessionProvider = {
@@ -147,10 +147,6 @@ export async function useMicrosoftOpenTelemetry(
   }
 
   const handle = { forceFlush, shutdown };
-  if (instrumentations.length === 0) return handle;
-
-  const handle = { forceFlush, shutdown };
-  if (instrumentations.length === 0) return handle;
 
   try {
     await session?.start();
@@ -184,6 +180,8 @@ export async function useMicrosoftOpenTelemetry(
         ...(session && logRecordProcessors === undefined ? { exportConfig: {} } : {}),
       },
     });
+    if (instrumentations.length === 0) return handle;
+
     const tracerProvider = trace.getTracerProvider();
     const loggerProvider = logs.getLoggerProvider();
     for (const instrumentation of instrumentations) {

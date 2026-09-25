@@ -51,7 +51,7 @@ export class AzureMonitorExportClient {
 
     const body = new TextEncoder().encode(JSON.stringify(envelopes));
     const operation = this.sender
-      .send({ body, contentType: CONTENT_TYPE, unloading: isUnloading() })
+      .send({ body, contentType: CONTENT_TYPE, envelopes, unloading: isUnloading() })
       .then((result) => callback(toExportResult(result)))
       .catch((error: unknown) =>
         callback({
