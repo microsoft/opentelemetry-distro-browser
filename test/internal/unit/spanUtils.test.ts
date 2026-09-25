@@ -5,6 +5,7 @@ import { SpanKind, SpanStatusCode, type SpanContext } from "@opentelemetry/api";
 import type { ReadableSpan } from "@opentelemetry/sdk-trace-base";
 import { describe, expect, it } from "vitest";
 import { spanToEnvelope } from "../../../src/exporter/spanUtils.js";
+import { OPENTELEMETRY_BROWSER_VERSION } from "../../../src/shared/constants.js";
 
 const instrumentationKey = "00000000-0000-0000-0000-000000000000";
 const spanContext: SpanContext = {
@@ -65,6 +66,7 @@ describe("Azure Monitor span envelope mapping", () => {
       iKey: instrumentationKey,
       sampleRate: 100,
       tags: {
+        "ai.internal.sdkVersion": `mot${OPENTELEMETRY_BROWSER_VERSION}`,
         "ai.operation.id": spanContext.traceId,
         "ai.operation.parentId": parentSpanContext.spanId,
         "ai.cloud.role": "browser-store",

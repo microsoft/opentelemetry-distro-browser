@@ -5,6 +5,7 @@ import type { SpanContext } from "@opentelemetry/api";
 import type { ReadableLogRecord } from "@opentelemetry/sdk-logs";
 import { describe, expect, it } from "vitest";
 import { logToEnvelope } from "../../../src/exporter/logUtils.js";
+import { OPENTELEMETRY_BROWSER_VERSION } from "../../../src/shared/constants.js";
 
 const instrumentationKey = "00000000-0000-0000-0000-000000000000";
 const spanContext: SpanContext = {
@@ -46,6 +47,9 @@ describe("Azure Monitor log envelope mapping", () => {
     );
 
     expect(envelope.name).toBe("Microsoft.ApplicationInsights.Exception");
+    expect(envelope.tags["ai.internal.sdkVersion"]).toBe(
+      `mot${OPENTELEMETRY_BROWSER_VERSION}`,
+    );
     expect(envelope.data).toEqual({
       baseType: "ExceptionData",
       baseData: {

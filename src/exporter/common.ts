@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 import type { Attributes, HrTime } from "@opentelemetry/api";
+import { OPENTELEMETRY_BROWSER_VERSION } from "../shared/constants.js";
 import type { AzureMonitorBaseData, AzureMonitorEnvelope } from "./telemetryModels.js";
 
 export function hrTimeToMilliseconds(hrTime: HrTime): number {
@@ -73,7 +74,9 @@ export function createTags(
   parentId: string | undefined,
   serviceName: unknown,
 ): Record<string, string> {
-  const tags: Record<string, string> = {};
+  const tags: Record<string, string> = {
+    "ai.internal.sdkVersion": `mot${OPENTELEMETRY_BROWSER_VERSION}`,
+  };
   if (traceId) tags["ai.operation.id"] = traceId;
   if (parentId) tags["ai.operation.parentId"] = parentId;
   if (serviceName) tags["ai.cloud.role"] = serializeAttribute(serviceName);
