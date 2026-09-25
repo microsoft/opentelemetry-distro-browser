@@ -165,27 +165,53 @@ it("uses an existing initial operation rather than generating an unrelated page 
   expect(page.spanContext).toEqual(initial);
 });
 
-it("retains a delayed page view's operation across a navigation inside its customization hook", async () => {
-  const pipeline = await initialize({
-    pageView: {
-      applyCustomLogRecordData: (record) => {
-        if (record.attributes?.["browser.page_view.index"] === 0) {
-          record.attributes["browser.page_view.name"] = "hook-name";
-          history.pushState(null, "", "/during-emission");
-        }
+it.each([false, true])(
+  "retains a delayed page view's operation across navigation (logs only=%s)",
+  async (logsOnly) => {
+    const pipeline = await initialize({
+      ...(logsOnly ? { spanProcessors: [] } : {}),
+      pageView: {
+        applyCustomLogRecordData: (record) => {
+          if (record.attributes?.["browser.page_view.index"] === 0) {
+            record.attributes["browser.page_view.name"] = "hook-name";
+            history.pushState(null, "", "/during-emission");
+          }
+        },
       },
-    },
-  });
-  const originalId = pipeline.emit()[0].spanContext().traceId;
-  window.dispatchEvent(new Event("pagehide"));
-  const page = pipeline.onEmit.mock.calls.find(
-    ([r]) => r.eventName === EVENT_BROWSER_PAGE_VIEW,
-  )![0];
-  expect(page.spanContext?.traceId).toBe(originalId);
-  expect(page.attributes["browser.page_view.id"]).toBe(originalId);
-  expect(page.attributes["browser.page_view.name"]).toBe("hook-name");
-  expect(pipeline.emit()[0].spanContext().traceId).not.toBe(originalId);
-});
+    });
+    pipeline.logger.emit({ body: "before navigation" });
+    const originalId = pipeline.onEmit.mock.calls.at(-1)![0].spanContext!.traceId;
+    window.dispatchEvent(new Event("pagehide"));
+    const page = pipeline.onEmit.mock.calls.find(
+      ([r]) => r.eventName === EVENT_BROWSER_PAGE_VIEW,
+    )![0];
+    expect(page.spanContext?.traceId).toBe(originalId);
+    expect(page.attributes["browser.page_view.id"]).toBe(originalId);
+    expect(page.attributes["browser.page_view.name"]).toBe("hook-name");
+    pipeline.logger.emit({ body: "after navigation" });
+    expect(pipeline.onEmit.mock.calls.at(-1)![0].spanContext?.traceId).not.toBe(originalId);
+  },
+);
+
+it.each([undefined, "", "custom-page-id"])(
+  "correlates a manually emitted page view in logs-only mode (ID %j)",
+  async (id) => {
+    const pipeline = await initialize({ spanProcessors: [] });
+    const attributes = id === undefined ? {} : { "browser.page_view.id": id };
+    pipeline.logger.emit({ eventName: EVENT_BROWSER_PAGE_VIEW, attributes });
+    const manual = pipeline.onEmit.mock.calls.at(-1)![0];
+    window.dispatchEvent(new Event("pagehide"));
+    const collected = pipeline.onEmit.mock.calls.find(
+      ([record]) => record.attributes["browser.page_view.index"] === 0,
+    )![0];
+    const operationId = collected.spanContext!.traceId;
+    expect(manual.spanContext?.traceId).toBe(operationId);
+    expect(manual.attributes).toEqual(attributes);
+    const envelope = logToEnvelope(manual, "key");
+    expect(envelope.tags["ai.operation.id"]).toBe(operationId);
+    expect(envelope.data.baseData).toMatchObject({ id: id || operationId });
+  },
+);
 
 it("correlates logs and page views with traces disabled without installing a context manager", async () => {
   const registerContext = vi.spyOn(context, "setGlobalContextManager");

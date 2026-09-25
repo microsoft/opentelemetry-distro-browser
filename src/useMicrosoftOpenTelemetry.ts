@@ -97,9 +97,6 @@ export async function useMicrosoftOpenTelemetry(
 
   try {
     await session?.start();
-    const internalSpanProcessors = [
-      ...(session ? [new SessionSpanProcessor(sessionProvider)] : []),
-    ];
     const internalLogProcessors = [
       ...(session ? [new SessionLogRecordProcessor(sessionProvider)] : []),
       ...(pageView ? [new PageViewLogRecordProcessor(getPageView)] : []),
@@ -115,13 +112,11 @@ export async function useMicrosoftOpenTelemetry(
           ? {}
           : { propagators: traceOptions.propagators.slice() }),
         processors:
-          internalSpanProcessors.length && spanProcessors?.length !== 0
-            ? [...internalSpanProcessors, ...(spanProcessors ?? [])]
+          session && spanProcessors?.length !== 0
+            ? [new SessionSpanProcessor(sessionProvider), ...(spanProcessors ?? [])]
             : spanProcessors,
         // Supplying enrichment processors must not disable upstream default export.
-        ...(internalSpanProcessors.length && spanProcessors === undefined
-          ? { exportConfig: {} }
-          : {}),
+        ...(session && spanProcessors === undefined ? { exportConfig: {} } : {}),
       },
       logs: {
         processors:

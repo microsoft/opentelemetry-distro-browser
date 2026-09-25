@@ -2,7 +2,6 @@
 // Licensed under the MIT License.
 
 import type { LogRecordProcessor, ReadWriteLogRecord } from "@opentelemetry/sdk-logs";
-import { EVENT_BROWSER_PAGE_VIEW } from "./semconv.js";
 import type { PageViewSource } from "./types.js";
 
 /** Correlates otherwise unparented logs, including when the trace pipeline is disabled. */
@@ -14,8 +13,8 @@ export class PageViewLogRecordProcessor implements LogRecordProcessor {
   }
 
   onEmit(record: ReadWriteLogRecord): void {
-    // Page views carry their originating context even when emission is delayed past navigation.
-    if (!record.spanContext && record.eventName !== EVENT_BROWSER_PAGE_VIEW) {
+    // Explicit contexts, including delayed page-view snapshots, take precedence.
+    if (!record.spanContext) {
       const spanContext = this.getPageView?.()?.spanContext;
       if (spanContext) record.spanContext = spanContext;
     }

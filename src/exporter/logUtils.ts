@@ -40,9 +40,9 @@ const promotedLogAttributes = new Set([
   EXCEPTION_TYPE,
   NAVIGATION_DURATION,
 ]);
+const promotedNavigationAttributes = new Set([...promotedLogAttributes, URL_FULL]);
 const promotedPageViewAttributes = new Set([
-  ...promotedLogAttributes,
-  URL_FULL,
+  ...promotedNavigationAttributes,
   ATTR_PAGE_VIEW_ID,
   ATTR_PAGE_VIEW_NAME,
   ATTR_PAGE_VIEW_DURATION,
@@ -61,11 +61,14 @@ export function logToEnvelope(
   logRecord: ReadableLogRecord,
   instrumentationKey: string,
 ): AzureMonitorEnvelope<MessageData | ExceptionData | PageViewData | CustomEventData> {
-  const isPageView =
-    logRecord.eventName === PAGE_VIEW_EVENT_NAME || logRecord.eventName === EVENT_BROWSER_PAGE_VIEW;
+  const isPageView = logRecord.eventName === EVENT_BROWSER_PAGE_VIEW;
   const customFields = mapAttributes(
     logRecord.attributes as Attributes,
-    isPageView ? promotedPageViewAttributes : promotedLogAttributes,
+    isPageView
+      ? promotedPageViewAttributes
+      : logRecord.eventName === PAGE_VIEW_EVENT_NAME
+        ? promotedNavigationAttributes
+        : promotedLogAttributes,
   );
   const tags = createTags(
     logRecord.spanContext?.traceId,
@@ -96,17 +99,18 @@ export function logToEnvelope(
       severityLevel,
       ...customFields,
     };
-  } else if (isPageView) {
+  } else if (isPageView || logRecord.eventName === PAGE_VIEW_EVENT_NAME) {
     const duration =
-      logRecord.attributes[ATTR_PAGE_VIEW_DURATION] ?? logRecord.attributes[NAVIGATION_DURATION];
-    const id = logRecord.attributes[ATTR_PAGE_VIEW_ID] ?? logRecord.spanContext?.traceId;
+      (isPageView ? logRecord.attributes[ATTR_PAGE_VIEW_DURATION] : undefined) ??
+      logRecord.attributes[NAVIGATION_DURATION];
+    const id = logRecord.attributes[ATTR_PAGE_VIEW_ID] || logRecord.spanContext?.traceId;
     name = "Microsoft.ApplicationInsights.PageView";
     baseType = "PageViewData";
     baseData = {
       ver: 2,
-      id: id === undefined ? undefined : serializeAttribute(id),
+      ...(isPageView ? { id: id === undefined ? undefined : serializeAttribute(id) } : {}),
       name: serializeAttribute(
-        logRecord.attributes[ATTR_PAGE_VIEW_NAME] ??
+        (isPageView ? logRecord.attributes[ATTR_PAGE_VIEW_NAME] : undefined) ??
           logRecord.body ??
           logRecord.attributes[URL_FULL] ??
           "Page View",

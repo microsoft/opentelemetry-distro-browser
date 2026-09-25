@@ -109,7 +109,6 @@ describe("Azure Monitor log envelope mapping", () => {
       baseType: "PageViewData",
       baseData: {
         ver: 2,
-        id: spanContext.traceId,
         name: "https://shop.example.test/cart",
         url: "https://shop.example.test/cart",
         duration: "00:00:00.4252500",
@@ -118,6 +117,44 @@ describe("Azure Monitor log envelope mapping", () => {
       },
     });
   });
+
+  it.each(["Legacy navigation", undefined])(
+    "preserves legacy navigation field precedence and custom attributes with body %j",
+    (body) => {
+      const url = "https://shop.example.test/cart";
+      const envelope = logToEnvelope(
+        makeLog({
+          eventName: "browser.navigation",
+          body,
+          attributes: {
+            "url.full": url,
+            "browser.navigation.duration": 425.25,
+            "browser.page_view.id": "custom-page-id",
+            "browser.page_view.name": "Custom page name",
+            "browser.page_view.duration": 12,
+          },
+        }),
+        instrumentationKey,
+      );
+
+      expect(envelope.tags["ai.operation.id"]).toBe(spanContext.traceId);
+      expect(envelope.data).toEqual({
+        baseType: "PageViewData",
+        baseData: {
+          ver: 2,
+          name: body ?? url,
+          url,
+          duration: "00:00:00.4252500",
+          properties: {
+            "browser.page_view.id": "custom-page-id",
+            "browser.page_view.name": "Custom page name",
+          },
+          measurements: { "browser.page_view.duration": 12 },
+        },
+      });
+      expect(envelope.data.baseData).not.toHaveProperty("id");
+    },
+  );
 
   it("maps browser.page_view and its operation ID to native PageViewData fields", () => {
     const envelope = logToEnvelope(
@@ -149,32 +186,36 @@ describe("Azure Monitor log envelope mapping", () => {
     });
   });
 
-  it.each([undefined, "custom-page-id"])(
-    "defaults page-view ID to the operation, preserving explicit ID %j",
+  it.each([undefined, "", "custom-page-id"])(
+    "matches AppInsights page-view ID fallback for explicit ID %j",
     (id) => {
       const envelope = logToEnvelope(
         makeLog({
           eventName: "browser.page_view",
-          attributes: id ? { "browser.page_view.id": id } : {},
+          attributes: id === undefined ? {} : { "browser.page_view.id": id },
         }),
         instrumentationKey,
       );
-      expect(envelope.data.baseData).toMatchObject({ id: id ?? spanContext.traceId });
+      expect(envelope.data.baseData).toMatchObject({ id: id || spanContext.traceId });
       expect(envelope.tags["ai.operation.id"]).toBe(spanContext.traceId);
     },
   );
 
-  it("does not fabricate an operation for a page view without trace context", () => {
-    const envelope = logToEnvelope(
-      makeLog({
-        eventName: "browser.page_view",
-        spanContext: undefined,
-      }),
-      instrumentationKey,
-    );
-    expect(envelope.tags["ai.operation.id"]).toBeUndefined();
-    expect(envelope.data.baseData).toMatchObject({ id: undefined });
-  });
+  it.each([undefined, ""])(
+    "does not fabricate an operation without trace context (ID %j)",
+    (id) => {
+      const envelope = logToEnvelope(
+        makeLog({
+          eventName: "browser.page_view",
+          spanContext: undefined,
+          attributes: id === undefined ? {} : { "browser.page_view.id": id },
+        }),
+        instrumentationKey,
+      );
+      expect(envelope.tags["ai.operation.id"]).toBeUndefined();
+      expect(envelope.data.baseData).toMatchObject({ id: undefined });
+    },
+  );
 
   it.each(["browser.console", "application.audit"])(
     "maps named log %s to MessageData without losing its message or severity",
