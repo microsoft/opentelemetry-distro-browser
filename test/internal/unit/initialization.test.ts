@@ -63,8 +63,8 @@ it("prepends session enrichment without changing the caller's processor arrays",
   expect(useMicrosoftOpenTelemetry).not.toBe(startBrowserSdk);
   expect(startBrowserSdk).toHaveBeenCalledExactlyOnceWith({
     traces: {
+      contextManager: expect.objectContaining({ active: expect.any(Function) }),
       processors: [
-        expect.objectContaining({ onStart: expect.any(Function) }),
         expect.objectContaining({ onStart: expect.any(Function) }),
         pipeline.spanProcessor,
       ],
@@ -105,6 +105,7 @@ it("forwards trace context configuration without sharing the propagator array", 
   const propagators = Object.freeze([propagator]);
   const options: MicrosoftOpenTelemetryBrowserOptions = {
     spanProcessors: [pipeline.spanProcessor],
+    pageView: { enabled: false },
     traces: Object.freeze({ contextManager, propagators }),
   };
   Object.freeze(options.spanProcessors);
@@ -118,14 +119,10 @@ it("forwards trace context configuration without sharing the propagator array", 
     traces: {
       contextManager,
       propagators: [propagator],
-      processors: [
-        expect.objectContaining({ onStart: expect.any(Function) }),
-        pipeline.spanProcessor,
-      ],
+      processors: [pipeline.spanProcessor],
     },
     logs: {
-      processors: [expect.objectContaining({ onEmit: expect.any(Function) })],
-      exportConfig: {},
+      processors: undefined,
     },
   });
   const forwarded = vi.mocked(startBrowserSdk).mock.calls[0]?.[0]?.traces?.propagators;
@@ -245,10 +242,17 @@ it.each(
         .filter((r) => r.eventName === "default"),
     ];
     for (const record of manualRecords) {
+      expect(record.attributes["browser.page_view.id"]).toBeUndefined();
+      expect(record.attributes["browser.document.url.full"]).toBeUndefined();
       if (pageViewEnabled) {
-        expect(record.attributes["browser.page_view.id"]).toMatch(/^[0-9a-f]{32}$/);
-        expect(record.attributes["browser.document.url.full"]).toBe(location.href);
-      } else expect(record.attributes["browser.page_view.id"]).toBeUndefined();
+        const spanContext =
+          typeof record.spanContext === "function" ? record.spanContext() : record.spanContext;
+        const page = logExport.mock.calls
+          .flatMap(([records]) => records)
+          .find((r) => r.eventName === "browser.page_view");
+        expect(spanContext?.traceId).toMatch(/^[0-9a-f]{32}$/);
+        if (page) expect(spanContext?.traceId).toBe(page.attributes["browser.page_view.id"]);
+      }
     }
   },
 );

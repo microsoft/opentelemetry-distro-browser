@@ -1,12 +1,17 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-import { context, diag, propagation, trace, type Attributes } from "@opentelemetry/api";
-import { logs } from "@opentelemetry/api-logs";
 import {
-  DocumentLogRecordProcessor,
-  DocumentSpanProcessor,
-} from "@opentelemetry/browser-sdk/document";
+  context,
+  diag,
+  propagation,
+  trace,
+  ROOT_CONTEXT,
+  type Attributes,
+  type SpanContext,
+} from "@opentelemetry/api";
+import { logs } from "@opentelemetry/api-logs";
+import { StackContextManager } from "@opentelemetry/sdk-trace-web";
 import { afterEach, expect, it, vi } from "vitest";
 import { useMicrosoftOpenTelemetry } from "../../../src/useMicrosoftOpenTelemetry.js";
 import type {
@@ -14,12 +19,11 @@ import type {
   MicrosoftOpenTelemetryBrowserOptions,
 } from "../../../src/types.js";
 import { PageViewInstrumentation } from "../../../src/instrumentation/pageView/pageViewInstrumentation.js";
-import { createPageViewContext } from "../../../src/instrumentation/pageView/pageViewContext.js";
-import {
-  PageViewLogRecordProcessor,
-  PageViewSpanProcessor,
-} from "../../../src/instrumentation/pageView/pageViewProcessors.js";
+import { PageViewContextManager } from "../../../src/instrumentation/pageView/pageViewContextManager.js";
+import { PageViewLogRecordProcessor } from "../../../src/instrumentation/pageView/pageViewProcessors.js";
 import { EVENT_BROWSER_PAGE_VIEW } from "../../../src/instrumentation/pageView/semconv.js";
+import { logToEnvelope } from "../../../src/exporter/logUtils.js";
+import { spanToEnvelope } from "../../../src/exporter/spanUtils.js";
 import { createInMemoryPipeline } from "../../fixtures/telemetry.js";
 
 const originalUrl = location.href;
@@ -35,9 +39,7 @@ afterEach(async () => {
   diag.disable();
   vi.restoreAllMocks();
   history.replaceState(null, "", originalUrl);
-  for (const result of results) {
-    if (result.status === "rejected") throw result.reason;
-  }
+  for (const result of results) if (result.status === "rejected") throw result.reason;
 });
 
 async function initialize(options: MicrosoftOpenTelemetryBrowserOptions = {}) {
@@ -46,8 +48,8 @@ async function initialize(options: MicrosoftOpenTelemetryBrowserOptions = {}) {
   const onEmit = vi.spyOn(pipeline.logProcessor, "onEmit");
   const handle = await useMicrosoftOpenTelemetry({ ...pipeline.options, ...options });
   handles.add(handle);
-  const tracer = trace.getTracer("page-context");
-  const logger = logs.getLogger("page-context");
+  const tracer = trace.getTracer("page-operation");
+  const logger = logs.getLogger("page-operation");
   function emit(attributes: Attributes = {}) {
     tracer.startSpan("manual", { attributes }).end();
     logger.emit({ eventName: "manual", attributes });
@@ -56,243 +58,180 @@ async function initialize(options: MicrosoftOpenTelemetryBrowserOptions = {}) {
   return { ...pipeline, onStart, onEmit, handle, tracer, logger, emit };
 }
 
-it("delegates document URL stamping and lifecycle to supported upstream processors", async () => {
-  const onStart = vi.spyOn(DocumentSpanProcessor.prototype, "onStart");
-  const onEmit = vi.spyOn(DocumentLogRecordProcessor.prototype, "onEmit");
-  const spanShutdown = vi.spyOn(DocumentSpanProcessor.prototype, "shutdown");
-  const logShutdown = vi.spyOn(DocumentLogRecordProcessor.prototype, "shutdown");
-  const { emit, handle } = await initialize({
-    pageView: { sanitizeUrl: () => "https://example.test/sanitized" },
-  });
-  for (const record of emit()) {
-    expect(record.attributes["browser.document.url.full"]).toBe("https://example.test/sanitized");
-  }
-  expect(onStart).toHaveBeenCalledOnce();
-  expect(onEmit).toHaveBeenCalledOnce();
-  for (const attributes of [
-    { "browser.document.url.full": "" },
-    { "browser.document.url.full": "https://application.test/page" },
-    { "browser.page_view.id": "different-page" },
-  ])
-    emit(attributes);
-  expect(onStart).toHaveBeenCalledOnce();
-  expect(onEmit).toHaveBeenCalledOnce();
-  await handle.shutdown();
-  expect(spanShutdown).toHaveBeenCalledOnce();
-  expect(logShutdown).toHaveBeenCalledOnce();
-});
-
-it("shares sanitized initial and SPA context with both signals, without changing HTTP URLs", async () => {
-  history.replaceState(null, "", "/initial?secret=one#private");
-  vi.spyOn(document, "referrer", "get").mockReturnValue("https://referrer.example/?secret=two");
-  const sanitizeUrl = vi.fn((raw: string) => {
-    const url = new URL(raw);
-    return url.origin + url.pathname;
-  });
+it("shares one native operation and page-view ID without stamping page metadata on other telemetry", async () => {
+  history.replaceState(null, "", "/initial?secret=one");
   const pipeline = await initialize({
-    pageView: { sanitizeUrl, routeResolver: () => "/route/:id" },
+    pageView: { sanitizeUrl: (url) => new URL(url).pathname, routeResolver: () => "/route/:id" },
   });
-  const first = pipeline.emit({ "url.full": "https://api.example/orders/123" });
-  const initialId = first[0].attributes["browser.page_view.id"];
-  for (const record of first) {
-    expect(record.attributes).toMatchObject({
-      "browser.document.url.full": location.origin + "/initial",
-      "browser.page_view.id": initialId,
-      "browser.page_view.index": 0,
-      "browser.page_view.name": "/route/:id",
-      "browser.page_view.name_source": "route",
-      "browser.page_view.referrer": "https://referrer.example/",
-      "browser.page_view.same_document": false,
-      "url.full": "https://api.example/orders/123",
-    });
-    expect(record.attributes["browser.page_view.type"]).toBeTypeOf("string");
-  }
+  const attributes = { "url.full": "https://api.example/orders/123", custom: "kept" };
+  const [span, log] = pipeline.emit(attributes);
+  const id = span.spanContext().traceId;
+  expect(id).toMatch(/^[0-9a-f]{32}$/);
+  expect(log.spanContext?.traceId).toBe(id);
+  expect(pipeline.emit()[0].spanContext().traceId).toBe(id);
+  expect(span.attributes).toEqual(attributes);
+  expect(log.attributes).toEqual(attributes);
   window.dispatchEvent(new Event("pagehide"));
-  const initialEvent = pipeline.onEmit.mock.calls.find(
+  const page = pipeline.onEmit.mock.calls.find(
     ([r]) => r.eventName === EVENT_BROWSER_PAGE_VIEW,
   )![0];
-  expect(initialEvent.attributes["browser.page_view.id"]).toBe(initialId);
-  expect(initialEvent.attributes["browser.document.url.full"]).toBe(location.origin + "/initial");
-
-  const request = pipeline.tracer.startSpan("cross-navigation");
-  const originatingAttributes = { ...pipeline.onStart.mock.calls.at(-1)![0].attributes };
-  history.pushState(null, "", "/next?secret=three#private");
-  const second = pipeline.emit();
-  const nextId = second[0].attributes["browser.page_view.id"];
-  expect(nextId).not.toBe(initialId);
-  for (const record of second) {
-    expect(record.attributes).toMatchObject({
-      "browser.document.url.full": location.origin + "/next",
-      "browser.page_view.id": nextId,
-      "browser.page_view.index": 1,
-      "browser.page_view.type": "push",
-      "browser.page_view.same_document": true,
-      "browser.page_view.referrer": location.origin + "/initial",
-    });
-    expect(record.attributes["url.full"]).toBeUndefined();
+  expect(page.spanContext?.traceId).toBe(id);
+  expect(page.attributes).toMatchObject({
+    "browser.page_view.id": id,
+    "browser.page_view.name": "/route/:id",
+    "url.full": "/initial",
+  });
+  expect(page.attributes["browser.document.url.full"]).toBeUndefined();
+  const pageEnvelope = logToEnvelope(page, "key");
+  expect(pageEnvelope.data).toMatchObject({
+    baseType: "PageViewData",
+    baseData: { id, name: "/route/:id", url: "/initial" },
+  });
+  await pipeline.spanProcessor.forceFlush();
+  const spanEnvelope = spanToEnvelope(pipeline.spanExporter.getFinishedSpans()[0], "key");
+  for (const envelope of [pageEnvelope, spanEnvelope, logToEnvelope(log, "key")]) {
+    expect(envelope.tags["ai.operation.id"]).toBe(id);
   }
-  request.end();
+});
+
+it("rotates operations on navigation without rewriting in-flight spans or explicitly bound callbacks", async () => {
+  const pipeline = await initialize();
+  const first = pipeline.tracer.startSpan("in-flight");
+  const firstContext = trace.setSpan(context.active(), first);
+  const bound = context.bind(firstContext, () => pipeline.emit());
+  const id = first.spanContext().traceId;
+  history.pushState(null, "", "/next");
+  const [next, nextLog] = pipeline.emit();
+  expect(next.spanContext().traceId).not.toBe(id);
+  expect(nextLog.spanContext?.traceId).toBe(next.spanContext().traceId);
+  const [oldChild, oldLog] = bound();
+  expect(oldChild.spanContext().traceId).toBe(id);
+  expect(oldChild.parentSpanContext?.spanId).toBe(first.spanContext().spanId);
+  expect(oldLog.spanContext).toEqual(first.spanContext());
+  first.end();
   await pipeline.spanProcessor.forceFlush();
   expect(
-    pipeline.spanExporter.getFinishedSpans().find((s) => s.name === "cross-navigation")?.attributes,
-  ).toEqual(originatingAttributes);
-  expect(originatingAttributes["browser.page_view.id"]).toBe(initialId);
-  const sanitizations = sanitizeUrl.mock.calls.length;
-  pipeline.emit();
-  expect(sanitizeUrl).toHaveBeenCalledTimes(sanitizations);
+    pipeline.spanExporter
+      .getFinishedSpans()
+      .find((s) => s.name === "in-flight")
+      ?.spanContext().traceId,
+  ).toBe(id);
 });
 
-it("preserves all explicit attributes, including empty strings, zero and false", async () => {
-  const { emit } = await initialize();
-  const id = emit()[0].attributes["browser.page_view.id"];
-  const attributes = Object.freeze({
-    "browser.page_view.id": id,
-    "browser.document.url.full": "",
-    "browser.page_view.index": 0,
-    "browser.page_view.name": "",
-    "browser.page_view.name_source": "explicit",
-    "browser.page_view.type": "custom",
-    "browser.page_view.same_document": false,
-    "browser.page_view.referrer": "",
-    "url.full": "https://api.example/",
+it("preserves explicit trace contexts, sampling flags, baggage, and explicitly rooted spans", async () => {
+  const delegate = new StackContextManager();
+  const enabled = vi.spyOn(delegate, "enable");
+  const withContext = vi.spyOn(delegate, "with");
+  const pipeline = await initialize({ traces: { contextManager: delegate } });
+  const pageId = pipeline.emit()[0].spanContext().traceId;
+  const explicit: SpanContext = {
+    traceId: "12345678901234567890123456789012",
+    spanId: "1234567890123456",
+    traceFlags: 0,
+    isRemote: true,
+  };
+  const supplied = trace.setSpanContext(ROOT_CONTEXT, explicit);
+  const baggage = propagation.createBaggage({ tenant: { value: "example" } });
+  context.with(propagation.setBaggage(supplied, baggage), () => {
+    expect(trace.getSpanContext(context.active())).toEqual(explicit);
+    expect(propagation.getBaggage(context.active())?.getEntry("tenant")?.value).toBe("example");
+    const child = pipeline.tracer.startSpan("explicit-child");
+    expect(child.spanContext().traceId).toBe(explicit.traceId);
+    expect(child.spanContext().traceFlags).toBe(0);
+    child.end();
+    pipeline.logger.emit({ body: "explicit log" });
   });
-  for (const record of emit(attributes)) expect(record.attributes).toEqual(attributes);
-  history.pushState(null, "", "/changed");
-  // The old association also protects its metadata from the new current page.
-  for (const record of emit(attributes)) expect(record.attributes).toEqual(attributes);
-  for (const record of emit({ "browser.page_view.name": "custom-name" })) {
-    expect(record.attributes["browser.page_view.name"]).toBe("custom-name");
-    expect(record.attributes["browser.page_view.index"]).toBe(1);
-  }
+  expect(pipeline.onEmit.mock.calls.at(-1)![0].spanContext).toEqual(explicit);
+  const root = pipeline.tracer.startSpan("root", { root: true });
+  expect(root.spanContext().traceId).not.toBe(pageId);
+  root.end();
+  expect(enabled).toHaveBeenCalledOnce();
+  expect(withContext).toHaveBeenCalled();
 });
 
-it.each(["external-page", ""])(
-  "does not mix current context into an explicit page ID %j",
-  async (id) => {
-    const { emit } = await initialize();
-    const attributes = { "browser.page_view.id": id };
-    for (const record of emit(attributes)) expect(record.attributes).toEqual(attributes);
-  },
-);
+it("uses an existing initial operation rather than generating an unrelated page ID", async () => {
+  const initial: SpanContext = {
+    traceId: "12345678901234567890123456789012",
+    spanId: "1234567890123456",
+    traceFlags: 1,
+  };
+  const initialContext = trace.setSpanContext(ROOT_CONTEXT, initial);
+  const delegate = new StackContextManager();
+  vi.spyOn(delegate, "active").mockReturnValue(initialContext);
+  const { onEmit } = await initialize({ traces: { contextManager: delegate } });
+  window.dispatchEvent(new Event("pagehide"));
+  const page = onEmit.mock.calls.find(([r]) => r.eventName === EVENT_BROWSER_PAGE_VIEW)![0];
+  expect(page.attributes["browser.page_view.id"]).toBe(initial.traceId);
+  expect(page.spanContext).toEqual(initial);
+});
 
-it.each(["empty", "throw"])(
-  "never falls back to raw URLs when sanitization returns %s",
-  async (mode) => {
-    vi.spyOn(document, "referrer", "get").mockReturnValue("https://referrer.example/private");
-    const { emit, onEmit } = await initialize({
-      pageView: {
-        routeResolver: () => "/safe",
-        sanitizeUrl: () => {
-          if (mode === "throw") throw new Error("redaction failed");
-          return "";
-        },
+it("retains a delayed page view's operation across a navigation inside its customization hook", async () => {
+  const pipeline = await initialize({
+    pageView: {
+      applyCustomLogRecordData: (record) => {
+        if (record.attributes?.["browser.page_view.index"] === 0) {
+          record.attributes["browser.page_view.name"] = "hook-name";
+          history.pushState(null, "", "/during-emission");
+        }
       },
-    });
-    const records = [...emit()];
-    window.dispatchEvent(new Event("pagehide"));
-    records.push(onEmit.mock.calls.find(([r]) => r.eventName === EVENT_BROWSER_PAGE_VIEW)![0]);
-    for (const record of records) {
-      expect(record.attributes["browser.document.url.full"]).toBeUndefined();
-      expect(record.attributes["browser.page_view.referrer"]).toBeUndefined();
-      expect(record.attributes["url.full"]).toBeUndefined();
-      expect(record.attributes["browser.page_view.name"]).toBe("/safe");
-    }
-  },
-);
+    },
+  });
+  const originalId = pipeline.emit()[0].spanContext().traceId;
+  window.dispatchEvent(new Event("pagehide"));
+  const page = pipeline.onEmit.mock.calls.find(
+    ([r]) => r.eventName === EVENT_BROWSER_PAGE_VIEW,
+  )![0];
+  expect(page.spanContext?.traceId).toBe(originalId);
+  expect(page.attributes["browser.page_view.id"]).toBe(originalId);
+  expect(page.attributes["browser.page_view.name"]).toBe("hook-name");
+  expect(pipeline.emit()[0].spanContext().traceId).not.toBe(originalId);
+});
 
-it.each([false, true])(
-  "keeps a delayed page-view snapshot and hook edits (remove identity=%s)",
-  async (removeIdentity) => {
-    history.replaceState(null, "", "/old");
-    vi.spyOn(document, "referrer", "get").mockReturnValue("");
-    const { onEmit, emit } = await initialize({
-      pageView: {
-        applyCustomLogRecordData: (record) => {
-          if (record.attributes?.["browser.page_view.index"] === 0) {
-            if (removeIdentity) {
-              delete record.attributes["browser.page_view.id"];
-              delete record.attributes["browser.document.url.full"];
-            }
-            record.attributes["browser.page_view.name"] = "hook-name";
-            history.pushState(null, "", "/new");
-          }
+it("correlates logs and page views with traces disabled without installing a context manager", async () => {
+  const registerContext = vi.spyOn(context, "setGlobalContextManager");
+  const pipeline = await initialize({ spanProcessors: [] });
+  pipeline.logger.emit({ body: "log-only" });
+  const log = pipeline.onEmit.mock.calls.at(-1)![0];
+  window.dispatchEvent(new Event("pagehide"));
+  const page = pipeline.onEmit.mock.calls.find(
+    ([r]) => r.eventName === EVENT_BROWSER_PAGE_VIEW,
+  )![0];
+  expect(log.spanContext?.traceId).toBe(page.attributes["browser.page_view.id"]);
+  expect(log.attributes).toEqual({});
+  expect(registerContext).not.toHaveBeenCalled();
+});
+
+it("provides the page operation before caller instrumentations emit during enable", async () => {
+  let startupId: string | undefined;
+  const pipeline = await initialize({
+    instrumentations: [
+      {
+        getConfig: () => ({ enabled: false }),
+        setTracerProvider: () => {},
+        enable: () => {
+          const span = trace.getTracer("startup").startSpan("startup");
+          startupId = span.spanContext().traceId;
+          span.end();
         },
+        disable: () => {},
       },
-    });
-    window.dispatchEvent(new Event("pagehide"));
-    const old = onEmit.mock.calls.find(([r]) => r.eventName === EVENT_BROWSER_PAGE_VIEW)![0];
-    const current = emit()[1];
-    expect(old.attributes["url.full"]).toBe(location.origin + "/old");
-    expect(old.attributes["browser.document.url.full"]).toBe(
-      removeIdentity ? undefined : location.origin + "/old",
-    );
-    expect(old.attributes["browser.page_view.id"]).not.toBe(
-      current.attributes["browser.page_view.id"],
-    );
-    expect(old.attributes["browser.page_view.index"]).toBe(0);
-    expect(old.attributes["browser.page_view.name"]).toBe("hook-name");
-    expect(old.attributes["browser.page_view.referrer"]).toBeUndefined();
-    expect(current.attributes["browser.document.url.full"]).toBe(location.origin + "/new");
-    expect(current.attributes["browser.page_view.index"]).toBe(1);
-  },
-);
+    ],
+  });
+  expect(pipeline.emit()[0].spanContext().traceId).toBe(startupId);
+});
 
-it("adds no page context when page views are disabled", async () => {
+it("does not correlate by page when page views are disabled", async () => {
   const { emit } = await initialize({ pageView: { enabled: false } });
-  history.pushState(null, "", "/disabled");
-  for (const record of emit()) expect(record.attributes).toEqual({});
+  const [first, log] = emit();
+  expect(emit()[0].spanContext().traceId).not.toBe(first.spanContext().traceId);
+  expect(log.spanContext).toBeUndefined();
+  expect(first.attributes).toEqual({});
+  expect(log.attributes).toEqual({});
 });
 
-it("handles unavailable and cleared context and releases both processors on shutdown", async () => {
-  const source = createPageViewContext();
-  const getPageView = vi.fn(() => source.getCurrentPageView());
-  const spanProcessor = new PageViewSpanProcessor(getPageView);
-  const logProcessor = new PageViewLogRecordProcessor(getPageView);
-  const pipeline = createInMemoryPipeline();
-  const onStart = vi.spyOn(pipeline.spanProcessor, "onStart");
-  const onEmit = vi.spyOn(pipeline.logProcessor, "onEmit");
-  handles.add(
-    await useMicrosoftOpenTelemetry({
-      pageView: { enabled: false },
-      spanProcessors: [spanProcessor, pipeline.spanProcessor],
-      logRecordProcessors: [logProcessor, pipeline.logProcessor],
-    }),
-  );
-  function emit() {
-    trace.getTracer("source").startSpan("manual").end();
-    logs.getLogger("source").emit({ eventName: "manual" });
-    return [onStart.mock.calls.at(-1)![0].attributes, onEmit.mock.calls.at(-1)![0].attributes];
-  }
-  for (const attributes of emit()) expect(attributes).toEqual({});
-  source.setCurrentPageView({
-    id: "current",
-    index: 0,
-    name: "page",
-    nameSource: "route",
-    url: "https://example.test/",
-    referrer: "",
-    navigationType: "navigate",
-    sameDocument: false,
-    startTimeUnixMs: Date.now(),
-  });
-  getPageView.mockClear();
-  for (const attributes of emit()) expect(attributes["browser.page_view.id"]).toBe("current");
-  expect(getPageView).toHaveBeenCalledTimes(2);
-  const current = source.getCurrentPageView()!;
-  source.clear();
-  for (const attributes of emit()) expect(attributes).toEqual({});
-  source.setCurrentPageView({ ...current, id: "next" });
-  await Promise.all([spanProcessor.forceFlush(), logProcessor.forceFlush()]);
-  await Promise.all([spanProcessor.shutdown(), logProcessor.shutdown()]);
-  getPageView.mockClear();
-  for (const attributes of emit()) expect(attributes).toEqual({});
-  expect(getPageView).not.toHaveBeenCalled();
-  expect(logProcessor.enabled()).toBe(false);
-});
-
-it("stops stamping immediately on shutdown, even before provider shutdown finishes", async () => {
-  const { handle, spanProcessor, onStart, tracer } = await initialize();
-  const pushState = history.pushState;
+it("stops supplying the page operation immediately on shutdown", async () => {
+  const { handle, spanProcessor, tracer, emit } = await initialize();
+  const pageId = emit()[0].spanContext().traceId;
   let finish!: () => void;
   const originalShutdown = spanProcessor.shutdown.bind(spanProcessor);
   vi.spyOn(spanProcessor, "shutdown").mockImplementation(
@@ -305,16 +244,57 @@ it("stops stamping immediately on shutdown, even before provider shutdown finish
   );
   const stopping = handle.shutdown();
   try {
-    expect(history.pushState).not.toBe(pushState);
-    tracer.startSpan("stale").end();
-    expect(onStart.mock.calls.at(-1)![0].attributes).toEqual({});
+    const stale = tracer.startSpan("stale");
+    expect(stale.spanContext().traceId).not.toBe(pageId);
+    stale.end();
+    expect(trace.getSpanContext(context.active())).toBeUndefined();
   } finally {
     finish();
     await stopping;
   }
 });
 
-it("clears context and restores history if page-view startup fails after enabling", async () => {
+it("keeps log filtering unchanged and releases the log processor source on shutdown", async () => {
+  const getPageView = vi.fn(() => undefined);
+  const processor = new PageViewLogRecordProcessor(getPageView);
+  const pipeline = await initialize({ pageView: { enabled: false } });
+  const log = pipeline.emit()[1];
+  processor.onEmit(log);
+  expect(getPageView).toHaveBeenCalledOnce();
+  expect(processor.enabled()).toBe(false);
+  await processor.forceFlush();
+  await processor.shutdown();
+  getPageView.mockClear();
+  processor.onEmit(log);
+  expect(getPageView).not.toHaveBeenCalled();
+});
+
+it("disables and reenables its delegated context manager", async () => {
+  let source: PageViewInstrumentation["pageViews"] | undefined;
+  const enable = PageViewInstrumentation.prototype.enable;
+  vi.spyOn(PageViewInstrumentation.prototype, "enable").mockImplementation(function (
+    this: PageViewInstrumentation,
+  ) {
+    source = this.pageViews;
+    enable.call(this);
+  });
+  await initialize();
+  const delegate = new StackContextManager();
+  const disable = vi.spyOn(delegate, "disable");
+  const manager = new PageViewContextManager(() => source?.getCurrentPageView(), delegate);
+  expect(manager.active()).toBe(ROOT_CONTEXT);
+  manager.enable();
+  expect(trace.getSpanContext(manager.active())?.traceId).toBe(source?.getCurrentPageView()?.id);
+  manager.disable();
+  expect(manager.active()).toBe(ROOT_CONTEXT);
+  expect(disable).toHaveBeenCalledOnce();
+  manager.enable();
+  expect(trace.getSpanContext(manager.active())?.traceId).toBe(source?.getCurrentPageView()?.id);
+  manager.shutdown();
+  expect(manager.active()).toBe(ROOT_CONTEXT);
+});
+
+it("clears operation context and restores history when page-view startup fails", async () => {
   const pushState = history.pushState;
   const originalEnable = PageViewInstrumentation.prototype.enable;
   let pageViews: PageViewInstrumentation["pageViews"] | undefined;
@@ -326,11 +306,8 @@ it("clears context and restores history if page-view startup fails after enablin
     throw new Error("page startup failed");
   });
   const pipeline = createInMemoryPipeline();
-  const spanShutdown = vi.spyOn(pipeline.spanProcessor, "shutdown");
-  const logShutdown = vi.spyOn(pipeline.logProcessor, "shutdown");
   await expect(useMicrosoftOpenTelemetry(pipeline.options)).rejects.toThrow("page startup failed");
   expect(history.pushState).toBe(pushState);
   expect(pageViews?.getCurrentPageView()).toBeUndefined();
-  expect(spanShutdown).toHaveBeenCalledOnce();
-  expect(logShutdown).toHaveBeenCalledOnce();
+  expect(trace.getSpanContext(context.active())).toBeUndefined();
 });

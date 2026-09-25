@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+import type { SpanContext } from "@opentelemetry/api";
 import { type LogRecord } from "@opentelemetry/api-logs";
 
 /**
@@ -55,17 +56,17 @@ export type PageViewNavigationType =
  *
  * @remarks
  * Published as soon as the navigation is observed, which is well before the log record is emitted.
- * That ordering is deliberate: a processor stamping {@link PageView.id} onto other signals must see
- * the id while the page is still loading, not after it has settled.
+ * That ordering lets other telemetry inherit the page's operation while it is still loading.
  *
  * @internal
  */
 export interface PageView {
   /**
-   * Correlation id minted for this navigation. Opaque, currently 32 lowercase hexadecimal
-   * characters. It is not a trace id and must not be parsed or used as one.
+   * Operation trace id for this navigation, also used as the default page-view id.
    */
   readonly id: string;
+  /** Non-recording operation context inherited by otherwise unparented spans and logs. */
+  readonly spanContext: SpanContext;
   /** Zero-based ordinal of this page view within the document's lifetime. */
   readonly index: number;
   /** Resolved page name. */

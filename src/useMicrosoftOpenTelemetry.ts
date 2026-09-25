@@ -7,10 +7,8 @@ import { startBrowserSdk } from "@opentelemetry/browser-sdk";
 import { SessionLogRecordProcessor, SessionSpanProcessor } from "./session/sessionProcessors.js";
 import { createSession } from "./session/createSession.js";
 import { PageViewInstrumentation } from "./instrumentation/pageView/index.js";
-import {
-  PageViewLogRecordProcessor,
-  PageViewSpanProcessor,
-} from "./instrumentation/pageView/pageViewProcessors.js";
+import { PageViewLogRecordProcessor } from "./instrumentation/pageView/pageViewProcessors.js";
+import { PageViewContextManager } from "./instrumentation/pageView/pageViewContextManager.js";
 import type {
   MicrosoftOpenTelemetryBrowser,
   MicrosoftOpenTelemetryBrowserOptions,
@@ -55,9 +53,8 @@ export async function useMicrosoftOpenTelemetry(
   const logRecordProcessors = options.logRecordProcessors?.slice();
   const traceOptions = options.traces;
   const pageView = createPageViewInstrumentation(options);
-  // Distribution-owned instrumentations come last, so an application-supplied instance observing
-  // the same API is installed first and is disabled last.
-  const instrumentations = [...(options.instrumentations ?? []), ...(pageView ? [pageView] : [])];
+  // Publish the page operation before caller instrumentations can emit during enable or navigation.
+  const instrumentations = [...(pageView ? [pageView] : []), ...(options.instrumentations ?? [])];
   let sdk: MicrosoftOpenTelemetryBrowser | undefined;
   let stopping = false;
   // Upstream stale tracers can still call processors after provider shutdown.
@@ -65,11 +62,16 @@ export async function useMicrosoftOpenTelemetry(
     getSessionId: () => (stopping ? null : (session?.getSessionId() ?? null)),
   };
   const getPageView = () => (stopping ? undefined : pageView?.pageViews.getCurrentPageView());
+  const pageContextManager =
+    pageView && spanProcessors?.length !== 0
+      ? new PageViewContextManager(getPageView, traceOptions?.contextManager)
+      : undefined;
 
   let shutdownPromise: Promise<void> | undefined;
   function shutdown(): Promise<void> {
     return (shutdownPromise ??= (async () => {
       stopping = true;
+      pageContextManager?.shutdown();
       const errors: unknown[] = [];
       try {
         session?.shutdown();
@@ -97,7 +99,6 @@ export async function useMicrosoftOpenTelemetry(
     await session?.start();
     const internalSpanProcessors = [
       ...(session ? [new SessionSpanProcessor(sessionProvider)] : []),
-      ...(pageView ? [new PageViewSpanProcessor(getPageView)] : []),
     ];
     const internalLogProcessors = [
       ...(session ? [new SessionLogRecordProcessor(sessionProvider)] : []),
@@ -105,9 +106,11 @@ export async function useMicrosoftOpenTelemetry(
     ];
     sdk = startBrowserSdk({
       traces: {
-        ...(traceOptions?.contextManager === undefined
-          ? {}
-          : { contextManager: traceOptions.contextManager }),
+        ...(pageContextManager
+          ? { contextManager: pageContextManager }
+          : traceOptions?.contextManager === undefined
+            ? {}
+            : { contextManager: traceOptions.contextManager }),
         ...(traceOptions?.propagators === undefined
           ? {}
           : { propagators: traceOptions.propagators.slice() }),

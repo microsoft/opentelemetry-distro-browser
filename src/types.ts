@@ -90,9 +90,9 @@ export interface BrowserInstrumentation {
  * Advanced configuration for browser trace context and propagation.
  *
  * @remarks
- * When omitted, the upstream browser SDK installs its default browser context manager and W3C
- * Trace Context and Baggage propagators. Supplying either setting replaces that upstream default
- * when the trace pipeline starts.
+ * W3C Trace Context and Baggage are the default propagators. With page views enabled, the
+ * distribution supplies a page operation when the configured context manager has no active
+ * span. Without page views, the upstream browser SDK's context-manager default is unchanged.
  *
  * The OpenTelemetry global context and propagation APIs are page-lifetime registrations. Like the
  * tracer and logger providers, they are not unregistered by `shutdown`; initialize this
@@ -103,7 +103,9 @@ export interface BrowserInstrumentation {
 export interface MicrosoftOpenTelemetryBrowserTraceOptions {
   /**
    * Context manager used to track the active span across browser callbacks.
-   * Omit this setting to use the upstream browser SDK default when traces are initialized.
+   * With page views enabled, otherwise unparented telemetry inherits the page operation.
+   * Explicit span contexts take precedence. The default is synchronous stack-based context;
+   * use explicit context binding across asynchronous boundaries.
    */
   contextManager?: ContextManager;
   /**
@@ -150,12 +152,13 @@ export interface MicrosoftOpenTelemetryBrowserOptions {
    *
    * @remarks
    * Emits one `browser.page_view` log record per navigation, covering the initial document load
-   * and subsequent route changes, and mints a per-navigation correlation id.
-   * Supplies missing page attributes and the sanitized `browser.document.url.full` on spans at
-   * start and logs at emission. Explicit attributes and associations with other pages are kept;
-   * HTTP `url.full` is untouched. Page-view events retain their own navigation snapshot.
+   * and subsequent route changes. Its id is the operation's OpenTelemetry trace id, also mapped
+   * to Application Insights operationId. Otherwise unparented spans and logs share that operation;
+   * explicit trace contexts take precedence. Each navigation starts a new operation, without
+   * changing in-flight spans or explicitly bound callbacks from an older operation.
+   * Page URL and descriptive attributes remain on page-view records, not on other telemetry.
    *
-   * Collection and enrichment are on by default; set `enabled: false` to turn both off.
+   * Collection and operation correlation are on by default; set `enabled: false` to turn both off.
    * This does not remove the implementation from the bundle, because a bundler resolves imports
    * long before this object exists.
    */

@@ -1,15 +1,29 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+import {
+  context,
+  isSpanContextValid,
+  isValidTraceId,
+  ROOT_CONTEXT,
+  trace,
+  TraceFlags,
+} from "@opentelemetry/api";
 import { type LogRecord } from "@opentelemetry/api-logs";
+import { RandomIdGenerator } from "@opentelemetry/sdk-trace-base";
 import { InstrumentationBase, safeExecuteInTheMiddle } from "@opentelemetry/instrumentation";
 import { OPENTELEMETRY_BROWSER_VERSION } from "../../shared/constants.js";
 import { createPageViewContext, generatePageViewId } from "./pageViewContext.js";
-import { pageViewAttributes } from "./pageViewAttributes.js";
 import {
-  ATTR_BROWSER_DOCUMENT_URL_FULL,
   ATTR_PAGE_VIEW_DURATION,
   ATTR_PAGE_VIEW_DURATION_SOURCE,
+  ATTR_PAGE_VIEW_ID,
+  ATTR_PAGE_VIEW_INDEX,
+  ATTR_PAGE_VIEW_NAME,
+  ATTR_PAGE_VIEW_NAME_SOURCE,
+  ATTR_PAGE_VIEW_REFERRER,
+  ATTR_PAGE_VIEW_SAME_DOCUMENT,
+  ATTR_PAGE_VIEW_TYPE,
   ATTR_URL_FULL,
   DURATION_SOURCE_DOCUMENT_LOAD,
   DURATION_SOURCE_NAVIGATION_TIMING,
@@ -70,6 +84,7 @@ interface PendingPageView {
   /** Monotonic start, from `performance.now()`. */
   readonly startedAt: number;
   capTimerId?: number;
+  taskTimerId?: number;
 }
 
 /**
@@ -171,8 +186,8 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
    * Read-only page-view seam.
    *
    * @remarks
-   * A correlation processor reads the current page-view id from here and stamps it onto the
-   * signals it sees. Exposed as {@link PageViewSource} rather than the writable context, so a
+   * The distribution uses the current operation as the default context for other signals.
+   * Exposed as {@link PageViewSource} rather than the writable context, so a
    * consumer cannot mint or mutate page views.
    */
   public get pageViews(): PageViewSource {
@@ -348,14 +363,14 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
     if (document.readyState === "complete") {
       this.scheduleMacrotask(() => {
         this.finalizeHardNavigation(documentNavigation);
-      });
+      }, documentNavigation);
       return;
     }
     this.onLoad = (): void => {
       // `loadEventEnd` is populated only after the load event finishes dispatching.
       this.scheduleMacrotask(() => {
         this.finalizeHardNavigation(documentNavigation);
-      });
+      }, documentNavigation);
     };
     window.addEventListener("load", this.onLoad, { once: true });
   }
@@ -586,8 +601,12 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
     this.scheduleMacrotask(callback);
   }
 
-  private scheduleMacrotask(callback: () => void): void {
-    window.setTimeout(callback, 0);
+  private scheduleMacrotask(callback: () => void, pending = this.pending): void {
+    if (!pending || this.pending !== pending) return;
+    pending.taskTimerId = window.setTimeout(() => {
+      pending.taskTimerId = undefined;
+      callback();
+    }, 0);
   }
 
   /** Starts a new page view and publishes it. Returns the pending record callbacks should target. */
@@ -602,9 +621,20 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
     const config = this.getConfig();
     const rawUrl = input.url ?? location.href;
     const resolved = this.resolveName();
+    const initialContext =
+      this.pageViewIndex === 0 ? trace.getSpanContext(context.active()) : undefined;
+    const spanContext =
+      initialContext && isSpanContextValid(initialContext)
+        ? initialContext
+        : {
+            traceId: this.mintId(config.generatePageViewId),
+            spanId: new RandomIdGenerator().generateSpanId(),
+            traceFlags: TraceFlags.SAMPLED,
+          };
 
     const pageView: PageView = {
-      id: this.mintId(config.generatePageViewId),
+      id: spanContext.traceId,
+      spanContext,
       index: this.pageViewIndex++,
       name: resolved.name,
       nameSource: resolved.source,
@@ -651,7 +681,7 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
     return typeof result === "string" ? result : "";
   }
 
-  /** Mints a page-view id, falling back to the built-in generator if a supplied one throws. */
+  /** Mints a trace id, falling back with diagnostics when a supplied generator fails. */
   private mintId(generate: (() => string) | undefined): string {
     if (!generate) {
       return generatePageViewId();
@@ -665,7 +695,9 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
       },
       true,
     );
-    return typeof result === "string" && result ? result : generatePageViewId();
+    if (typeof result === "string" && isValidTraceId(result)) return result;
+    this._diag.error("generatePageViewId must return a valid trace id");
+    return generatePageViewId();
   }
 
   /**
@@ -799,17 +831,19 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
       eventName: EVENT_BROWSER_PAGE_VIEW,
       severityNumber: SEVERITY_NUMBER_INFO,
       timestamp: pageView.startTimeUnixMs,
+      context: trace.setSpanContext(ROOT_CONTEXT, pageView.spanContext),
       attributes: {
-        ...pageViewAttributes(pageView),
         // Omitted when the sanitizer dropped it, rather than reported as an empty string.
-        ...(pageView.url
-          ? {
-              [ATTR_URL_FULL]: pageView.url,
-              [ATTR_BROWSER_DOCUMENT_URL_FULL]: pageView.url,
-            }
-          : {}),
+        ...(pageView.url ? { [ATTR_URL_FULL]: pageView.url } : {}),
+        [ATTR_PAGE_VIEW_ID]: pageView.id,
+        [ATTR_PAGE_VIEW_INDEX]: pageView.index,
+        [ATTR_PAGE_VIEW_NAME]: pageView.name,
+        [ATTR_PAGE_VIEW_NAME_SOURCE]: pageView.nameSource,
         [ATTR_PAGE_VIEW_DURATION]: Math.max(0, durationMs),
         [ATTR_PAGE_VIEW_DURATION_SOURCE]: durationSource,
+        [ATTR_PAGE_VIEW_TYPE]: pageView.navigationType,
+        [ATTR_PAGE_VIEW_SAME_DOCUMENT]: pageView.sameDocument,
+        ...(pageView.referrer ? { [ATTR_PAGE_VIEW_REFERRER]: pageView.referrer } : {}),
       },
     };
 
@@ -849,6 +883,9 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
     }
     if (pending.capTimerId !== undefined) {
       clearTimeout(pending.capTimerId);
+    }
+    if (pending.taskTimerId !== undefined) {
+      clearTimeout(pending.taskTimerId);
     }
     this.pending = undefined;
   }

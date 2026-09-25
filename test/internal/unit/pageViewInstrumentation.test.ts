@@ -563,7 +563,7 @@ describe("PageViewInstrumentation", () => {
     });
 
     it("uses an injected id generator", async () => {
-      const generatePageViewIdMock = vi.fn(() => "deterministic-id");
+      const generatePageViewIdMock = vi.fn(() => "12345678901234567890123456789012");
       const { instrumentation, provider } = createInstrumentation({
         generatePageViewId: generatePageViewIdMock,
       });
@@ -572,7 +572,7 @@ describe("PageViewInstrumentation", () => {
       await settle();
 
       expect(attributesOf(provider.records[0] as LogRecord)[ATTR_PAGE_VIEW_ID]).toBe(
-        "deterministic-id",
+        "12345678901234567890123456789012",
       );
       expect(generatePageViewIdMock).toHaveBeenCalled();
     });
@@ -584,6 +584,18 @@ describe("PageViewInstrumentation", () => {
         expect(id).toMatch(/^[0-9a-f]{32}$/);
       }
     });
+
+    it.each(["", "invalid-id", "00000000000000000000000000000000"])(
+      "replaces an invalid injected operation ID %j",
+      (id) => {
+        const { instrumentation } = createInstrumentation({ generatePageViewId: () => id });
+        instrumentation.enable();
+        const pageView = instrumentation.pageViews.getCurrentPageView()!;
+        expect(pageView.id).toMatch(/^[0-9a-f]{32}$/);
+        expect(pageView.id).not.toBe(id);
+        expect(pageView.spanContext.traceId).toBe(pageView.id);
+      },
+    );
   });
 
   describe("configuration hooks", () => {

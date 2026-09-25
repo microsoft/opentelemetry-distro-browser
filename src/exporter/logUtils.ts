@@ -4,6 +4,12 @@
 import type { Attributes } from "@opentelemetry/api";
 import type { ReadableLogRecord } from "@opentelemetry/sdk-logs";
 import {
+  ATTR_PAGE_VIEW_DURATION,
+  ATTR_PAGE_VIEW_ID,
+  ATTR_PAGE_VIEW_NAME,
+  EVENT_BROWSER_PAGE_VIEW,
+} from "../instrumentation/pageView/semconv.js";
+import {
   createEnvelope,
   createTags,
   hrTimeToDate,
@@ -34,7 +40,13 @@ const promotedLogAttributes = new Set([
   EXCEPTION_TYPE,
   NAVIGATION_DURATION,
 ]);
-const promotedPageViewAttributes = new Set([...promotedLogAttributes, URL_FULL]);
+const promotedPageViewAttributes = new Set([
+  ...promotedLogAttributes,
+  URL_FULL,
+  ATTR_PAGE_VIEW_ID,
+  ATTR_PAGE_VIEW_NAME,
+  ATTR_PAGE_VIEW_DURATION,
+]);
 
 function mapSeverity(severityNumber: number | undefined): SeverityLevel | undefined {
   if (!severityNumber || severityNumber < 1 || severityNumber > 24) return undefined;
@@ -49,11 +61,11 @@ export function logToEnvelope(
   logRecord: ReadableLogRecord,
   instrumentationKey: string,
 ): AzureMonitorEnvelope<MessageData | ExceptionData | PageViewData | CustomEventData> {
+  const isPageView =
+    logRecord.eventName === PAGE_VIEW_EVENT_NAME || logRecord.eventName === EVENT_BROWSER_PAGE_VIEW;
   const customFields = mapAttributes(
     logRecord.attributes as Attributes,
-    logRecord.eventName === PAGE_VIEW_EVENT_NAME
-      ? promotedPageViewAttributes
-      : promotedLogAttributes,
+    isPageView ? promotedPageViewAttributes : promotedLogAttributes,
   );
   const tags = createTags(
     logRecord.spanContext?.traceId,
@@ -84,13 +96,21 @@ export function logToEnvelope(
       severityLevel,
       ...customFields,
     };
-  } else if (logRecord.eventName === PAGE_VIEW_EVENT_NAME) {
-    const duration = logRecord.attributes[NAVIGATION_DURATION];
+  } else if (isPageView) {
+    const duration =
+      logRecord.attributes[ATTR_PAGE_VIEW_DURATION] ?? logRecord.attributes[NAVIGATION_DURATION];
+    const id = logRecord.attributes[ATTR_PAGE_VIEW_ID] ?? logRecord.spanContext?.traceId;
     name = "Microsoft.ApplicationInsights.PageView";
     baseType = "PageViewData";
     baseData = {
       ver: 2,
-      name: serializeAttribute(logRecord.body ?? logRecord.attributes[URL_FULL] ?? "Page View"),
+      id: id === undefined ? undefined : serializeAttribute(id),
+      name: serializeAttribute(
+        logRecord.attributes[ATTR_PAGE_VIEW_NAME] ??
+          logRecord.body ??
+          logRecord.attributes[URL_FULL] ??
+          "Page View",
+      ),
       url:
         logRecord.attributes[URL_FULL] === undefined
           ? undefined
