@@ -114,6 +114,38 @@ describe("AzureMonitorSpanExporter", () => {
     ]);
   });
 
+  it("reports permanent rejections when retriable envelopes later succeed", async () => {
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            itemsReceived: 2,
+            itemsAccepted: 0,
+            errors: [
+              { index: 0, statusCode: 400, message: "Invalid envelope" },
+              { index: 1, statusCode: 500, message: "Server error" },
+            ],
+          }),
+          { status: 206 },
+        ),
+      )
+      .mockResolvedValueOnce(new Response("", { status: 200 }));
+    vi.stubGlobal("fetch", fetch);
+    const exporter = new AzureMonitorSpanExporter({ connectionString });
+
+    await expect(
+      exportSpans(exporter, [makeSpan("rejected"), makeSpan("retried")]),
+    ).resolves.toEqual({
+      code: ExportResultCode.FAILED,
+      error: expect.objectContaining({
+        message: expect.stringContaining("permanently rejected 1"),
+      }),
+    });
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
   it("reports permanent and retry-exhausted partial rejections as failed", async () => {
     vi.spyOn(Math, "random").mockReturnValue(0);
     const partialResponse = (statusCode: number) =>

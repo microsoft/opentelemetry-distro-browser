@@ -94,6 +94,7 @@ it("adds Azure Monitor batch exporters after session enrichment and before calle
   const pipeline = createInMemoryPipeline();
   const upstreamHandle = { shutdown: vi.fn(async () => {}) };
   vi.mocked(startBrowserSdk).mockReturnValueOnce(upstreamHandle);
+  const addDocumentListener = vi.spyOn(document, "addEventListener");
 
   const handle = await useMicrosoftOpenTelemetry({
     azureMonitor: {
@@ -121,6 +122,9 @@ it("adds Azure Monitor batch exporters after session enrichment and before calle
   );
   expect(sdkOptions.logs?.processors?.[1]).toBeInstanceOf(BatchLogRecordProcessor);
   expect(sdkOptions.logs?.processors?.[2]).toBe(pipeline.logProcessor);
+  expect(
+    addDocumentListener.mock.calls.filter(([eventName]) => eventName === "visibilitychange"),
+  ).toHaveLength(1);
 
   await handle.shutdown();
   expect(upstreamHandle.shutdown).toHaveBeenCalledOnce();

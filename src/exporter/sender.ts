@@ -10,6 +10,7 @@ import {
   RETRY_DELAY_MS,
 } from "./constants.js";
 import {
+  type BreezeError,
   isRetriable,
   isSamplingRejection,
   parseBreezeResponse,
@@ -53,6 +54,7 @@ export interface SenderResult {
   readonly statusCode: number;
   readonly result: string;
   readonly retryAfterMs?: number;
+  readonly permanentErrors?: readonly BreezeError[];
 }
 
 export interface BeaconSenderResult {
@@ -99,6 +101,7 @@ export class Sender {
     }
 
     let currentRequest = request;
+    const permanentErrors: BreezeError[] = [];
     for (let attempt = 1; ; attempt++) {
       await this.waitForThrottle();
 
@@ -128,10 +131,11 @@ export class Sender {
         return result;
       }
 
+      permanentErrors.push(...getPermanentErrors(result));
       const retryRequest = getRetryRequest(currentRequest, result);
       this.rememberThrottleDeadline(result);
       if (!retryRequest || attempt >= MAX_SEND_ATTEMPTS) {
-        return result;
+        return permanentErrors.length === 0 ? result : { ...result, permanentErrors };
       }
 
       if (result.retryAfterMs === undefined) {
@@ -342,6 +346,15 @@ function getRetryRequest(request: SendRequest, result: SenderResult): SendReques
     body: new TextEncoder().encode(JSON.stringify(envelopes)),
     envelopes,
   };
+}
+
+function getPermanentErrors(result: SenderResult): BreezeError[] {
+  if (result.statusCode !== 206) return [];
+  const response = parseBreezeResponse(result.result);
+  if (!response) return [];
+  return response.errors.filter(
+    (error) => !isRetriable(error.statusCode) && !isSamplingRejection(error),
+  );
 }
 
 function getRetryDelay(retryAttempt: number, random: number): number {

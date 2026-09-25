@@ -86,6 +86,14 @@ function toExportResult(result: SenderResultType): ExportResult {
   if (result.transport === "beacon") {
     return { code: ExportResultCode.SUCCESS };
   }
+  if (result.permanentErrors?.length) {
+    return {
+      code: ExportResultCode.FAILED,
+      error: new Error(
+        `Azure Monitor ingestion permanently rejected ${result.permanentErrors.length} item(s).`,
+      ),
+    };
+  }
   if (result.statusCode >= 200 && result.statusCode < 300 && result.statusCode !== 206) {
     return { code: ExportResultCode.SUCCESS };
   }

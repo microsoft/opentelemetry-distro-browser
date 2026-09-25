@@ -6,7 +6,10 @@ import { logs } from "@opentelemetry/api-logs";
 import { startBrowserSdk } from "@opentelemetry/browser-sdk";
 import { SessionLogRecordProcessor, SessionSpanProcessor } from "./session/sessionProcessors.js";
 import { createSession } from "./session/createSession.js";
-import { BatchLogRecordProcessor } from "@opentelemetry/sdk-logs";
+import {
+  BatchLogRecordProcessor,
+  type BatchLogRecordProcessorBrowserOptions,
+} from "@opentelemetry/sdk-logs";
 import { BatchSpanProcessor } from "@opentelemetry/sdk-trace-base";
 import { setUnloading } from "./exporter/common.js";
 import { AzureMonitorLogRecordExporter } from "./exporter/log.js";
@@ -59,9 +62,15 @@ function createOwnedInstrumentations(
 export async function useMicrosoftOpenTelemetry(
   options: MicrosoftOpenTelemetryBrowserOptions = {},
 ): Promise<MicrosoftOpenTelemetryBrowser> {
+  const azureBatchOptions = {
+    disableAutoFlushOnDocumentHide: true,
+  } satisfies Pick<BatchLogRecordProcessorBrowserOptions, "disableAutoFlushOnDocumentHide">;
   const spanProcessors = options.azureMonitor
     ? [
-        new BatchSpanProcessor(new AzureMonitorSpanExporter(options.azureMonitor)),
+        new BatchSpanProcessor(
+          new AzureMonitorSpanExporter(options.azureMonitor),
+          azureBatchOptions,
+        ),
         ...(options.spanProcessors ?? []),
       ]
     : options.spanProcessors?.slice();
@@ -69,6 +78,7 @@ export async function useMicrosoftOpenTelemetry(
     ? [
         new BatchLogRecordProcessor({
           exporter: new AzureMonitorLogRecordExporter(options.azureMonitor),
+          ...azureBatchOptions,
         }),
         ...(options.logRecordProcessors ?? []),
       ]
