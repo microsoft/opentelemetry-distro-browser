@@ -197,11 +197,9 @@ export interface PageViewInstrumentationConfig {
  * Configuration including the seams that are not part of the public API.
  *
  * @remarks
- * Kept internal because neither field is usable from outside the distribution yet: sharing a
- * context is only meaningful to a correlation processor, which does not exist, and overriding id
- * generation exists for tests. Exposing either would drag {@link PageViewContext} and its whole
- * type chain into the public surface for no consumer benefit. Widen deliberately once a processor
- * ships.
+ * Kept internal because context sharing serves the distribution's correlation processors, and
+ * overriding id generation exists for tests. Exposing either would drag {@link PageViewContext}
+ * and its whole type chain into the public surface for no consumer benefit.
  *
  * @internal
  */

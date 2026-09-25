@@ -9,6 +9,7 @@ export default defineConfig({
       "@opentelemetry/browser-instrumentation/experimental/fetch",
       "@opentelemetry/browser-instrumentation/experimental/navigation",
       "@opentelemetry/browser-sdk",
+      "@opentelemetry/browser-sdk/document",
       "@opentelemetry/browser-sdk/session",
       "@opentelemetry/core",
       "@opentelemetry/exporter-logs-otlp-http",

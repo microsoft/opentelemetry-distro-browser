@@ -121,6 +121,11 @@ async function exerciseNpmPackage(distro) {
     );
     assert.equal(spans.getFinishedSpans()[0]?.name, "manual");
     assert.equal(records.getFinishedLogRecords()[0]?.eventName, "manual");
+    // Node/SSR has no owned page-view source and must not acquire browser context.
+    for (const record of [spans.getFinishedSpans()[0], records.getFinishedLogRecords()[0]]) {
+      assert.equal(record.attributes["browser.page_view.id"], undefined);
+      assert.equal(record.attributes["browser.document.url.full"], undefined);
+    }
     assert.equal("forceFlush" in telemetry, false);
   } finally {
     try {

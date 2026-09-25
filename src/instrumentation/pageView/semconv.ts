@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 /**
- * Internal semantic conventions for the page-view event.
+ * Internal semantic conventions for page-view events and page-context enrichment.
  *
  * @remarks
  * There is no upstream convention for page views.
@@ -42,6 +42,8 @@ export const SEVERITY_NUMBER_INFO = 9 as SeverityNumber;
  * without a distribution-specific alias.
  */
 export const ATTR_URL_FULL = "url.full";
+
+export { ATTR_BROWSER_DOCUMENT_URL_FULL } from "@opentelemetry/browser-sdk/document";
 
 /** Correlation id minted once per navigation. */
 export const ATTR_PAGE_VIEW_ID = "browser.page_view.id";

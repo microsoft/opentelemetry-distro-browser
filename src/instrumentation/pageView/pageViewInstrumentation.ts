@@ -5,16 +5,11 @@ import { type LogRecord } from "@opentelemetry/api-logs";
 import { InstrumentationBase, safeExecuteInTheMiddle } from "@opentelemetry/instrumentation";
 import { OPENTELEMETRY_BROWSER_VERSION } from "../../shared/constants.js";
 import { createPageViewContext, generatePageViewId } from "./pageViewContext.js";
+import { pageViewAttributes } from "./pageViewAttributes.js";
 import {
+  ATTR_BROWSER_DOCUMENT_URL_FULL,
   ATTR_PAGE_VIEW_DURATION,
   ATTR_PAGE_VIEW_DURATION_SOURCE,
-  ATTR_PAGE_VIEW_ID,
-  ATTR_PAGE_VIEW_INDEX,
-  ATTR_PAGE_VIEW_NAME,
-  ATTR_PAGE_VIEW_NAME_SOURCE,
-  ATTR_PAGE_VIEW_REFERRER,
-  ATTR_PAGE_VIEW_SAME_DOCUMENT,
-  ATTR_PAGE_VIEW_TYPE,
   ATTR_URL_FULL,
   DURATION_SOURCE_DOCUMENT_LOAD,
   DURATION_SOURCE_NAVIGATION_TIMING,
@@ -805,17 +800,16 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
       severityNumber: SEVERITY_NUMBER_INFO,
       timestamp: pageView.startTimeUnixMs,
       attributes: {
+        ...pageViewAttributes(pageView),
         // Omitted when the sanitizer dropped it, rather than reported as an empty string.
-        ...(pageView.url ? { [ATTR_URL_FULL]: pageView.url } : {}),
-        [ATTR_PAGE_VIEW_ID]: pageView.id,
-        [ATTR_PAGE_VIEW_INDEX]: pageView.index,
-        [ATTR_PAGE_VIEW_NAME]: pageView.name,
-        [ATTR_PAGE_VIEW_NAME_SOURCE]: pageView.nameSource,
+        ...(pageView.url
+          ? {
+              [ATTR_URL_FULL]: pageView.url,
+              [ATTR_BROWSER_DOCUMENT_URL_FULL]: pageView.url,
+            }
+          : {}),
         [ATTR_PAGE_VIEW_DURATION]: Math.max(0, durationMs),
         [ATTR_PAGE_VIEW_DURATION_SOURCE]: durationSource,
-        [ATTR_PAGE_VIEW_TYPE]: pageView.navigationType,
-        [ATTR_PAGE_VIEW_SAME_DOCUMENT]: pageView.sameDocument,
-        ...(pageView.referrer ? { [ATTR_PAGE_VIEW_REFERRER]: pageView.referrer } : {}),
       },
     };
 

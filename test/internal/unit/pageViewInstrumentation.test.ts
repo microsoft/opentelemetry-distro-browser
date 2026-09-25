@@ -698,7 +698,7 @@ describe("PageViewInstrumentation", () => {
       expect(serialized).not.toMatch(/"ai\./);
       for (const record of provider.records) {
         for (const key of Object.keys(attributesOf(record))) {
-          expect(key).toMatch(/^(browser\.page_view\.|url\.full$)/);
+          expect(key).toMatch(/^(browser\.page_view\.|browser\.document\.url\.full$|url\.full$)/);
         }
       }
     });

@@ -7,14 +7,17 @@ import { startBrowserSdk } from "@opentelemetry/browser-sdk";
 import { SessionLogRecordProcessor, SessionSpanProcessor } from "./session/sessionProcessors.js";
 import { createSession } from "./session/createSession.js";
 import { PageViewInstrumentation } from "./instrumentation/pageView/index.js";
+import {
+  PageViewLogRecordProcessor,
+  PageViewSpanProcessor,
+} from "./instrumentation/pageView/pageViewProcessors.js";
 import type {
-  BrowserInstrumentation,
   MicrosoftOpenTelemetryBrowser,
   MicrosoftOpenTelemetryBrowserOptions,
 } from "./types.js";
 
 /**
- * Builds the instrumentations this distribution owns and turns on by itself.
+ * Builds the page-view instrumentation this distribution owns and turns on by itself.
  *
  * @remarks
  * Distribution-owned instrumentations are selected by configuration rather than by import,
@@ -25,20 +28,18 @@ import type {
  * build, and these instrumentations observe the DOM, so constructing one there would throw during
  * initialization and take the host application down with it.
  *
- * Each is constructed with `enabled: false` so that collection starts only once the registration
+ * It is constructed with `enabled: false` so that collection starts only once the registration
  * loop below has bound its trace and log providers.
  */
-function createOwnedInstrumentations(
+function createPageViewInstrumentation(
   options: MicrosoftOpenTelemetryBrowserOptions,
-): BrowserInstrumentation[] {
-  if (typeof document === "undefined" || typeof location === "undefined") return [];
+): PageViewInstrumentation | undefined {
+  if (typeof document === "undefined" || typeof location === "undefined") return;
 
-  const owned: BrowserInstrumentation[] = [];
   const pageView = options.pageView ?? {};
   if (pageView.enabled !== false) {
-    owned.push(new PageViewInstrumentation({ ...pageView, enabled: false }));
+    return new PageViewInstrumentation({ ...pageView, enabled: false });
   }
-  return owned;
 }
 
 /**
@@ -53,18 +54,17 @@ export async function useMicrosoftOpenTelemetry(
   const spanProcessors = options.spanProcessors?.slice();
   const logRecordProcessors = options.logRecordProcessors?.slice();
   const traceOptions = options.traces;
+  const pageView = createPageViewInstrumentation(options);
   // Distribution-owned instrumentations come last, so an application-supplied instance observing
   // the same API is installed first and is disabled last.
-  const instrumentations = [
-    ...(options.instrumentations ?? []),
-    ...createOwnedInstrumentations(options),
-  ];
+  const instrumentations = [...(options.instrumentations ?? []), ...(pageView ? [pageView] : [])];
   let sdk: MicrosoftOpenTelemetryBrowser | undefined;
   let stopping = false;
   // Upstream stale tracers can still call processors after provider shutdown.
   const sessionProvider = {
     getSessionId: () => (stopping ? null : (session?.getSessionId() ?? null)),
   };
+  const getPageView = () => (stopping ? undefined : pageView?.pageViews.getCurrentPageView());
 
   let shutdownPromise: Promise<void> | undefined;
   function shutdown(): Promise<void> {
@@ -95,6 +95,14 @@ export async function useMicrosoftOpenTelemetry(
 
   try {
     await session?.start();
+    const internalSpanProcessors = [
+      ...(session ? [new SessionSpanProcessor(sessionProvider)] : []),
+      ...(pageView ? [new PageViewSpanProcessor(getPageView)] : []),
+    ];
+    const internalLogProcessors = [
+      ...(session ? [new SessionLogRecordProcessor(sessionProvider)] : []),
+      ...(pageView ? [new PageViewLogRecordProcessor(getPageView)] : []),
+    ];
     sdk = startBrowserSdk({
       traces: {
         ...(traceOptions?.contextManager === undefined
@@ -104,18 +112,22 @@ export async function useMicrosoftOpenTelemetry(
           ? {}
           : { propagators: traceOptions.propagators.slice() }),
         processors:
-          session && spanProcessors?.length !== 0
-            ? [new SessionSpanProcessor(sessionProvider), ...(spanProcessors ?? [])]
+          internalSpanProcessors.length && spanProcessors?.length !== 0
+            ? [...internalSpanProcessors, ...(spanProcessors ?? [])]
             : spanProcessors,
         // Supplying enrichment processors must not disable upstream default export.
-        ...(session && spanProcessors === undefined ? { exportConfig: {} } : {}),
+        ...(internalSpanProcessors.length && spanProcessors === undefined
+          ? { exportConfig: {} }
+          : {}),
       },
       logs: {
         processors:
-          session && logRecordProcessors?.length !== 0
-            ? [new SessionLogRecordProcessor(sessionProvider), ...(logRecordProcessors ?? [])]
+          internalLogProcessors.length && logRecordProcessors?.length !== 0
+            ? [...internalLogProcessors, ...(logRecordProcessors ?? [])]
             : logRecordProcessors,
-        ...(session && logRecordProcessors === undefined ? { exportConfig: {} } : {}),
+        ...(internalLogProcessors.length && logRecordProcessors === undefined
+          ? { exportConfig: {} }
+          : {}),
       },
     });
     const tracerProvider = trace.getTracerProvider();

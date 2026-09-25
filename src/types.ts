@@ -151,9 +151,12 @@ export interface MicrosoftOpenTelemetryBrowserOptions {
    * @remarks
    * Emits one `browser.page_view` log record per navigation, covering the initial document load
    * and subsequent route changes, and mints a per-navigation correlation id.
+   * Supplies missing page attributes and the sanitized `browser.document.url.full` on spans at
+   * start and logs at emission. Explicit attributes and associations with other pages are kept;
+   * HTTP `url.full` is untouched. Page-view events retain their own navigation snapshot.
    *
-   * Collection is on by default; set `enabled: false` to turn it off. Doing so stops collection
-   * but does not remove the implementation from the bundle, because a bundler resolves imports
+   * Collection and enrichment are on by default; set `enabled: false` to turn both off.
+   * This does not remove the implementation from the bundle, because a bundler resolves imports
    * long before this object exists.
    */
   pageView?: PageViewInstrumentationConfig;
