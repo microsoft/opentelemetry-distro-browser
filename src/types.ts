@@ -4,6 +4,7 @@
 import type { ContextManager, TextMapPropagator, TracerProvider } from "@opentelemetry/api";
 import type { LoggerProvider } from "@opentelemetry/api-logs";
 import type { LogRecordProcessor } from "@opentelemetry/sdk-logs";
+import type { Resource } from "@opentelemetry/resources";
 import type { SpanProcessor } from "@opentelemetry/sdk-trace-base";
 import type { ConsoleInstrumentationConfig } from "@opentelemetry/browser-instrumentation/experimental/console";
 import type { ErrorsInstrumentationConfig } from "@opentelemetry/browser-instrumentation/experimental/errors";
@@ -14,6 +15,7 @@ import type { ResourceTimingInstrumentationConfig } from "@opentelemetry/browser
 import type { UserActionInstrumentationConfig } from "@opentelemetry/browser-instrumentation/experimental/user-action";
 import type { WebVitalsInstrumentationConfig } from "@opentelemetry/browser-instrumentation/experimental/web-vitals";
 import type { XhrInstrumentationConfig } from "@opentelemetry/browser-instrumentation/experimental/xhr";
+import type { AzureMonitorOptions } from "./exporter/base.js";
 import type { PageViewInstrumentationConfig } from "./instrumentation/pageView/types.js";
 
 /**
@@ -120,6 +122,18 @@ export interface MicrosoftOpenTelemetryBrowserTraceOptions {
  * @public
  */
 export interface MicrosoftOpenTelemetryBrowserOptions {
+  /** Azure Monitor destination. When provided, Azure Monitor export is enabled. */
+  azureMonitor?: AzureMonitorOptions;
+  /**
+   * Resource describing the entity producing telemetry.
+   *
+   * @remarks
+   * Build it with `resourceFromAttributes` or `detectResources` from `@opentelemetry/resources`.
+   * Merged over the SDK defaults, so `service.name` set here replaces the `unknown_service`
+   * placeholder. Resolved once at initialization, so only values fixed for the lifetime of the
+   * page belong here. Only its attributes are used; the schema URL is not carried through.
+   */
+  resource?: Resource;
   /**
    * Opt-in session tracking. Set enabled to true to persist sessions in localStorage and
    * supply missing session.id attributes on spans and logs. Uses a 30-minute inactivity
@@ -170,6 +184,8 @@ export interface MicrosoftOpenTelemetryBrowserOptions {
  * @public
  */
 export interface MicrosoftOpenTelemetryBrowser {
+  /** Flushes pending trace and log telemetry. */
+  forceFlush(): Promise<void>;
   /**
    * Stops session timers immediately, then disables registered instrumentations and shuts down
    * trace and log providers.

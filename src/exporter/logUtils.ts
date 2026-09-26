@@ -34,15 +34,25 @@ import type {
   SeverityLevel,
 } from "./telemetryModels.js";
 
-const promotedLogAttributes = new Set([
+const promotedLogAttributes = /* @__PURE__ */ new Set([
   EXCEPTION_MESSAGE,
   EXCEPTION_STACKTRACE,
   EXCEPTION_TYPE,
   NAVIGATION_DURATION,
 ]);
-const promotedNavigationAttributes = new Set([...promotedLogAttributes, URL_FULL]);
-const promotedPageViewAttributes = new Set([
-  ...promotedNavigationAttributes,
+const promotedNavigationAttributes = /* @__PURE__ */ new Set([
+  EXCEPTION_MESSAGE,
+  EXCEPTION_STACKTRACE,
+  EXCEPTION_TYPE,
+  NAVIGATION_DURATION,
+  URL_FULL,
+]);
+const promotedPageViewAttributes = /* @__PURE__ */ new Set([
+  EXCEPTION_MESSAGE,
+  EXCEPTION_STACKTRACE,
+  EXCEPTION_TYPE,
+  NAVIGATION_DURATION,
+  URL_FULL,
   ATTR_PAGE_VIEW_ID,
   ATTR_PAGE_VIEW_NAME,
   ATTR_PAGE_VIEW_DURATION,

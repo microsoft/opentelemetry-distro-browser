@@ -6,13 +6,47 @@
 
 import { ContextManager } from '@opentelemetry/api';
 import { DetectedResource } from '@opentelemetry/resources';
+import { ExportResult } from '@opentelemetry/core';
 import { LoggerProvider } from '@opentelemetry/api-logs';
 import { LogRecord } from '@opentelemetry/api-logs';
+import { LogRecordExporter } from '@opentelemetry/sdk-logs';
 import { LogRecordProcessor } from '@opentelemetry/sdk-logs';
+import { ReadableLogRecord } from '@opentelemetry/sdk-logs';
+import { ReadableSpan } from '@opentelemetry/sdk-trace-base';
+import { Resource } from '@opentelemetry/resources';
 import { ResourceDetector } from '@opentelemetry/resources';
+import { SpanExporter } from '@opentelemetry/sdk-trace-base';
 import { SpanProcessor } from '@opentelemetry/sdk-trace-base';
 import { TextMapPropagator } from '@opentelemetry/api';
 import { TracerProvider } from '@opentelemetry/api';
+
+// @public
+export class AzureMonitorLogRecordExporter implements LogRecordExporter {
+    constructor(options: AzureMonitorOptions);
+    // (undocumented)
+    export(logs: ReadableLogRecord[], callback: (result: ExportResult) => void): void;
+    // (undocumented)
+    forceFlush(): Promise<void>;
+    // (undocumented)
+    shutdown(): Promise<void>;
+}
+
+// @public
+export interface AzureMonitorOptions {
+    readonly connectionString: string;
+    readonly disableBeacon?: boolean;
+}
+
+// @public
+export class AzureMonitorSpanExporter implements SpanExporter {
+    constructor(options: AzureMonitorOptions);
+    // (undocumented)
+    export(spans: ReadableSpan[], callback: (result: ExportResult) => void): void;
+    // (undocumented)
+    forceFlush(): Promise<void>;
+    // (undocumented)
+    shutdown(): Promise<void>;
+}
 
 // @public
 export class BrowserDetector implements ResourceDetector {
@@ -35,14 +69,17 @@ export interface BrowserInstrumentation {
 
 // @public
 export interface MicrosoftOpenTelemetryBrowser {
+    forceFlush(): Promise<void>;
     shutdown(): Promise<void>;
 }
 
 // @public
 export interface MicrosoftOpenTelemetryBrowserOptions {
+    azureMonitor?: AzureMonitorOptions;
     instrumentations?: readonly BrowserInstrumentation[];
     logRecordProcessors?: LogRecordProcessor[];
     pageView?: PageViewInstrumentationConfig;
+    resource?: Resource;
     session?: {
         enabled?: boolean;
     };

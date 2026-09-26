@@ -5,6 +5,16 @@ import type { Attributes, HrTime } from "@opentelemetry/api";
 import { OPENTELEMETRY_BROWSER_VERSION } from "../shared/constants.js";
 import type { AzureMonitorBaseData, AzureMonitorEnvelope } from "./telemetryModels.js";
 
+let unloading = false;
+
+export function isUnloading(): boolean {
+  return unloading;
+}
+
+export function setUnloading(value: boolean): void {
+  unloading = value;
+}
+
 export function hrTimeToMilliseconds(hrTime: HrTime): number {
   return hrTime[0] * 1_000 + hrTime[1] / 1_000_000;
 }

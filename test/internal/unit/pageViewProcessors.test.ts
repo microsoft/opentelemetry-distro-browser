@@ -246,6 +246,46 @@ it("provides the page operation before caller instrumentations emit during enabl
   expect(pipeline.emit()[0].spanContext().traceId).toBe(startupId);
 });
 
+it("includes the page-view record in the automatic pagehide flush", async () => {
+  const pipeline = await initialize();
+  const flush = vi.spyOn(pipeline.logProcessor, "forceFlush");
+  window.dispatchEvent(new Event("pagehide"));
+  await Promise.resolve();
+  expect(flush).toHaveBeenCalledOnce();
+  await flush.mock.results[0].value;
+  expect(pipeline.logExporter.getFinishedLogRecords()).toContainEqual(
+    expect.objectContaining({ eventName: EVENT_BROWSER_PAGE_VIEW }),
+  );
+});
+
+it("flushes a page view when pagehide follows an in-flight visibility flush", async () => {
+  const pipeline = await initialize();
+  const originalExport = pipeline.logExporter.export.bind(pipeline.logExporter);
+  let release!: () => void;
+  const exporting = new Promise<void>((resolve) => {
+    vi.spyOn(pipeline.logExporter, "export").mockImplementationOnce((records, callback) => {
+      release = () => originalExport(records, callback);
+      resolve();
+    });
+  });
+  pipeline.logger.emit({ body: "before hiding" });
+  vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+  document.dispatchEvent(new Event("visibilitychange"));
+  await exporting;
+  try {
+    window.dispatchEvent(new Event("pagehide"));
+  } finally {
+    release();
+  }
+  await vi.waitFor(
+    () =>
+      expect(pipeline.logExporter.getFinishedLogRecords()).toContainEqual(
+        expect.objectContaining({ eventName: EVENT_BROWSER_PAGE_VIEW }),
+      ),
+    { timeout: 300 },
+  );
+});
+
 it("does not correlate by page when page views are disabled", async () => {
   const { emit } = await initialize({ pageView: { enabled: false } });
   const [first, log] = emit();

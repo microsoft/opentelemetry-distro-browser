@@ -6,9 +6,22 @@ import { logs } from "@opentelemetry/api-logs";
 import { startBrowserSdk } from "@opentelemetry/browser-sdk";
 import { SessionLogRecordProcessor, SessionSpanProcessor } from "./session/sessionProcessors.js";
 import { createSession } from "./session/createSession.js";
+import {
+  BatchLogRecordProcessor,
+  type BatchLogRecordProcessorBrowserOptions,
+} from "@opentelemetry/sdk-logs";
+import { BatchSpanProcessor } from "@opentelemetry/sdk-trace-base";
+import { setUnloading } from "./exporter/common.js";
+import { AzureMonitorLogRecordExporter } from "./exporter/log.js";
+import { AzureMonitorSpanExporter } from "./exporter/trace.js";
 import { PageViewInstrumentation } from "./instrumentation/pageView/index.js";
 import { PageViewLogRecordProcessor } from "./instrumentation/pageView/pageViewProcessors.js";
 import { PageViewContextManager } from "./instrumentation/pageView/pageViewContextManager.js";
+import {
+  ATTR_TELEMETRY_DISTRO_NAME,
+  ATTR_TELEMETRY_DISTRO_VERSION,
+} from "@opentelemetry/semantic-conventions";
+import { OPENTELEMETRY_BROWSER_VERSION } from "./shared/constants.js";
 import type {
   MicrosoftOpenTelemetryBrowser,
   MicrosoftOpenTelemetryBrowserOptions,
@@ -48,14 +61,33 @@ function createPageViewInstrumentation(
 export async function useMicrosoftOpenTelemetry(
   options: MicrosoftOpenTelemetryBrowserOptions = {},
 ): Promise<MicrosoftOpenTelemetryBrowser> {
+  const azureBatchOptions = {
+    disableAutoFlushOnDocumentHide: true,
+  } satisfies Pick<BatchLogRecordProcessorBrowserOptions, "disableAutoFlushOnDocumentHide">;
+  const spanProcessors = options.azureMonitor
+    ? [
+        new BatchSpanProcessor(
+          new AzureMonitorSpanExporter(options.azureMonitor),
+          azureBatchOptions,
+        ),
+        ...(options.spanProcessors ?? []),
+      ]
+    : options.spanProcessors?.slice();
+  const logRecordProcessors = options.azureMonitor
+    ? [
+        new BatchLogRecordProcessor({
+          exporter: new AzureMonitorLogRecordExporter(options.azureMonitor),
+          ...azureBatchOptions,
+        }),
+        ...(options.logRecordProcessors ?? []),
+      ]
+    : options.logRecordProcessors?.slice();
   const session = options.session?.enabled === true ? createSession() : undefined;
-  const spanProcessors = options.spanProcessors?.slice();
-  const logRecordProcessors = options.logRecordProcessors?.slice();
   const traceOptions = options.traces;
   const pageView = createPageViewInstrumentation(options);
   // Publish the page operation before caller instrumentations can emit during enable or navigation.
   const instrumentations = [...(pageView ? [pageView] : []), ...(options.instrumentations ?? [])];
-  let sdk: MicrosoftOpenTelemetryBrowser | undefined;
+  let sdk: ReturnType<typeof startBrowserSdk> | undefined;
   let stopping = false;
   // Upstream stale tracers can still call processors after provider shutdown.
   const sessionProvider = {
@@ -68,10 +100,42 @@ export async function useMicrosoftOpenTelemetry(
       : undefined;
 
   let shutdownPromise: Promise<void> | undefined;
+  let unloadFlush: Promise<void> | undefined;
+  const flushForUnload = (): void => {
+    setUnloading(true);
+    // Include records emitted by this event's other handlers, including page views.
+    const flushing: Promise<void> = (unloadFlush ?? Promise.resolve())
+      .then(forceFlush)
+      .catch((error: unknown) => {
+        diag.error("Telemetry unload flush failed", error);
+      })
+      .finally(() => {
+        if (unloadFlush === flushing) {
+          unloadFlush = undefined;
+          setUnloading(false);
+        }
+      });
+    unloadFlush = flushing;
+  };
+  const visibilityChange = (): void => {
+    if (globalThis.document?.visibilityState === "hidden") flushForUnload();
+  };
+  globalThis.addEventListener?.("pagehide", flushForUnload);
+  globalThis.document?.addEventListener("visibilitychange", visibilityChange);
+
+  async function forceFlush(): Promise<void> {
+    await Promise.all([
+      ...(spanProcessors ?? []).map((processor) => processor.forceFlush()),
+      ...(logRecordProcessors ?? []).map((processor) => processor.forceFlush()),
+    ]);
+  }
+
   function shutdown(): Promise<void> {
     return (shutdownPromise ??= (async () => {
       stopping = true;
       pageContextManager?.shutdown();
+      globalThis.removeEventListener?.("pagehide", flushForUnload);
+      globalThis.document?.removeEventListener("visibilitychange", visibilityChange);
       const errors: unknown[] = [];
       try {
         session?.shutdown();
@@ -95,6 +159,8 @@ export async function useMicrosoftOpenTelemetry(
     })());
   }
 
+  const handle = { forceFlush, shutdown };
+
   try {
     await session?.start();
     const internalLogProcessors = [
@@ -102,6 +168,13 @@ export async function useMicrosoftOpenTelemetry(
       ...(pageView ? [new PageViewLogRecordProcessor(getPageView)] : []),
     ];
     sdk = startBrowserSdk({
+      // Spread last: the caller's attributes win, and each call gets a fresh object because the
+      // SDK mutates this one in place and shares it between the traces and logs SDKs.
+      resourceAttributes: {
+        [ATTR_TELEMETRY_DISTRO_NAME]: "@microsoft/opentelemetry-distro-browser",
+        [ATTR_TELEMETRY_DISTRO_VERSION]: OPENTELEMETRY_BROWSER_VERSION,
+        ...options.resource?.attributes,
+      },
       traces: {
         ...(pageContextManager
           ? { contextManager: pageContextManager }
@@ -128,6 +201,8 @@ export async function useMicrosoftOpenTelemetry(
           : {}),
       },
     });
+    if (instrumentations.length === 0) return handle;
+
     const tracerProvider = trace.getTracerProvider();
     const loggerProvider = logs.getLoggerProvider();
     for (const instrumentation of instrumentations) {
@@ -144,5 +219,5 @@ export async function useMicrosoftOpenTelemetry(
     throw error;
   }
 
-  return { shutdown };
+  return handle;
 }

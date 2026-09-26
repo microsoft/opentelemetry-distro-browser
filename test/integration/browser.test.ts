@@ -3,7 +3,8 @@
 
 import { ROOT_CONTEXT, context, diag, propagation, trace } from "@opentelemetry/api";
 import { logs } from "@opentelemetry/api-logs";
-import { afterEach, expect, it, vi } from "vitest";
+import { resourceFromAttributes } from "@opentelemetry/resources";
+import { afterEach, expect, inject, it, vi } from "vitest";
 import { version } from "../../package.json";
 import { createInMemoryPipeline } from "../fixtures/telemetry.js";
 
@@ -16,6 +17,120 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+it("sends telemetry from a browser interaction to Azure Monitor ingestion", async () => {
+  const runId = crypto.randomUUID();
+  const ingestionEndpoint = `${inject("ingestionEndpoint")}${encodeURIComponent(runId)}`;
+  const telemetry = await (
+    await import(/* @vite-ignore */ new URL("../../dist/esm/index.js", import.meta.url).href)
+  ).useMicrosoftOpenTelemetry({
+    azureMonitor: {
+      connectionString:
+        `InstrumentationKey=00000000-0000-0000-0000-000000000000;` +
+        `IngestionEndpoint=${ingestionEndpoint}`,
+    },
+    pageView: { enabled: false },
+  });
+  const button = document.createElement("button");
+  button.addEventListener("click", () => {
+    trace.getTracer("browser-ingestion-test").startSpan("checkout.click").end();
+    logs.getLogger("browser-ingestion-test").emit({
+      eventName: "checkout.clicked",
+      body: runId,
+      attributes: { "test.run_id": runId },
+    });
+  });
+  document.body.append(button);
+
+  try {
+    button.click();
+    await telemetry.forceFlush();
+
+    const captured = await fetch(
+      `${new URL(ingestionEndpoint).origin}/captured?runId=${encodeURIComponent(runId)}`,
+    ).then((response) => response.json());
+    expect(captured).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: "Microsoft.ApplicationInsights.RemoteDependency",
+          data: expect.objectContaining({
+            baseType: "RemoteDependencyData",
+            baseData: expect.objectContaining({ name: "checkout.click" }),
+          }),
+        }),
+        expect.objectContaining({
+          name: "Microsoft.ApplicationInsights.Message",
+          data: expect.objectContaining({
+            baseType: "MessageData",
+            baseData: expect.objectContaining({
+              message: runId,
+              properties: expect.objectContaining({ "test.run_id": runId }),
+            }),
+          }),
+        }),
+      ]),
+    );
+  } finally {
+    button.remove();
+    await telemetry.shutdown();
+  }
+});
+
+it.each(["index.js", "index.min.js"])(
+  "exports correlated page views, spans, and logs to Azure Monitor through %s",
+  async (file) => {
+    const runId = crypto.randomUUID();
+    const ingestionEndpoint = `${inject("ingestionEndpoint")}${encodeURIComponent(runId)}`;
+    const path = `../../dist/esm/${file}`;
+    const url = new URL(path, import.meta.url);
+    const distro: typeof import("../../src/index.js") = await import(/* @vite-ignore */ url.href);
+    const telemetry = await distro.useMicrosoftOpenTelemetry({
+      azureMonitor: {
+        connectionString:
+          "InstrumentationKey=00000000-0000-0000-0000-000000000000;" +
+          `IngestionEndpoint=${ingestionEndpoint}`,
+      },
+      resource: resourceFromAttributes({ "service.name": "correlated-browser" }),
+    });
+    try {
+      const operationId = trace.getSpanContext(context.active())?.traceId;
+      expect(operationId).toMatch(/^[0-9a-f]{32}$/);
+      trace.getTracer("correlation-ingestion").startSpan("checkout").end();
+      logs.getLogger("correlation-ingestion").emit({ body: runId });
+      window.dispatchEvent(new Event("pagehide"));
+      await vi.waitFor(async () => {
+        const captured = await fetch(
+          `${new URL(ingestionEndpoint).origin}/captured?runId=${encodeURIComponent(runId)}`,
+        ).then((response) => response.json());
+        for (const baseType of ["PageViewData", "RemoteDependencyData", "MessageData"]) {
+          expect(captured).toEqual(
+            expect.arrayContaining([
+              expect.objectContaining({
+                tags: expect.objectContaining({
+                  "ai.operation.id": operationId,
+                  "ai.cloud.role": "correlated-browser",
+                }),
+                data: expect.objectContaining({ baseType }),
+              }),
+            ]),
+          );
+        }
+        expect(captured).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              data: expect.objectContaining({
+                baseType: "PageViewData",
+                baseData: expect.objectContaining({ id: operationId }),
+              }),
+            }),
+          ]),
+        );
+      });
+    } finally {
+      await telemetry.shutdown();
+    }
+  },
+);
+
 it.each(["index.js", "index.min.js"])(
   "exports manual telemetry from application APIs through %s",
   async (file) => {
@@ -24,6 +139,8 @@ it.each(["index.js", "index.min.js"])(
     const url = new URL(path, import.meta.url);
     const distro: typeof import("../../src/index.js") = await import(/* @vite-ignore */ url.href);
     expect(Object.keys(distro).sort()).toEqual([
+      "AzureMonitorLogRecordExporter",
+      "AzureMonitorSpanExporter",
       "BrowserDetector",
       "OPENTELEMETRY_BROWSER_VERSION",
       "UserAgentDetector",
