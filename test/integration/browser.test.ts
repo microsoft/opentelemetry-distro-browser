@@ -3,7 +3,6 @@
 
 import { ROOT_CONTEXT, context, diag, propagation, trace } from "@opentelemetry/api";
 import { logs } from "@opentelemetry/api-logs";
-import { resourceFromAttributes } from "@opentelemetry/resources";
 import { afterEach, expect, inject, it, vi } from "vitest";
 import { version } from "../../package.json";
 import { createInMemoryPipeline } from "../fixtures/telemetry.js";
@@ -20,6 +19,10 @@ afterEach(() => {
 it("sends telemetry from a browser interaction to Azure Monitor ingestion", async () => {
   const runId = crypto.randomUUID();
   const ingestionEndpoint = `${inject("ingestionEndpoint")}${encodeURIComponent(runId)}`;
+  let pageReady!: () => void;
+  const pageEmitted = new Promise<void>((resolve) => {
+    pageReady = resolve;
+  });
   const telemetry = await (
     await import(/* @vite-ignore */ new URL("../../dist/esm/index.js", import.meta.url).href)
   ).useMicrosoftOpenTelemetry({
@@ -28,7 +31,7 @@ it("sends telemetry from a browser interaction to Azure Monitor ingestion", asyn
         `InstrumentationKey=00000000-0000-0000-0000-000000000000;` +
         `IngestionEndpoint=${ingestionEndpoint}`,
     },
-    pageView: { enabled: false },
+    pageView: { applyCustomLogRecordData: () => pageReady() },
   });
   const button = document.createElement("button");
   button.addEventListener("click", () => {
@@ -42,6 +45,8 @@ it("sends telemetry from a browser interaction to Azure Monitor ingestion", asyn
   document.body.append(button);
 
   try {
+    await pageEmitted;
+    const operationId = trace.getSpanContext(context.active())!.traceId;
     button.click();
     await telemetry.forceFlush();
 
@@ -51,7 +56,15 @@ it("sends telemetry from a browser interaction to Azure Monitor ingestion", asyn
     expect(captured).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
+          tags: expect.objectContaining({ "ai.operation.id": operationId }),
+          data: expect.objectContaining({
+            baseType: "PageViewData",
+            baseData: expect.objectContaining({ id: operationId }),
+          }),
+        }),
+        expect.objectContaining({
           name: "Microsoft.ApplicationInsights.RemoteDependency",
+          tags: expect.objectContaining({ "ai.operation.id": operationId }),
           data: expect.objectContaining({
             baseType: "RemoteDependencyData",
             baseData: expect.objectContaining({ name: "checkout.click" }),
@@ -59,6 +72,7 @@ it("sends telemetry from a browser interaction to Azure Monitor ingestion", asyn
         }),
         expect.objectContaining({
           name: "Microsoft.ApplicationInsights.Message",
+          tags: expect.objectContaining({ "ai.operation.id": operationId }),
           data: expect.objectContaining({
             baseType: "MessageData",
             baseData: expect.objectContaining({
@@ -74,62 +88,6 @@ it("sends telemetry from a browser interaction to Azure Monitor ingestion", asyn
     await telemetry.shutdown();
   }
 });
-
-it.each(["index.js", "index.min.js"])(
-  "exports correlated page views, spans, and logs to Azure Monitor through %s",
-  async (file) => {
-    const runId = crypto.randomUUID();
-    const ingestionEndpoint = `${inject("ingestionEndpoint")}${encodeURIComponent(runId)}`;
-    const path = `../../dist/esm/${file}`;
-    const url = new URL(path, import.meta.url);
-    const distro: typeof import("../../src/index.js") = await import(/* @vite-ignore */ url.href);
-    const telemetry = await distro.useMicrosoftOpenTelemetry({
-      azureMonitor: {
-        connectionString:
-          "InstrumentationKey=00000000-0000-0000-0000-000000000000;" +
-          `IngestionEndpoint=${ingestionEndpoint}`,
-      },
-      resource: resourceFromAttributes({ "service.name": "correlated-browser" }),
-    });
-    try {
-      const operationId = trace.getSpanContext(context.active())?.traceId;
-      expect(operationId).toMatch(/^[0-9a-f]{32}$/);
-      trace.getTracer("correlation-ingestion").startSpan("checkout").end();
-      logs.getLogger("correlation-ingestion").emit({ body: runId });
-      window.dispatchEvent(new Event("pagehide"));
-      await vi.waitFor(async () => {
-        const captured = await fetch(
-          `${new URL(ingestionEndpoint).origin}/captured?runId=${encodeURIComponent(runId)}`,
-        ).then((response) => response.json());
-        for (const baseType of ["PageViewData", "RemoteDependencyData", "MessageData"]) {
-          expect(captured).toEqual(
-            expect.arrayContaining([
-              expect.objectContaining({
-                tags: expect.objectContaining({
-                  "ai.operation.id": operationId,
-                  "ai.cloud.role": "correlated-browser",
-                }),
-                data: expect.objectContaining({ baseType }),
-              }),
-            ]),
-          );
-        }
-        expect(captured).toEqual(
-          expect.arrayContaining([
-            expect.objectContaining({
-              data: expect.objectContaining({
-                baseType: "PageViewData",
-                baseData: expect.objectContaining({ id: operationId }),
-              }),
-            }),
-          ]),
-        );
-      });
-    } finally {
-      await telemetry.shutdown();
-    }
-  },
-);
 
 it.each(["index.js", "index.min.js"])(
   "exports manual telemetry from application APIs through %s",

@@ -17,7 +17,6 @@ export default defineConfig({
       "@opentelemetry/resources",
       "@opentelemetry/sdk-logs",
       "@opentelemetry/sdk-trace-base",
-      "@opentelemetry/sdk-trace-web",
       "@opentelemetry/semantic-conventions",
       "@opentelemetry/semantic-conventions/incubating",
     ],

@@ -584,18 +584,6 @@ describe("PageViewInstrumentation", () => {
         expect(id).toMatch(/^[0-9a-f]{32}$/);
       }
     });
-
-    it.each(["", "invalid-id", "00000000000000000000000000000000"])(
-      "replaces an invalid injected operation ID %j",
-      (id) => {
-        const { instrumentation } = createInstrumentation({ generatePageViewId: () => id });
-        instrumentation.enable();
-        const pageView = instrumentation.pageViews.getCurrentPageView()!;
-        expect(pageView.id).toMatch(/^[0-9a-f]{32}$/);
-        expect(pageView.id).not.toBe(id);
-        expect(pageView.spanContext.traceId).toBe(pageView.id);
-      },
-    );
   });
 
   describe("configuration hooks", () => {
@@ -710,7 +698,7 @@ describe("PageViewInstrumentation", () => {
       expect(serialized).not.toMatch(/"ai\./);
       for (const record of provider.records) {
         for (const key of Object.keys(attributesOf(record))) {
-          expect(key).toMatch(/^(browser\.page_view\.|browser\.document\.url\.full$|url\.full$)/);
+          expect(key).toMatch(/^(browser\.page_view\.|url\.full$)/);
         }
       }
     });

@@ -15,8 +15,7 @@ import { setUnloading } from "./exporter/common.js";
 import { AzureMonitorLogRecordExporter } from "./exporter/log.js";
 import { AzureMonitorSpanExporter } from "./exporter/trace.js";
 import { PageViewInstrumentation } from "./instrumentation/pageView/index.js";
-import { PageViewLogRecordProcessor } from "./instrumentation/pageView/pageViewProcessors.js";
-import { PageViewContextManager } from "./instrumentation/pageView/pageViewContextManager.js";
+import { PageViewCorrelation } from "./instrumentation/pageView/pageViewCorrelation.js";
 import {
   ATTR_TELEMETRY_DISTRO_NAME,
   ATTR_TELEMETRY_DISTRO_VERSION,
@@ -28,7 +27,7 @@ import type {
 } from "./types.js";
 
 /**
- * Builds the page-view instrumentation this distribution owns and turns on by itself.
+ * Builds the instrumentations this distribution owns and turns on by itself.
  *
  * @remarks
  * Distribution-owned instrumentations are selected by configuration rather than by import,
@@ -39,18 +38,20 @@ import type {
  * build, and these instrumentations observe the DOM, so constructing one there would throw during
  * initialization and take the host application down with it.
  *
- * It is constructed with `enabled: false` so that collection starts only once the registration
+ * Each is constructed with `enabled: false` so that collection starts only once the registration
  * loop below has bound its trace and log providers.
  */
-function createPageViewInstrumentation(
+function createOwnedInstrumentations(
   options: MicrosoftOpenTelemetryBrowserOptions,
-): PageViewInstrumentation | undefined {
-  if (typeof document === "undefined" || typeof location === "undefined") return;
+): PageViewInstrumentation[] {
+  if (typeof document === "undefined" || typeof location === "undefined") return [];
 
+  const owned: PageViewInstrumentation[] = [];
   const pageView = options.pageView ?? {};
   if (pageView.enabled !== false) {
-    return new PageViewInstrumentation({ ...pageView, enabled: false });
+    owned.push(new PageViewInstrumentation({ ...pageView, enabled: false }));
   }
+  return owned;
 }
 
 /**
@@ -84,38 +85,34 @@ export async function useMicrosoftOpenTelemetry(
     : options.logRecordProcessors?.slice();
   const session = options.session?.enabled === true ? createSession() : undefined;
   const traceOptions = options.traces;
-  const pageView = createPageViewInstrumentation(options);
-  // Publish the page operation before caller instrumentations can emit during enable or navigation.
-  const instrumentations = [...(pageView ? [pageView] : []), ...(options.instrumentations ?? [])];
+  const owned = createOwnedInstrumentations(options);
+  const pageView = owned[0];
+  const correlation = pageView
+    ? new PageViewCorrelation(() => pageView.getOperationContext(), traceOptions?.contextManager)
+    : undefined;
+  // Publish the initial page operation before caller instrumentations can emit.
+  const instrumentations = [...owned, ...(options.instrumentations ?? [])];
   let sdk: ReturnType<typeof startBrowserSdk> | undefined;
   let stopping = false;
   // Upstream stale tracers can still call processors after provider shutdown.
   const sessionProvider = {
     getSessionId: () => (stopping ? null : (session?.getSessionId() ?? null)),
   };
-  const getPageView = () => (stopping ? undefined : pageView?.pageViews.getCurrentPageView());
-  const pageContextManager =
-    pageView && spanProcessors?.length !== 0
-      ? new PageViewContextManager(getPageView, traceOptions?.contextManager)
-      : undefined;
 
   let shutdownPromise: Promise<void> | undefined;
-  let unloadFlush: Promise<void> | undefined;
+  let unloading = false;
   const flushForUnload = (): void => {
+    if (unloading) return;
+    unloading = true;
     setUnloading(true);
-    // Include records emitted by this event's other handlers, including page views.
-    const flushing: Promise<void> = (unloadFlush ?? Promise.resolve())
-      .then(forceFlush)
+    void forceFlush()
       .catch((error: unknown) => {
         diag.error("Telemetry unload flush failed", error);
       })
       .finally(() => {
-        if (unloadFlush === flushing) {
-          unloadFlush = undefined;
-          setUnloading(false);
-        }
+        unloading = false;
+        setUnloading(false);
       });
-    unloadFlush = flushing;
   };
   const visibilityChange = (): void => {
     if (globalThis.document?.visibilityState === "hidden") flushForUnload();
@@ -133,7 +130,7 @@ export async function useMicrosoftOpenTelemetry(
   function shutdown(): Promise<void> {
     return (shutdownPromise ??= (async () => {
       stopping = true;
-      pageContextManager?.shutdown();
+      void correlation?.shutdown();
       globalThis.removeEventListener?.("pagehide", flushForUnload);
       globalThis.document?.removeEventListener("visibilitychange", visibilityChange);
       const errors: unknown[] = [];
@@ -163,9 +160,9 @@ export async function useMicrosoftOpenTelemetry(
 
   try {
     await session?.start();
-    const internalLogProcessors = [
+    const logContextProcessors = [
       ...(session ? [new SessionLogRecordProcessor(sessionProvider)] : []),
-      ...(pageView ? [new PageViewLogRecordProcessor(getPageView)] : []),
+      ...(correlation ? [correlation] : []),
     ];
     sdk = startBrowserSdk({
       // Spread last: the caller's attributes win, and each call gets a fresh object because the
@@ -176,8 +173,8 @@ export async function useMicrosoftOpenTelemetry(
         ...options.resource?.attributes,
       },
       traces: {
-        ...(pageContextManager
-          ? { contextManager: pageContextManager }
+        ...(correlation
+          ? { contextManager: correlation }
           : traceOptions?.contextManager === undefined
             ? {}
             : { contextManager: traceOptions.contextManager }),
@@ -193,10 +190,10 @@ export async function useMicrosoftOpenTelemetry(
       },
       logs: {
         processors:
-          internalLogProcessors.length && logRecordProcessors?.length !== 0
-            ? [...internalLogProcessors, ...(logRecordProcessors ?? [])]
+          logContextProcessors.length && logRecordProcessors?.length !== 0
+            ? [...logContextProcessors, ...(logRecordProcessors ?? [])]
             : logRecordProcessors,
-        ...(internalLogProcessors.length && logRecordProcessors === undefined
+        ...(logContextProcessors.length && logRecordProcessors === undefined
           ? { exportConfig: {} }
           : {}),
       },

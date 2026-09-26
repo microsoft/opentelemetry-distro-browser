@@ -13,8 +13,6 @@ import type {
   MicrosoftOpenTelemetryBrowserTraceOptions,
 } from "../../src/types.js";
 import { createInMemoryPipeline } from "../fixtures/telemetry.js";
-import { logToEnvelope } from "../../src/exporter/logUtils.js";
-import { spanToEnvelope } from "../../src/exporter/spanUtils.js";
 
 /**
  * Exercises the constructed instrumentations against a real browser, registered the way an
@@ -26,7 +24,6 @@ import { spanToEnvelope } from "../../src/exporter/spanUtils.js";
 /** A path the dev server will answer, so a request completes rather than failing to connect. */
 const APPLICATION_URL = new URL("/__application__", location.origin).toString();
 const CROSS_ORIGIN_HEADERS_URL = new URL("/headers", inject("redirectEndpoint")).toString();
-const originalUrl = location.href;
 
 interface PropagationHeaders {
   baggage?: string;
@@ -114,7 +111,6 @@ function urlsOf(spans: readonly ReadableSpan[]): string[] {
 afterEach(async () => {
   await handle?.shutdown();
   handle = undefined;
-  history.replaceState(null, "", originalUrl);
   trace.disable();
   logs.disable();
   propagation.disable();
@@ -170,57 +166,6 @@ describe("configured instrumentations in a browser", () => {
   });
 
   describe("W3C propagation", () => {
-    it("shares the page operation across page views, logs, fetch/XHR spans, and injected headers", async () => {
-      const allowedOrigins = [/^http:\/\/127\.0\.0\.1:\d+\//];
-      await start({
-        fetch: { propagateTraceHeaderCorsUrls: allowedOrigins },
-        xhr: { propagateTraceHeaderCorsUrls: allowedOrigins },
-      });
-      const operationIds: string[] = [];
-      for (const route of ["initial", "next"]) {
-        if (route === "next") history.pushState(null, "", "/next-operation");
-        const operationId = trace.getSpanContext(context.active())!.traceId;
-        operationIds.push(operationId);
-        logs.getLogger("application").emit({ body: route });
-        const responses = await Promise.all([
-          fetchHeaders(CROSS_ORIGIN_HEADERS_URL),
-          sendXhrForHeaders(CROSS_ORIGIN_HEADERS_URL),
-        ]);
-        for (const response of responses) {
-          expect(response.traceparent?.split("-")[1]).toBe(operationId);
-        }
-        window.dispatchEvent(new Event("pagehide"));
-      }
-      expect(operationIds[0]).not.toBe(operationIds[1]);
-      const spans = await captured();
-      await pipeline.logProcessor.forceFlush();
-      const records = pipeline.logExporter.getFinishedLogRecords();
-      for (const id of operationIds) {
-        const operationSpans = spans.filter((span) => span.spanContext().traceId === id);
-        expect(operationSpans).toHaveLength(2);
-        const operationLogs = records.filter((record) => record.spanContext?.traceId === id);
-        expect(operationLogs).toHaveLength(2);
-        const pageView = operationLogs.find((record) => record.eventName === "browser.page_view")!;
-        expect(logToEnvelope(pageView, "key").data).toMatchObject({
-          baseType: "PageViewData",
-          baseData: { id },
-        });
-        const envelopes = [
-          ...operationSpans.map((span) => spanToEnvelope(span, "key")),
-          ...operationLogs.map((record) => logToEnvelope(record, "key")),
-        ];
-        for (const envelope of envelopes) expect(envelope.tags["ai.operation.id"]).toBe(id);
-        for (const record of [
-          ...operationSpans,
-          ...operationLogs.filter((log) => log !== pageView),
-        ]) {
-          expect(record.attributes["browser.page_view.id"]).toBeUndefined();
-          expect(record.attributes["browser.page_view.name"]).toBeUndefined();
-          expect(record.attributes["browser.document.url.full"]).toBeUndefined();
-        }
-      }
-    });
-
     it("injects trace context and baggage into allowed cross-origin requests", async () => {
       const allowedOrigins = [/^http:\/\/127\.0\.0\.1:\d+\//];
       await start({
@@ -237,6 +182,9 @@ describe("configured instrumentations in a browser", () => {
 
       expectW3cHeaders(fetchRequest);
       expectW3cHeaders(xhrRequest);
+      const operationId = trace.getSpanContext(context.active())!.traceId;
+      expect(fetchRequest.traceparent?.split("-")[1]).toBe(operationId);
+      expect(xhrRequest.traceparent?.split("-")[1]).toBe(operationId);
     });
 
     it("does not inject headers into cross-origin requests outside the allowed list", async () => {

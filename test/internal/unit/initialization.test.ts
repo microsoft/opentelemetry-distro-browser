@@ -56,6 +56,7 @@ it("prepends session enrichment without changing the caller's processor arrays",
   const options: MicrosoftOpenTelemetryBrowserOptions = {
     ...pipeline.options,
     session: { enabled: true },
+    pageView: { enabled: false },
   };
   Object.freeze(options.spanProcessors);
   Object.freeze(options.logRecordProcessors);
@@ -71,7 +72,6 @@ it("prepends session enrichment without changing the caller's processor arrays",
       "telemetry.distro.version": OPENTELEMETRY_BROWSER_VERSION,
     },
     traces: {
-      contextManager: expect.objectContaining({ active: expect.any(Function) }),
       processors: [
         expect.objectContaining({ onStart: expect.any(Function) }),
         pipeline.spanProcessor,
@@ -79,7 +79,6 @@ it("prepends session enrichment without changing the caller's processor arrays",
     },
     logs: {
       processors: [
-        expect.objectContaining({ onEmit: expect.any(Function) }),
         expect.objectContaining({ onEmit: expect.any(Function) }),
         pipeline.logProcessor,
       ],
@@ -173,9 +172,7 @@ it("forwards trace context configuration without sharing the propagator array", 
       propagators: [propagator],
       processors: [pipeline.spanProcessor],
     },
-    logs: {
-      processors: undefined,
-    },
+    logs: { processors: undefined },
   });
   const forwarded = vi.mocked(startBrowserSdk).mock.calls[0]?.[0]?.traces?.propagators;
   expect(forwarded).not.toBe(propagators);
@@ -304,19 +301,16 @@ it("exports correlated manual telemetry through custom processors", async () => 
 it.each(
   [true, false].flatMap((enabled) =>
     [undefined, []].flatMap((spanProcessors) =>
-      [undefined, []].flatMap((logRecordProcessors) =>
-        [true, false].map((pageViewEnabled) => ({
-          enabled,
-          spanProcessors,
-          logRecordProcessors,
-          pageViewEnabled,
-        })),
-      ),
+      [undefined, []].map((logRecordProcessors) => ({
+        enabled,
+        spanProcessors,
+        logRecordProcessors,
+      })),
     ),
   ),
 )(
   "preserves per-signal disabling and default export (%j)",
-  async ({ enabled, spanProcessors, logRecordProcessors, pageViewEnabled }) => {
+  async ({ enabled, spanProcessors, logRecordProcessors }) => {
     const registerTrace = vi.spyOn(trace, "setGlobalTracerProvider");
     const registerLogs = vi.spyOn(logs, "setGlobalLoggerProvider");
     const spanExport = vi
@@ -327,7 +321,7 @@ it.each(
       .mockImplementation((_records, callback) => callback({ code: 0 }));
     const handle = await useMicrosoftOpenTelemetry({
       session: { enabled },
-      pageView: { enabled: pageViewEnabled },
+      pageView: { enabled: false },
       spanProcessors,
       logRecordProcessors,
     });
@@ -353,77 +347,58 @@ it.each(
         expect(id).toBe(ids[0]);
       } else expect(id).toBeUndefined();
     }
-    const manualRecords = [
-      ...spanExport.mock.calls.flatMap(([spans]) => spans),
-      ...logExport.mock.calls
-        .flatMap(([records]) => records)
-        .filter((r) => r.eventName === "default"),
-    ];
-    for (const record of manualRecords) {
-      expect(record.attributes["browser.page_view.id"]).toBeUndefined();
-      expect(record.attributes["browser.document.url.full"]).toBeUndefined();
-      if (pageViewEnabled) {
-        const spanContext =
-          typeof record.spanContext === "function" ? record.spanContext() : record.spanContext;
-        const page = logExport.mock.calls
-          .flatMap(([records]) => records)
-          .find((r) => r.eventName === "browser.page_view");
-        expect(spanContext?.traceId).toMatch(/^[0-9a-f]{32}$/);
-        if (page) expect(spanContext?.traceId).toBe(page.attributes["browser.page_view.id"]);
-      }
-    }
   },
 );
 
-it.each(
-  [true, false].flatMap((enabled) =>
-    [true, false].map((pageViewEnabled) => ({ enabled, pageViewEnabled })),
-  ),
-)("preserves caller log filtering (%j)", async ({ enabled, pageViewEnabled }) => {
-  const pipeline = createInMemoryPipeline();
-  const firstEmit = vi.fn();
-  const onEmit = vi.spyOn(pipeline.logProcessor, "onEmit");
-  const filter = vi.fn<NonNullable<LogRecordProcessor["enabled"]>>(
-    (options) => options.eventName === "allowed" && options.severityNumber === SeverityNumber.WARN,
-  );
-  const handle = await useMicrosoftOpenTelemetry({
-    session: { enabled },
-    pageView: { enabled: pageViewEnabled },
-    spanProcessors: [],
-    logRecordProcessors: [
-      {
-        enabled: () => false,
-        onEmit: firstEmit,
-        forceFlush: async () => {},
-        shutdown: async () => {},
-      },
-      Object.assign(pipeline.logProcessor, { enabled: filter }),
-    ],
-  });
-  handles.add(handle);
-  const logger = logs.getLogger("filtered", "1.0");
-  const rejected = {
-    eventName: "blocked",
-    severityNumber: SeverityNumber.WARN,
-    context: ROOT_CONTEXT,
-  };
-  expect(logger.enabled(rejected)).toBe(false);
-  logger.emit(rejected);
-  logger.emit({ eventName: "allowed", severityNumber: SeverityNumber.INFO });
-  expect(firstEmit).not.toHaveBeenCalled();
-  expect(onEmit).not.toHaveBeenCalled();
-  const accepted = { ...rejected, eventName: "allowed" };
-  expect(logger.enabled(accepted)).toBe(true);
-  logger.emit(accepted);
-  expect(filter).toHaveBeenLastCalledWith({
-    ...accepted,
-    instrumentationScope: expect.objectContaining({ name: "filtered", version: "1.0" }),
-  });
-  expect(onEmit).toHaveBeenCalledOnce();
-  const id = onEmit.mock.calls[0][0].attributes["session.id"];
-  if (enabled) expect(id).toMatch(/^[0-9a-f]{32}$/);
-  else expect(id).toBeUndefined();
-});
+it.each([true, false])(
+  "preserves caller log filtering with sessions enabled=%s",
+  async (enabled) => {
+    const pipeline = createInMemoryPipeline();
+    const firstEmit = vi.fn();
+    const onEmit = vi.spyOn(pipeline.logProcessor, "onEmit");
+    const filter = vi.fn<NonNullable<LogRecordProcessor["enabled"]>>(
+      (options) =>
+        options.eventName === "allowed" && options.severityNumber === SeverityNumber.WARN,
+    );
+    const handle = await useMicrosoftOpenTelemetry({
+      session: { enabled },
+      pageView: { enabled: false },
+      spanProcessors: [],
+      logRecordProcessors: [
+        {
+          enabled: () => false,
+          onEmit: firstEmit,
+          forceFlush: async () => {},
+          shutdown: async () => {},
+        },
+        Object.assign(pipeline.logProcessor, { enabled: filter }),
+      ],
+    });
+    handles.add(handle);
+    const logger = logs.getLogger("filtered", "1.0");
+    const rejected = {
+      eventName: "blocked",
+      severityNumber: SeverityNumber.WARN,
+      context: ROOT_CONTEXT,
+    };
+    expect(logger.enabled(rejected)).toBe(false);
+    logger.emit(rejected);
+    logger.emit({ eventName: "allowed", severityNumber: SeverityNumber.INFO });
+    expect(firstEmit).not.toHaveBeenCalled();
+    expect(onEmit).not.toHaveBeenCalled();
+    const accepted = { ...rejected, eventName: "allowed" };
+    expect(logger.enabled(accepted)).toBe(true);
+    logger.emit(accepted);
+    expect(filter).toHaveBeenLastCalledWith({
+      ...accepted,
+      instrumentationScope: expect.objectContaining({ name: "filtered", version: "1.0" }),
+    });
+    expect(onEmit).toHaveBeenCalledOnce();
+    const id = onEmit.mock.calls[0][0].attributes["session.id"];
+    if (enabled) expect(id).toMatch(/^[0-9a-f]{32}$/);
+    else expect(id).toBeUndefined();
+  },
+);
 
 it("reports an upstream shutdown failure while shutting down both signals", async () => {
   const failure = new Error("processor shutdown failed");

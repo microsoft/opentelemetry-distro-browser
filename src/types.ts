@@ -92,9 +92,9 @@ export interface BrowserInstrumentation {
  * Advanced configuration for browser trace context and propagation.
  *
  * @remarks
- * W3C Trace Context and Baggage are the default propagators. With page views enabled, the
- * distribution supplies a page operation when the configured context manager has no active
- * span. Without page views, the upstream browser SDK's context-manager default is unchanged.
+ * Uses W3C Trace Context and Baggage by default. Page-view correlation delegates to the supplied
+ * context manager (or an upstream synchronous stack manager) and supplies the page operation only
+ * when there is no active span. Pass explicit context across asynchronous boundaries.
  *
  * The OpenTelemetry global context and propagation APIs are page-lifetime registrations. Like the
  * tracer and logger providers, they are not unregistered by `shutdown`; initialize this
@@ -105,9 +105,7 @@ export interface BrowserInstrumentation {
 export interface MicrosoftOpenTelemetryBrowserTraceOptions {
   /**
    * Context manager used to track the active span across browser callbacks.
-   * With page views enabled, otherwise unparented telemetry inherits the page operation.
-   * Explicit span contexts take precedence. The default is synchronous stack-based context;
-   * use explicit context binding across asynchronous boundaries.
+   * Explicit span contexts take precedence over the page operation.
    */
   contextManager?: ContextManager;
   /**
@@ -166,14 +164,13 @@ export interface MicrosoftOpenTelemetryBrowserOptions {
    *
    * @remarks
    * Emits one `browser.page_view` log record per navigation, covering the initial document load
-   * and subsequent route changes. Its id is the operation's OpenTelemetry trace id, also mapped
-   * to Application Insights operationId. Otherwise unparented spans and logs share that operation;
-   * explicit trace contexts take precedence. Each navigation starts a new operation, without
-   * changing in-flight spans or explicitly bound callbacks from an older operation.
-   * Page URL and descriptive attributes remain on page-view records, not on other telemetry.
+   * and subsequent route changes. The page-view ID is its operation trace ID. Otherwise
+   * unparented spans and logs share that operation; explicit span contexts are preserved.
+   * Page URL and descriptive attributes stay on the page-view record, not on other telemetry.
    *
    * Collection and operation correlation are on by default; set `enabled: false` to turn both off.
-   * This does not remove the implementation from the bundle, because a bundler resolves imports
+   * Doing so stops collection
+   * but does not remove the implementation from the bundle, because a bundler resolves imports
    * long before this object exists.
    */
   pageView?: PageViewInstrumentationConfig;

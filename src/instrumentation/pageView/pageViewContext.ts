@@ -56,7 +56,7 @@ export function createPageViewContext(): PageViewContext {
 const HEX = "0123456789abcdef";
 
 /**
- * Mints a page-operation trace id: sixteen random bytes, lowercase hexadecimal.
+ * Mints a page-view id: sixteen random bytes, lowercase hexadecimal.
  *
  * @remarks
  * Uses `crypto.getRandomValues` where available and falls back to `Math.random` on browsers that

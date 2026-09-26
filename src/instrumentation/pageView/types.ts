@@ -1,7 +1,6 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-import type { SpanContext } from "@opentelemetry/api";
 import { type LogRecord } from "@opentelemetry/api-logs";
 
 /**
@@ -56,17 +55,15 @@ export type PageViewNavigationType =
  *
  * @remarks
  * Published as soon as the navigation is observed, which is well before the log record is emitted.
- * That ordering lets other telemetry inherit the page's operation while it is still loading.
+ * Its operation is available to other telemetry while the page is loading, not after it settles.
  *
  * @internal
  */
 export interface PageView {
   /**
-   * Operation trace id for this navigation, also used as the default page-view id.
+   * Operation trace ID for this navigation, also used as the default Application Insights page-view ID.
    */
   readonly id: string;
-  /** Non-recording operation context inherited by otherwise unparented spans and logs. */
-  readonly spanContext: SpanContext;
   /** Zero-based ordinal of this page view within the document's lifetime. */
   readonly index: number;
   /** Resolved page name. */
@@ -198,9 +195,8 @@ export interface PageViewInstrumentationConfig {
  * Configuration including the seams that are not part of the public API.
  *
  * @remarks
- * Kept internal because context sharing serves the distribution's correlation processors, and
- * overriding id generation exists for tests. Exposing either would drag {@link PageViewContext}
- * and its whole type chain into the public surface for no consumer benefit.
+ * Context sharing and ID generation are internal seams. An injected generator must return a
+ * valid OpenTelemetry trace ID.
  *
  * @internal
  */

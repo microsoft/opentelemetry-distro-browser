@@ -4,9 +4,9 @@
 import type { Attributes } from "@opentelemetry/api";
 import type { ReadableLogRecord } from "@opentelemetry/sdk-logs";
 import {
-  ATTR_PAGE_VIEW_DURATION,
   ATTR_PAGE_VIEW_ID,
   ATTR_PAGE_VIEW_NAME,
+  ATTR_PAGE_VIEW_DURATION,
   EVENT_BROWSER_PAGE_VIEW,
 } from "../instrumentation/pageView/semconv.js";
 import {
@@ -111,8 +111,7 @@ export function logToEnvelope(
     };
   } else if (isPageView || logRecord.eventName === PAGE_VIEW_EVENT_NAME) {
     const duration =
-      (isPageView ? logRecord.attributes[ATTR_PAGE_VIEW_DURATION] : undefined) ??
-      logRecord.attributes[NAVIGATION_DURATION];
+      logRecord.attributes[isPageView ? ATTR_PAGE_VIEW_DURATION : NAVIGATION_DURATION];
     const id = logRecord.attributes[ATTR_PAGE_VIEW_ID] || logRecord.spanContext?.traceId;
     name = "Microsoft.ApplicationInsights.PageView";
     baseType = "PageViewData";

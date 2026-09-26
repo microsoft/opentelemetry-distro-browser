@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 /**
- * Internal semantic conventions for page-view events.
+ * Internal semantic conventions for the page-view event.
  *
  * @remarks
  * There is no upstream convention for page views.
@@ -43,7 +43,7 @@ export const SEVERITY_NUMBER_INFO = 9 as SeverityNumber;
  */
 export const ATTR_URL_FULL = "url.full";
 
-/** Page operation trace id, also used as the default Application Insights page-view id. */
+/** Correlation id minted once per navigation. */
 export const ATTR_PAGE_VIEW_ID = "browser.page_view.id";
 
 /** Human-meaningful page name. */
