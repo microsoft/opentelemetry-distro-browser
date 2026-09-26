@@ -56,6 +56,7 @@ it("prepends session enrichment without changing the caller's processor arrays",
   const options: MicrosoftOpenTelemetryBrowserOptions = {
     ...pipeline.options,
     session: { enabled: true },
+    pageView: { enabled: false },
   };
   Object.freeze(options.spanProcessors);
   Object.freeze(options.logRecordProcessors);
@@ -151,6 +152,7 @@ it("forwards trace context configuration without sharing the propagator array", 
   const propagators = Object.freeze([propagator]);
   const options: MicrosoftOpenTelemetryBrowserOptions = {
     spanProcessors: [pipeline.spanProcessor],
+    pageView: { enabled: false },
     traces: Object.freeze({ contextManager, propagators }),
   };
   Object.freeze(options.spanProcessors);

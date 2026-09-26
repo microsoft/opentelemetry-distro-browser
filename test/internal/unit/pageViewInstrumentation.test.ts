@@ -563,7 +563,7 @@ describe("PageViewInstrumentation", () => {
     });
 
     it("uses an injected id generator", async () => {
-      const generatePageViewIdMock = vi.fn(() => "deterministic-id");
+      const generatePageViewIdMock = vi.fn(() => "12345678901234567890123456789012");
       const { instrumentation, provider } = createInstrumentation({
         generatePageViewId: generatePageViewIdMock,
       });
@@ -572,7 +572,7 @@ describe("PageViewInstrumentation", () => {
       await settle();
 
       expect(attributesOf(provider.records[0] as LogRecord)[ATTR_PAGE_VIEW_ID]).toBe(
-        "deterministic-id",
+        "12345678901234567890123456789012",
       );
       expect(generatePageViewIdMock).toHaveBeenCalled();
     });

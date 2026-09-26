@@ -182,6 +182,9 @@ describe("configured instrumentations in a browser", () => {
 
       expectW3cHeaders(fetchRequest);
       expectW3cHeaders(xhrRequest);
+      const operationId = trace.getSpanContext(context.active())!.traceId;
+      expect(fetchRequest.traceparent?.split("-")[1]).toBe(operationId);
+      expect(xhrRequest.traceparent?.split("-")[1]).toBe(operationId);
     });
 
     it("does not inject headers into cross-origin requests outside the allowed list", async () => {

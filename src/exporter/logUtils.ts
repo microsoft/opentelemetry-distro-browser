@@ -4,6 +4,12 @@
 import type { Attributes } from "@opentelemetry/api";
 import type { ReadableLogRecord } from "@opentelemetry/sdk-logs";
 import {
+  ATTR_PAGE_VIEW_ID,
+  ATTR_PAGE_VIEW_NAME,
+  ATTR_PAGE_VIEW_DURATION,
+  EVENT_BROWSER_PAGE_VIEW,
+} from "../instrumentation/pageView/semconv.js";
+import {
   createEnvelope,
   createTags,
   hrTimeToDate,
@@ -34,12 +40,22 @@ const promotedLogAttributes = /* @__PURE__ */ new Set([
   EXCEPTION_TYPE,
   NAVIGATION_DURATION,
 ]);
+const promotedNavigationAttributes = /* @__PURE__ */ new Set([
+  EXCEPTION_MESSAGE,
+  EXCEPTION_STACKTRACE,
+  EXCEPTION_TYPE,
+  NAVIGATION_DURATION,
+  URL_FULL,
+]);
 const promotedPageViewAttributes = /* @__PURE__ */ new Set([
   EXCEPTION_MESSAGE,
   EXCEPTION_STACKTRACE,
   EXCEPTION_TYPE,
   NAVIGATION_DURATION,
   URL_FULL,
+  ATTR_PAGE_VIEW_ID,
+  ATTR_PAGE_VIEW_NAME,
+  ATTR_PAGE_VIEW_DURATION,
 ]);
 
 function mapSeverity(severityNumber: number | undefined): SeverityLevel | undefined {
@@ -55,11 +71,14 @@ export function logToEnvelope(
   logRecord: ReadableLogRecord,
   instrumentationKey: string,
 ): AzureMonitorEnvelope<MessageData | ExceptionData | PageViewData | CustomEventData> {
+  const isPageView = logRecord.eventName === EVENT_BROWSER_PAGE_VIEW;
   const customFields = mapAttributes(
     logRecord.attributes as Attributes,
-    logRecord.eventName === PAGE_VIEW_EVENT_NAME
+    isPageView
       ? promotedPageViewAttributes
-      : promotedLogAttributes,
+      : logRecord.eventName === PAGE_VIEW_EVENT_NAME
+        ? promotedNavigationAttributes
+        : promotedLogAttributes,
   );
   const tags = createTags(
     logRecord.spanContext?.traceId,
@@ -90,13 +109,21 @@ export function logToEnvelope(
       severityLevel,
       ...customFields,
     };
-  } else if (logRecord.eventName === PAGE_VIEW_EVENT_NAME) {
-    const duration = logRecord.attributes[NAVIGATION_DURATION];
+  } else if (isPageView || logRecord.eventName === PAGE_VIEW_EVENT_NAME) {
+    const duration =
+      logRecord.attributes[isPageView ? ATTR_PAGE_VIEW_DURATION : NAVIGATION_DURATION];
+    const id = logRecord.attributes[ATTR_PAGE_VIEW_ID] || logRecord.spanContext?.traceId;
     name = "Microsoft.ApplicationInsights.PageView";
     baseType = "PageViewData";
     baseData = {
       ver: 2,
-      name: serializeAttribute(logRecord.body ?? logRecord.attributes[URL_FULL] ?? "Page View"),
+      ...(isPageView ? { id: id === undefined ? undefined : serializeAttribute(id) } : {}),
+      name: serializeAttribute(
+        (isPageView ? logRecord.attributes[ATTR_PAGE_VIEW_NAME] : undefined) ??
+          logRecord.body ??
+          logRecord.attributes[URL_FULL] ??
+          "Page View",
+      ),
       url:
         logRecord.attributes[URL_FULL] === undefined
           ? undefined

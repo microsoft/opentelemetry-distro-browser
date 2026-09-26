@@ -29,6 +29,51 @@ function makeLog(overrides: Partial<ReadableLogRecord> = {}): ReadableLogRecord 
 }
 
 describe("Azure Monitor log envelope mapping", () => {
+  it.each([undefined, "", "explicit-page-id"])(
+    "maps page-view IDs using the AppInsights fallback (%j)",
+    (id) => {
+      const envelope = logToEnvelope(
+        makeLog({
+          eventName: "browser.page_view",
+          attributes: {
+            "browser.page_view.id": id,
+            "browser.page_view.name": "Checkout",
+            "browser.page_view.duration": 125,
+            "url.full": "https://example.test/checkout",
+          },
+        }),
+        instrumentationKey,
+      );
+      expect(envelope.tags["ai.operation.id"]).toBe(spanContext.traceId);
+      expect(envelope.data).toMatchObject({
+        baseType: "PageViewData",
+        baseData: { id: id || spanContext.traceId, name: "Checkout", duration: "00:00:00.1250000" },
+      });
+      expect(envelope.data.baseData.properties?.["browser.page_view.id"]).toBeUndefined();
+    },
+  );
+
+  it("does not change legacy navigation mapping when page-view attributes are supplied", () => {
+    const envelope = logToEnvelope(
+      makeLog({
+        eventName: "browser.navigation",
+        body: "Legacy",
+        attributes: {
+          "browser.page_view.id": "other-id",
+          "browser.page_view.name": "Other",
+          "browser.navigation.duration": 10,
+        },
+      }),
+      instrumentationKey,
+    );
+    expect(envelope.data.baseData).toMatchObject({
+      name: "Legacy",
+      duration: "00:00:00.0100000",
+      properties: { "browser.page_view.id": "other-id", "browser.page_view.name": "Other" },
+    });
+    expect(envelope.data.baseData).not.toHaveProperty("id");
+  });
+
   it("maps exception semantic attributes and severity", () => {
     const envelope = logToEnvelope(
       makeLog({
