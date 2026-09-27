@@ -46,7 +46,7 @@
     "format:fix": "prettier --write .",
     "test": "vitest run",
     "test:unit": "vitest run --config vitest.unit.config.ts",
-    "test:integration": "vitest run --config vitest.integration.config.ts",
+    "test:integration": "node --test test/integration/redirectServer.test.mjs && vitest run --config vitest.integration.config.ts",
     "test:install-browsers": "playwright install chromium",
     "test:watch": "vitest",
     "test:coverage": "npm run test:unit -- --coverage",
