@@ -6,6 +6,8 @@ All notable changes to this package are documented in this file.
 
 ### Changed
 
+- Correlate page views, spans, and logs through shared operation IDs while preserving explicit
+  application span contexts.
 - Replaced proposal-era README content with installation, initialization, configuration,
   instrumentation, OTLP, resource detection, bundle size, and published-alpha guidance.
 
