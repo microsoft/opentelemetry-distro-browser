@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 import { trace } from "@opentelemetry/api";
-import { useMicrosoftOpenTelemetry } from "../../dist/esm/index.js";
+import { useMicrosoftOpenTelemetry } from "../../src/index.js";
 
 const parameters = new URLSearchParams(location.search);
 const ingestionEndpoint = parameters.get("ingestionEndpoint");
