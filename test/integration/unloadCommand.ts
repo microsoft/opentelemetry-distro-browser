@@ -11,8 +11,8 @@ declare module "vitest/browser" {
 }
 
 export const verifyUnloadDelivery = defineBrowserCommand(
-  async ({ context }, fixtureUrl: string, captureUrl: string): Promise<unknown[]> => {
-    const fixturePage = await context.newPage();
+  async ({ page }, fixtureUrl: string, captureUrl: string): Promise<unknown[]> => {
+    const fixturePage = await page.context().newPage();
     const diagnostics: string[] = [];
     fixturePage.on("console", (message) => diagnostics.push(`console: ${message.text()}`));
     fixturePage.on("pageerror", (error) => diagnostics.push(`pageerror: ${error.message}`));
