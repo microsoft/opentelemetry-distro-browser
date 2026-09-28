@@ -68,7 +68,7 @@ it("prepends session enrichment without changing the caller's processor arrays",
   expect(useMicrosoftOpenTelemetry).not.toBe(startBrowserSdk);
   expect(startBrowserSdk).toHaveBeenCalledExactlyOnceWith({
     resourceAttributes: {
-      "telemetry.distro.name": "@microsoft/opentelemetry-distro-browser",
+      "telemetry.distro.name": "@microsoft/opentelemetry-browser",
       "telemetry.distro.version": OPENTELEMETRY_BROWSER_VERSION,
     },
     traces: {
@@ -164,7 +164,7 @@ it("forwards trace context configuration without sharing the propagator array", 
 
   expect(startBrowserSdk).toHaveBeenCalledExactlyOnceWith({
     resourceAttributes: {
-      "telemetry.distro.name": "@microsoft/opentelemetry-distro-browser",
+      "telemetry.distro.name": "@microsoft/opentelemetry-browser",
       "telemetry.distro.version": OPENTELEMETRY_BROWSER_VERSION,
     },
     traces: {
@@ -189,7 +189,7 @@ it("identifies the distribution without displacing the upstream SDK defaults", a
   handles.delete(handle);
 
   expect(spanExport.mock.calls[0][0][0].resource.attributes).toMatchObject({
-    "telemetry.distro.name": "@microsoft/opentelemetry-distro-browser",
+    "telemetry.distro.name": "@microsoft/opentelemetry-browser",
     "telemetry.distro.version": OPENTELEMETRY_BROWSER_VERSION,
     "service.name": "unknown_service",
     "telemetry.sdk.language": "webjs",
