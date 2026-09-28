@@ -6,6 +6,7 @@ import { ExportResultCode } from "@opentelemetry/core";
 import type { ReadableSpan } from "@opentelemetry/sdk-trace-base";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { setUnloading } from "../../../src/exporter/common.js";
+import { MAX_BATCH_SIZE_IN_BYTES } from "../../../src/exporter/constants.js";
 import { AzureMonitorSpanExporter } from "../../../src/exporter/trace.js";
 
 const connectionString =
@@ -81,6 +82,22 @@ describe("AzureMonitorSpanExporter", () => {
       name: "Microsoft.ApplicationInsights.RemoteDependency",
       iKey: "00000000-0000-0000-0000-000000000000",
     });
+  });
+
+  it("rejects a production payload above the request body limit before fetch", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    vi.stubGlobal("fetch", fetch);
+    const exporter = new AzureMonitorSpanExporter({ connectionString });
+    const span = {
+      ...makeSpan(),
+      attributes: { oversized: "x".repeat(MAX_BATCH_SIZE_IN_BYTES) },
+    } as ReadableSpan;
+
+    await expect(exportSpans(exporter, [span])).resolves.toEqual({
+      code: ExportResultCode.FAILED,
+      error: expect.objectContaining({ message: expect.stringContaining("byte limit") }),
+    });
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it("retries only rejected retriable envelopes from a partial response", async () => {

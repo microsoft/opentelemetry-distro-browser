@@ -6,6 +6,7 @@ import { ExportResultCode } from "@opentelemetry/core";
 import { isSamplingRejection, parseBreezeResponse } from "./breezeUtils.js";
 import { isUnloading } from "./common.js";
 import { isValidInstrumentationKey, parseConnectionString } from "./connectionStringParser.js";
+import { MAX_BATCH_SIZE_IN_BYTES } from "./constants.js";
 import { Sender, type SenderResultType } from "./sender.js";
 import type { AzureMonitorEnvelope } from "./telemetryModels.js";
 
@@ -43,6 +44,7 @@ export class AzureMonitorExportClient {
     this.sender = new Sender({
       endpoint: `${ingestionEndpoint}/v2/track`,
       disableBeacon: options.disableBeacon,
+      maxPayloadSize: MAX_BATCH_SIZE_IN_BYTES,
     });
   }
 
