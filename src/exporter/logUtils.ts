@@ -49,16 +49,6 @@ const promotedPageViewAttributes = /* @__PURE__ */ new Set([
   ATTR_PAGE_VIEW_NAME,
   URL_FULL,
 ]);
-const promotedPageViewIdAttributes = /* @__PURE__ */ new Set([
-  EXCEPTION_MESSAGE,
-  EXCEPTION_STACKTRACE,
-  EXCEPTION_TYPE,
-  NAVIGATION_DURATION,
-  ATTR_PAGE_VIEW_DURATION,
-  ATTR_PAGE_VIEW_NAME,
-  URL_FULL,
-  ATTR_PAGE_VIEW_ID,
-]);
 
 function isPageView(eventName: string | undefined): boolean {
   return eventName === EVENT_BROWSER_PAGE_VIEW || eventName === NAVIGATION_EVENT_NAME;
@@ -80,11 +70,7 @@ export function logToEnvelope(
   const isNativePageView = logRecord.eventName === EVENT_BROWSER_PAGE_VIEW;
   const customFields = mapAttributes(
     logRecord.attributes as Attributes,
-    isNativePageView
-      ? promotedPageViewIdAttributes
-      : isPageView(logRecord.eventName)
-        ? promotedPageViewAttributes
-        : promotedLogAttributes,
+    isPageView(logRecord.eventName) ? promotedPageViewAttributes : promotedLogAttributes,
   );
   const tags = createTags(
     logRecord.spanContext?.traceId,

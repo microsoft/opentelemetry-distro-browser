@@ -52,7 +52,7 @@ describe("Azure Monitor log envelope mapping", () => {
         baseType: "PageViewData",
         baseData: { id: id || spanContext.traceId, name: "Checkout", duration: "00:00:00.1250000" },
       });
-      expect(envelope.data.baseData.properties?.["browser.page_view.id"]).toBeUndefined();
+      expect(envelope.data.baseData.properties?.["browser.page_view.id"]).toBe(id);
     },
   );
 
