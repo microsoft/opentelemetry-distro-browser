@@ -22,7 +22,7 @@ import {
   EXCEPTION_STACKTRACE,
   EXCEPTION_TYPE,
   NAVIGATION_DURATION,
-  PAGE_VIEW_EVENT_NAME,
+  NAVIGATION_EVENT_NAME,
   URL_FULL,
 } from "./constants.js";
 import type {
@@ -76,7 +76,7 @@ export function logToEnvelope(
     logRecord.attributes as Attributes,
     isPageView
       ? promotedPageViewAttributes
-      : logRecord.eventName === PAGE_VIEW_EVENT_NAME
+      : logRecord.eventName === NAVIGATION_EVENT_NAME
         ? promotedNavigationAttributes
         : promotedLogAttributes,
   );
@@ -109,7 +109,7 @@ export function logToEnvelope(
       severityLevel,
       ...customFields,
     };
-  } else if (isPageView || logRecord.eventName === PAGE_VIEW_EVENT_NAME) {
+  } else if (isPageView || logRecord.eventName === NAVIGATION_EVENT_NAME) {
     const duration =
       logRecord.attributes[isPageView ? ATTR_PAGE_VIEW_DURATION : NAVIGATION_DURATION];
     const id = logRecord.attributes[ATTR_PAGE_VIEW_ID] || logRecord.spanContext?.traceId;
