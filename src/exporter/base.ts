@@ -44,7 +44,6 @@ export class AzureMonitorExportClient {
     this.sender = new Sender({
       endpoint: `${ingestionEndpoint}/v2/track`,
       disableBeacon: options.disableBeacon,
-      maxPayloadSize: MAX_BATCH_SIZE_IN_BYTES,
     });
   }
 
@@ -59,10 +58,26 @@ export class AzureMonitorExportClient {
       return;
     }
 
-    const body = new TextEncoder().encode(JSON.stringify(envelopes));
-    const operation = this.sender
-      .send({ body, contentType: CONTENT_TYPE, envelopes, unloading: isUnloading() })
-      .then((result) => callback(toExportResult(result)))
+    const unloading = isUnloading();
+    const requests = createBatchRequests(envelopes);
+    const operation = Promise.allSettled(
+      requests.map(({ body, envelopes: batchEnvelopes }) =>
+        this.sender.send({
+          body,
+          contentType: CONTENT_TYPE,
+          envelopes: batchEnvelopes,
+          unloading,
+        }),
+      ),
+    )
+      .then((results) => {
+        const fulfilled: SenderResultType[] = [];
+        for (const result of results) {
+          if (result.status === "rejected") throw result.reason;
+          fulfilled.push(result.value);
+        }
+        callback(toExportResult(fulfilled));
+      })
       .catch((error: unknown) =>
         callback({
           code: ExportResultCode.FAILED,
@@ -84,7 +99,54 @@ export class AzureMonitorExportClient {
   }
 }
 
-function toExportResult(result: SenderResultType): ExportResult {
+function createBatchRequests(envelopes: readonly AzureMonitorEnvelope[]): Array<{
+  body: Uint8Array<ArrayBuffer>;
+  envelopes: readonly AzureMonitorEnvelope[];
+}> {
+  const encoder = new TextEncoder();
+  const requests: Array<{
+    body: Uint8Array<ArrayBuffer>;
+    envelopes: readonly AzureMonitorEnvelope[];
+  }> = [];
+  let batch: AzureMonitorEnvelope[] = [];
+  let serializedBatch: string[] = [];
+  let batchSize = 2;
+
+  const flush = (): void => {
+    if (batch.length === 0) return;
+    requests.push({
+      body: encoder.encode(`[${serializedBatch.join(",")}]`),
+      envelopes: batch,
+    });
+    batch = [];
+    serializedBatch = [];
+    batchSize = 2;
+  };
+
+  for (const envelope of envelopes) {
+    const serialized = JSON.stringify(envelope);
+    const serializedSize = encoder.encode(serialized).byteLength;
+    const separatorSize = batch.length === 0 ? 0 : 1;
+    if (batch.length > 0 && batchSize + separatorSize + serializedSize > MAX_BATCH_SIZE_IN_BYTES) {
+      flush();
+    }
+    batch.push(envelope);
+    serializedBatch.push(serialized);
+    batchSize += (batch.length === 1 ? 0 : 1) + serializedSize;
+  }
+  flush();
+  return requests;
+}
+
+function toExportResult(results: readonly SenderResultType[]): ExportResult {
+  for (const result of results) {
+    const exportResult = toSingleExportResult(result);
+    if (exportResult.code === ExportResultCode.FAILED) return exportResult;
+  }
+  return { code: ExportResultCode.SUCCESS };
+}
+
+function toSingleExportResult(result: SenderResultType): ExportResult {
   if (result.transport === "beacon") {
     return { code: ExportResultCode.SUCCESS };
   }

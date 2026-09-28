@@ -49,13 +49,15 @@ function exportSpans(exporter: AzureMonitorSpanExporter, spans: ReadableSpan[]) 
 }
 
 async function requestEnvelopes(fetch: ReturnType<typeof vi.fn>, call: number): Promise<unknown[]> {
+  return JSON.parse(await requestBody(fetch, call)) as unknown[];
+}
+
+async function requestBody(fetch: ReturnType<typeof vi.fn>, call: number): Promise<string> {
   const request = fetch.mock.calls[call][1] as RequestInit;
   const response = new Response(request.body);
-  const body =
-    new Headers(request.headers).get("content-encoding") === "gzip"
-      ? await new Response(response.body!.pipeThrough(new DecompressionStream("gzip"))).text()
-      : await response.text();
-  return JSON.parse(body) as unknown[];
+  return new Headers(request.headers).get("content-encoding") === "gzip"
+    ? new Response(response.body!.pipeThrough(new DecompressionStream("gzip"))).text()
+    : response.text();
 }
 
 describe("AzureMonitorSpanExporter", () => {
@@ -84,20 +86,53 @@ describe("AzureMonitorSpanExporter", () => {
     });
   });
 
-  it("rejects a production payload above the request body limit before fetch", async () => {
-    const fetch = vi.fn<typeof globalThis.fetch>();
+  it("splits envelopes into request-sized batches without rejecting an oversized envelope", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => new Response("", { status: 200 }));
     vi.stubGlobal("fetch", fetch);
     const exporter = new AzureMonitorSpanExporter({ connectionString });
-    const span = {
+    const first = {
       ...makeSpan(),
-      attributes: { oversized: "x".repeat(MAX_BATCH_SIZE_IN_BYTES) },
+      name: "first",
+      attributes: { payload: "x".repeat(MAX_BATCH_SIZE_IN_BYTES / 2) },
+    } as ReadableSpan;
+    const second = {
+      ...makeSpan(),
+      name: "second",
+      attributes: { payload: "x".repeat(MAX_BATCH_SIZE_IN_BYTES / 2) },
     } as ReadableSpan;
 
-    await expect(exportSpans(exporter, [span])).resolves.toEqual({
-      code: ExportResultCode.FAILED,
-      error: expect.objectContaining({ message: expect.stringContaining("byte limit") }),
+    await expect(exportSpans(exporter, [first, second])).resolves.toEqual({
+      code: ExportResultCode.SUCCESS,
     });
-    expect(fetch).not.toHaveBeenCalled();
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(new TextEncoder().encode(await requestBody(fetch, 0)).byteLength).toBeLessThanOrEqual(
+      MAX_BATCH_SIZE_IN_BYTES,
+    );
+    expect(new TextEncoder().encode(await requestBody(fetch, 1)).byteLength).toBeLessThanOrEqual(
+      MAX_BATCH_SIZE_IN_BYTES,
+    );
+    await expect(requestEnvelopes(fetch, 0)).resolves.toEqual([
+      expect.objectContaining({
+        data: expect.objectContaining({ baseData: expect.objectContaining({ name: "first" }) }),
+      }),
+    ]);
+    await expect(requestEnvelopes(fetch, 1)).resolves.toEqual([
+      expect.objectContaining({
+        data: expect.objectContaining({ baseData: expect.objectContaining({ name: "second" }) }),
+      }),
+    ]);
+
+    const oversized = {
+      ...makeSpan("oversized"),
+      attributes: { payload: "x".repeat(MAX_BATCH_SIZE_IN_BYTES) },
+    } as ReadableSpan;
+    await expect(exportSpans(exporter, [oversized])).resolves.toEqual({
+      code: ExportResultCode.SUCCESS,
+    });
+    expect(fetch).toHaveBeenCalledTimes(3);
+    expect(new TextEncoder().encode(await requestBody(fetch, 2)).byteLength).toBeGreaterThan(
+      MAX_BATCH_SIZE_IN_BYTES,
+    );
   });
 
   it("retries only rejected retriable envelopes from a partial response", async () => {
