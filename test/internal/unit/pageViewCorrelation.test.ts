@@ -1,7 +1,14 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-import { ROOT_CONTEXT, context, diag, propagation, trace } from "@opentelemetry/api";
+import {
+  ROOT_CONTEXT,
+  context,
+  diag,
+  isSpanContextValid,
+  propagation,
+  trace,
+} from "@opentelemetry/api";
 import { logs } from "@opentelemetry/api-logs";
 import { NavigationInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/navigation";
 import { StackContextManager } from "@opentelemetry/sdk-trace-web";
@@ -47,6 +54,30 @@ async function start(options: MicrosoftOpenTelemetryBrowserOptions = {}) {
     logger: logs.getLogger("test"),
   };
 }
+
+it("keeps page views, child spans, logs and propagation correlated with an all-zero RNG", async () => {
+  vi.spyOn(crypto, "getRandomValues").mockImplementation((array) => array);
+  vi.spyOn(Math, "random").mockReturnValue(0);
+  const pipeline = await start();
+  const operation = trace.getSpanContext(context.active())!;
+  expect(isSpanContextValid(operation)).toBe(true);
+
+  const span = pipeline.tracer.startSpan("child");
+  span.end();
+  expect(span.spanContext().traceId).toBe(operation.traceId);
+  pipeline.logger.emit({ body: "correlated" });
+  expect(pipeline.onLog.mock.calls.at(-1)![0].spanContext?.traceId).toBe(operation.traceId);
+  const headers: Record<string, string> = {};
+  propagation.inject(context.active(), headers);
+  expect(headers.traceparent?.split("-")[1]).toBe(operation.traceId);
+
+  window.dispatchEvent(new Event("pagehide"));
+  const page = pipeline.onLog.mock.calls.find(
+    ([record]) => record.eventName === "browser.page_view",
+  )![0];
+  expect(page.spanContext?.traceId).toBe(operation.traceId);
+  expect(page.attributes["browser.page_view.id"]).toBe(operation.traceId);
+});
 
 it.each([false, true])(
   "uses one operation ID for the page, logs, spans and propagation (eager navigation=%s)",

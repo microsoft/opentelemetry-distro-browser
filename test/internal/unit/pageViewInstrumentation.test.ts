@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+import { isSpanContextValid, isValidTraceId } from "@opentelemetry/api";
 import {
   SeverityNumber,
   type LogRecord,
@@ -584,6 +585,52 @@ describe("PageViewInstrumentation", () => {
         expect(id).toMatch(/^[0-9a-f]{32}$/);
       }
     });
+
+    it.each([true, false])(
+      "generates valid trace IDs when random bytes are all zero (crypto available=%s)",
+      (cryptoAvailable) => {
+        vi.spyOn(Math, "random").mockReturnValue(0);
+        if (cryptoAvailable) {
+          vi.spyOn(crypto, "getRandomValues").mockImplementation((array) => array);
+        } else {
+          vi.stubGlobal("crypto", undefined);
+        }
+        try {
+          const id = generatePageViewId();
+          expect(isValidTraceId(id)).toBe(true);
+          expect(id).toBe("00000000000000000000000000000001");
+        } finally {
+          vi.restoreAllMocks();
+          vi.unstubAllGlobals();
+        }
+      },
+    );
+
+    it.each([undefined, "", "invalid", "00000000000000000000000000000000", "throw"])(
+      "keeps the operation valid with an all-zero RNG and ID hook result %s",
+      (result) => {
+        vi.spyOn(crypto, "getRandomValues").mockImplementation((array) => array);
+        vi.spyOn(Math, "random").mockReturnValue(0);
+        try {
+          const { instrumentation } = createInstrumentation({
+            generatePageViewId:
+              result === undefined
+                ? undefined
+                : () => {
+                    if (result === "throw") throw new Error("id exploded");
+                    return result;
+                  },
+          });
+          instrumentation.enable();
+          const operation = instrumentation.getOperationContext();
+          expect(operation).toBeDefined();
+          expect(isSpanContextValid(operation!)).toBe(true);
+          expect(instrumentation.pageViews.getCurrentPageView()?.id).toBe(operation?.traceId);
+        } finally {
+          vi.restoreAllMocks();
+        }
+      },
+    );
   });
 
   describe("configuration hooks", () => {
