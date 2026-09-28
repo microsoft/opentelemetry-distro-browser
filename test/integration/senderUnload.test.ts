@@ -10,8 +10,7 @@ it("delivers queued telemetry after the source document navigates away", async (
   const fixtureUrl = new URL("./unloadFixture.html", import.meta.url);
   fixtureUrl.searchParams.set("ingestionEndpoint", ingestionEndpoint);
   fixtureUrl.searchParams.set("runId", runId);
-  const captureUrl =
-    `${new URL(ingestionEndpoint).origin}/captured?runId=${encodeURIComponent(runId)}`;
+  const captureUrl = `${new URL(ingestionEndpoint).origin}/captured?runId=${encodeURIComponent(runId)}`;
 
   await expect(commands.verifyUnloadDelivery(fixtureUrl.href, captureUrl)).resolves.toEqual([
     expect.objectContaining({
