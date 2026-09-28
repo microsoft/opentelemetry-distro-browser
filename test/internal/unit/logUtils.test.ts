@@ -119,6 +119,32 @@ describe("Azure Monitor log envelope mapping", () => {
     });
   });
 
+  it("maps legacy browser.navigation to PageViewData", () => {
+    const envelope = logToEnvelope(
+      makeLog({
+        eventName: "browser.navigation",
+        attributes: {
+          "url.full": "https://shop.example.test/cart",
+          "browser.navigation.duration": 425.25,
+          "browser.navigation.same_document": true,
+        },
+      }),
+      instrumentationKey,
+    );
+
+    expect(envelope.data).toEqual({
+      baseType: "PageViewData",
+      baseData: {
+        ver: 2,
+        name: "https://shop.example.test/cart",
+        url: "https://shop.example.test/cart",
+        duration: "00:00:00.4252500",
+        properties: { "browser.navigation.same_document": "true" },
+        measurements: undefined,
+      },
+    });
+  });
+
   it.each(["browser.console", "application.audit"])(
     "maps named log %s to MessageData without losing its message or severity",
     (eventName) => {
