@@ -154,21 +154,71 @@ it("preserves explicit contexts and in-flight spans across navigation with a cus
   expect(enabled).toHaveBeenCalledOnce();
 });
 
-it("defaults the first page-view ID to an existing application operation", async () => {
-  const existing = {
-    traceId: "12345678901234567890123456789012",
-    spanId: "1234567890123456",
-    traceFlags: 0,
-  };
+it.each([
+  { sessionEnabled: false, logsOnly: false },
+  { sessionEnabled: true, logsOnly: false },
+  { sessionEnabled: false, logsOnly: true },
+  { sessionEnabled: true, logsOnly: true },
+])(
+  "preserves the scoped initial operation (session=$sessionEnabled, logsOnly=$logsOnly)",
+  async ({ sessionEnabled, logsOnly }) => {
+    const existing = {
+      traceId: "1".repeat(32),
+      spanId: "2".repeat(16),
+      traceFlags: 0,
+    };
+    const manager = new StackContextManager();
+    const initializing = manager.with(trace.setSpanContext(ROOT_CONTEXT, existing), () =>
+      start({
+        traces: { contextManager: manager },
+        session: { enabled: sessionEnabled },
+        ...(logsOnly ? { spanProcessors: [] } : {}),
+      }),
+    );
+    expect(manager.active()).toBe(ROOT_CONTEXT);
+    const pipeline = await initializing;
+    expect(manager.active()).toBe(ROOT_CONTEXT);
+
+    pipeline.logger.emit({ body: "initial operation" });
+    expect(pipeline.onLog.mock.calls.at(-1)![0].spanContext).toEqual(existing);
+    if (!logsOnly) {
+      const span = pipeline.tracer.startSpan("child");
+      span.end();
+      expect(span.spanContext().traceId).toBe(existing.traceId);
+      const headers: Record<string, string> = {};
+      propagation.inject(context.active(), headers);
+      expect(headers.traceparent).toBe(`00-${existing.traceId}-${existing.spanId}-00`);
+    }
+    window.dispatchEvent(new Event("pagehide"));
+    const page = pipeline.onLog.mock.calls.find(
+      ([record]) => record.eventName === "browser.page_view",
+    )![0];
+    expect(page.spanContext).toEqual(existing);
+    expect(page.attributes["browser.page_view.id"]).toBe(existing.traceId);
+
+    history.pushState(null, "", "/next");
+    pipeline.logger.emit({ body: "next operation" });
+    const next = pipeline.onLog.mock.calls.at(-1)![0].spanContext!;
+    expect(isSpanContextValid(next)).toBe(true);
+    expect(next.traceId).not.toBe(existing.traceId);
+  },
+);
+
+it.each([
+  { traceId: "0".repeat(32), spanId: "2".repeat(16), traceFlags: 1 },
+  { traceId: "1".repeat(32), spanId: "0".repeat(16), traceFlags: 1 },
+])("ignores an invalid initial operation %j", async (invalid) => {
   const manager = new StackContextManager();
-  vi.spyOn(manager, "active").mockReturnValue(trace.setSpanContext(ROOT_CONTEXT, existing));
-  const pipeline = await start({ traces: { contextManager: manager } });
+  const pipeline = await manager.with(trace.setSpanContext(ROOT_CONTEXT, invalid), () =>
+    start({ traces: { contextManager: manager } }),
+  );
   window.dispatchEvent(new Event("pagehide"));
   const page = pipeline.onLog.mock.calls.find(
     ([record]) => record.eventName === "browser.page_view",
   )![0];
-  expect(page.spanContext).toEqual(existing);
-  expect(page.attributes["browser.page_view.id"]).toBe(existing.traceId);
+  expect(isSpanContextValid(page.spanContext!)).toBe(true);
+  expect(page.spanContext?.traceId).not.toBe(invalid.traceId);
+  expect(page.attributes["browser.page_view.id"]).toBe(page.spanContext?.traceId);
 });
 
 it("keeps a delayed page event's original operation in logs-only mode", async () => {

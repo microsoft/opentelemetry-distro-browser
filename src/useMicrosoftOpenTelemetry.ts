@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-import { diag, trace } from "@opentelemetry/api";
+import { context, diag, trace } from "@opentelemetry/api";
 import { logs } from "@opentelemetry/api-logs";
 import { startBrowserSdk } from "@opentelemetry/browser-sdk";
 import { SessionLogRecordProcessor, SessionSpanProcessor } from "./session/sessionProcessors.js";
@@ -49,13 +49,20 @@ function createOwnedInstrumentations(
   const owned: PageViewInstrumentation[] = [];
   const pageView = options.pageView ?? {};
   if (pageView.enabled !== false) {
-    owned.push(new PageViewInstrumentation({ ...pageView, enabled: false }));
+    owned.push(
+      new PageViewInstrumentation(
+        { ...pageView, enabled: false },
+        options.traces?.contextManager?.active() ?? context.active(),
+      ),
+    );
   }
   return owned;
 }
 
 /**
  * Restores the session when enabled, then initializes traces, logs, and selected instrumentations.
+ * Captures the initial page operation from the supplied manager or global context before awaiting
+ * session restoration, so synchronous context scopes are preserved.
  * Await completion before emitting telemetry.
  * @public
  */

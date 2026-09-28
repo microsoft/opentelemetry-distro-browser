@@ -7,6 +7,7 @@ import {
   trace,
   isSpanContextValid,
   isValidTraceId,
+  type Context,
   type SpanContext,
 } from "@opentelemetry/api";
 import { type LogRecord } from "@opentelemetry/api-logs";
@@ -168,7 +169,10 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
   /** The target the `currententrychange` listener was attached to, so it can always be removed. */
   private navigationApiTarget: NavigationApiLike | undefined;
 
-  public constructor(config: InternalPageViewInstrumentationConfig = {}) {
+  public constructor(
+    config: InternalPageViewInstrumentationConfig = {},
+    private initialContext?: Context,
+  ) {
     // `InstrumentationBase` calls `enable()` from its own constructor, which runs before this
     // subclass's field initializers. That would observe an undefined page-view context, and the
     // initializers would then overwrite the state `enable()` had just set. Start disabled, finish
@@ -251,7 +255,8 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
     if (this.enabledState) {
       return;
     }
-    const active = trace.getSpanContext(context.active());
+    const active = trace.getSpanContext(this.initialContext ?? context.active());
+    this.initialContext = undefined;
     if (active && isSpanContextValid(active)) {
       this.operation = active;
       this.operationUrl = this.getNavigationApi()?.currentEntry?.url ?? location.href;

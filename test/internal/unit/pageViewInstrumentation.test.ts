@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-import { isSpanContextValid, isValidTraceId } from "@opentelemetry/api";
+import { ROOT_CONTEXT, isSpanContextValid, isValidTraceId, trace } from "@opentelemetry/api";
 import {
   SeverityNumber,
   type LogRecord,
@@ -140,6 +140,27 @@ describe("PageViewInstrumentation", () => {
       expect(() => {
         instrumentation.enable();
       }).not.toThrow();
+    });
+
+    it("consumes the initial context only on the first enable", () => {
+      const operation = {
+        traceId: "1".repeat(32),
+        spanId: "2".repeat(16),
+        traceFlags: 1,
+      };
+      const instrumentation = new PageViewInstrumentation(
+        { enabled: false },
+        trace.setSpanContext(ROOT_CONTEXT, operation),
+      );
+      active = instrumentation;
+      expect(instrumentation.getOperationContext()).toBeUndefined();
+
+      instrumentation.enable();
+      expect(instrumentation.getOperationContext()).toEqual(operation);
+      instrumentation.disable();
+      instrumentation.enable();
+      expect(isSpanContextValid(instrumentation.getOperationContext()!)).toBe(true);
+      expect(instrumentation.getOperationContext()?.traceId).not.toBe(operation.traceId);
     });
   });
 
