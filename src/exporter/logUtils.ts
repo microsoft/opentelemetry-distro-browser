@@ -4,9 +4,9 @@
 import type { Attributes } from "@opentelemetry/api";
 import type { ReadableLogRecord } from "@opentelemetry/sdk-logs";
 import {
+  ATTR_PAGE_VIEW_DURATION,
   ATTR_PAGE_VIEW_ID,
   ATTR_PAGE_VIEW_NAME,
-  ATTR_PAGE_VIEW_DURATION,
   EVENT_BROWSER_PAGE_VIEW,
 } from "../instrumentation/pageView/semconv.js";
 import {
@@ -40,23 +40,29 @@ const promotedLogAttributes = /* @__PURE__ */ new Set([
   EXCEPTION_TYPE,
   NAVIGATION_DURATION,
 ]);
-const promotedNavigationAttributes = /* @__PURE__ */ new Set([
-  EXCEPTION_MESSAGE,
-  EXCEPTION_STACKTRACE,
-  EXCEPTION_TYPE,
-  NAVIGATION_DURATION,
-  URL_FULL,
-]);
 const promotedPageViewAttributes = /* @__PURE__ */ new Set([
   EXCEPTION_MESSAGE,
   EXCEPTION_STACKTRACE,
   EXCEPTION_TYPE,
   NAVIGATION_DURATION,
+  ATTR_PAGE_VIEW_DURATION,
+  ATTR_PAGE_VIEW_NAME,
+  URL_FULL,
+]);
+const promotedPageViewIdAttributes = /* @__PURE__ */ new Set([
+  EXCEPTION_MESSAGE,
+  EXCEPTION_STACKTRACE,
+  EXCEPTION_TYPE,
+  NAVIGATION_DURATION,
+  ATTR_PAGE_VIEW_DURATION,
+  ATTR_PAGE_VIEW_NAME,
   URL_FULL,
   ATTR_PAGE_VIEW_ID,
-  ATTR_PAGE_VIEW_NAME,
-  ATTR_PAGE_VIEW_DURATION,
 ]);
+
+function isPageView(eventName: string | undefined): boolean {
+  return eventName === EVENT_BROWSER_PAGE_VIEW || eventName === NAVIGATION_EVENT_NAME;
+}
 
 function mapSeverity(severityNumber: number | undefined): SeverityLevel | undefined {
   if (!severityNumber || severityNumber < 1 || severityNumber > 24) return undefined;
@@ -71,13 +77,13 @@ export function logToEnvelope(
   logRecord: ReadableLogRecord,
   instrumentationKey: string,
 ): AzureMonitorEnvelope<MessageData | ExceptionData | PageViewData | CustomEventData> {
-  const isPageView = logRecord.eventName === EVENT_BROWSER_PAGE_VIEW;
+  const isNativePageView = logRecord.eventName === EVENT_BROWSER_PAGE_VIEW;
   const customFields = mapAttributes(
     logRecord.attributes as Attributes,
-    isPageView
-      ? promotedPageViewAttributes
-      : logRecord.eventName === NAVIGATION_EVENT_NAME
-        ? promotedNavigationAttributes
+    isNativePageView
+      ? promotedPageViewIdAttributes
+      : isPageView(logRecord.eventName)
+        ? promotedPageViewAttributes
         : promotedLogAttributes,
   );
   const tags = createTags(
@@ -109,18 +115,18 @@ export function logToEnvelope(
       severityLevel,
       ...customFields,
     };
-  } else if (isPageView || logRecord.eventName === NAVIGATION_EVENT_NAME) {
+  } else if (isPageView(logRecord.eventName)) {
     const duration =
-      logRecord.attributes[isPageView ? ATTR_PAGE_VIEW_DURATION : NAVIGATION_DURATION];
+      logRecord.attributes[ATTR_PAGE_VIEW_DURATION] ?? logRecord.attributes[NAVIGATION_DURATION];
     const id = logRecord.attributes[ATTR_PAGE_VIEW_ID] || logRecord.spanContext?.traceId;
     name = "Microsoft.ApplicationInsights.PageView";
     baseType = "PageViewData";
     baseData = {
       ver: 2,
-      ...(isPageView ? { id: id === undefined ? undefined : serializeAttribute(id) } : {}),
+      ...(isNativePageView ? { id: id === undefined ? undefined : serializeAttribute(id) } : {}),
       name: serializeAttribute(
-        (isPageView ? logRecord.attributes[ATTR_PAGE_VIEW_NAME] : undefined) ??
-          logRecord.body ??
+        logRecord.body ??
+          logRecord.attributes[ATTR_PAGE_VIEW_NAME] ??
           logRecord.attributes[URL_FULL] ??
           "Page View",
       ),

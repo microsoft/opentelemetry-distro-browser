@@ -35,10 +35,12 @@ describe("Azure Monitor log envelope mapping", () => {
       const envelope = logToEnvelope(
         makeLog({
           eventName: "browser.page_view",
+          body: "Checkout",
           attributes: {
             "browser.page_view.id": id,
-            "browser.page_view.name": "Checkout",
+            "browser.page_view.name": "Other",
             "browser.page_view.duration": 125,
+            "browser.navigation.duration": 250,
             "url.full": "https://example.test/checkout",
           },
         }),
@@ -54,11 +56,11 @@ describe("Azure Monitor log envelope mapping", () => {
     },
   );
 
-  it("does not change legacy navigation mapping when page-view attributes are supplied", () => {
+  it.each([undefined, "Legacy"])("preserves legacy navigation mapping with body %j", (body) => {
     const envelope = logToEnvelope(
       makeLog({
         eventName: "browser.navigation",
-        body: "Legacy",
+        body,
         attributes: {
           "browser.page_view.id": "other-id",
           "browser.page_view.name": "Other",
@@ -69,10 +71,10 @@ describe("Azure Monitor log envelope mapping", () => {
       instrumentationKey,
     );
     expect(envelope.data.baseData).toMatchObject({
-      name: "Legacy",
-      duration: "00:00:00.0100000",
-      properties: { "browser.page_view.id": "other-id", "browser.page_view.name": "Other" },
-      measurements: { "browser.page_view.duration": 250 },
+      name: body ?? "Other",
+      duration: "00:00:00.2500000",
+      properties: { "browser.page_view.id": "other-id" },
+      measurements: undefined,
     });
     expect(envelope.data.baseData).not.toHaveProperty("id");
   });
@@ -140,33 +142,36 @@ describe("Azure Monitor log envelope mapping", () => {
     });
   });
 
-  it("maps browser.page_view to PageViewData", () => {
-    const envelope = logToEnvelope(
-      makeLog({
-        eventName: "browser.page_view",
-        attributes: {
-          "browser.page_view.name": "Cart",
-          "browser.page_view.duration": 425.25,
-          "url.full": "https://shop.example.test/cart",
-          "browser.page_view.same_document": true,
-        },
-      }),
-      instrumentationKey,
-    );
+  it.each(["browser.page_view.duration", "browser.navigation.duration"])(
+    "maps browser.page_view to PageViewData using %s",
+    (durationAttribute) => {
+      const envelope = logToEnvelope(
+        makeLog({
+          eventName: "browser.page_view",
+          attributes: {
+            "browser.page_view.name": "Cart",
+            [durationAttribute]: 425.25,
+            "url.full": "https://shop.example.test/cart",
+            "browser.page_view.same_document": true,
+          },
+        }),
+        instrumentationKey,
+      );
 
-    expect(envelope.data).toEqual({
-      baseType: "PageViewData",
-      baseData: {
-        ver: 2,
-        id: spanContext.traceId,
-        name: "Cart",
-        url: "https://shop.example.test/cart",
-        duration: "00:00:00.4252500",
-        properties: { "browser.page_view.same_document": "true" },
-        measurements: undefined,
-      },
-    });
-  });
+      expect(envelope.data).toEqual({
+        baseType: "PageViewData",
+        baseData: {
+          ver: 2,
+          id: spanContext.traceId,
+          name: "Cart",
+          url: "https://shop.example.test/cart",
+          duration: "00:00:00.4252500",
+          properties: { "browser.page_view.same_document": "true" },
+          measurements: undefined,
+        },
+      });
+    },
+  );
 
   it("maps legacy browser.navigation to PageViewData", () => {
     const envelope = logToEnvelope(

@@ -141,7 +141,5 @@ function listen(server: Server): Promise<string> {
 function close(server: Server): Promise<void> {
   return new Promise((resolve, reject) => {
     server.close((error) => (error ? reject(error) : resolve()));
-    // Vitest tears down these servers before Chromium, which can retain unused TCP connections.
-    server.closeAllConnections();
   });
 }
