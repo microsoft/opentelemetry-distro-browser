@@ -80,6 +80,43 @@ it("keeps page views, child spans, logs and propagation correlated with an all-z
 });
 
 it.each([false, true])(
+  "omits synthetic Azure Monitor parents without changing native context (logsOnly=%s)",
+  async (logsOnly) => {
+    const pipeline = await start(logsOnly ? { spanProcessors: [] } : {});
+    pipeline.logger.emit({ body: "page log" });
+    const log = pipeline.onLog.mock.calls.at(-1)![0];
+    const operation = log.spanContext!;
+    expect(isSpanContextValid(operation)).toBe(true);
+
+    window.dispatchEvent(new Event("pagehide"));
+    const page = pipeline.onLog.mock.calls.find(
+      ([record]) => record.eventName === "browser.page_view",
+    )![0];
+    for (const record of [log, page]) {
+      const envelope = logToEnvelope(record, "key");
+      expect(envelope.tags["ai.operation.id"]).toBe(operation.traceId);
+      expect(envelope.tags).not.toHaveProperty("ai.operation.parentId");
+      expect(record.spanContext).toBe(operation);
+    }
+
+    if (!logsOnly) {
+      pipeline.tracer.startSpan("page dependency").end();
+      await pipeline.spanProcessor.forceFlush();
+      const [span] = pipeline.spanExporter.getFinishedSpans();
+      const envelope = spanToEnvelope(span, "key");
+      expect(envelope.tags["ai.operation.id"]).toBe(operation.traceId);
+      expect(envelope.tags).not.toHaveProperty("ai.operation.parentId");
+      expect(span.parentSpanContext).toBe(operation);
+      expect(isSpanContextValid(span.spanContext())).toBe(true);
+    }
+
+    await handle!.shutdown();
+    expect(logToEnvelope(page, "key").tags).not.toHaveProperty("ai.operation.parentId");
+    expect(isSpanContextValid(operation)).toBe(true);
+  },
+);
+
+it.each([false, true])(
   "uses one operation ID for the page, logs, spans and propagation (eager navigation=%s)",
   async (enabled) => {
     const navigation = new NavigationInstrumentation({ enabled });
@@ -116,11 +153,14 @@ it.each([false, true])(
       )![0];
       const envelope = logToEnvelope(page, "key");
       expect(envelope.tags["ai.operation.id"]).toBe(id);
+      expect(envelope.tags).not.toHaveProperty("ai.operation.parentId");
       expect(envelope.data).toMatchObject({
         baseType: "PageViewData",
         baseData: { id, url: path },
       });
       expect(logToEnvelope(log, "key").tags["ai.operation.id"]).toBe(id);
+      expect(logToEnvelope(log, "key").tags).not.toHaveProperty("ai.operation.parentId");
+      expect(logToEnvelope(routeLog, "key").tags).not.toHaveProperty("ai.operation.parentId");
     }
     expect(ids[0]).not.toBe(ids[1]);
     await pipeline.spanProcessor.forceFlush();
@@ -129,6 +169,9 @@ it.each([false, true])(
         .getFinishedSpans()
         .map((span) => spanToEnvelope(span, "key").tags["ai.operation.id"]),
     ).toEqual(ids);
+    for (const span of pipeline.spanExporter.getFinishedSpans()) {
+      expect(spanToEnvelope(span, "key").tags).not.toHaveProperty("ai.operation.parentId");
+    }
   },
 );
 
@@ -147,11 +190,17 @@ it("preserves explicit contexts and in-flight spans across navigation with a cus
   history.pushState(null, "", "/new");
   bound();
   expect(pipeline.onLog.mock.calls.at(-1)![0].spanContext).toEqual(original);
+  expect(
+    logToEnvelope(pipeline.onLog.mock.calls.at(-1)![0], "key").tags["ai.operation.parentId"],
+  ).toBe(original.spanId);
   pipeline.logger.emit({ body: "new operation" });
   expect(pipeline.onLog.mock.calls.at(-1)![0].spanContext?.traceId).not.toBe(original.traceId);
   parent.end();
   expect(parent.spanContext()).toEqual(original);
   expect(enabled).toHaveBeenCalledOnce();
+  await pipeline.spanProcessor.forceFlush();
+  const child = pipeline.spanExporter.getFinishedSpans().find((span) => span.name === "child")!;
+  expect(spanToEnvelope(child, "key").tags["ai.operation.parentId"]).toBe(original.spanId);
 });
 
 it.each([
@@ -181,6 +230,9 @@ it.each([
 
     pipeline.logger.emit({ body: "initial operation" });
     expect(pipeline.onLog.mock.calls.at(-1)![0].spanContext).toEqual(existing);
+    expect(
+      logToEnvelope(pipeline.onLog.mock.calls.at(-1)![0], "key").tags["ai.operation.parentId"],
+    ).toBe(existing.spanId);
     if (!logsOnly) {
       const span = pipeline.tracer.startSpan("child");
       span.end();
@@ -195,6 +247,7 @@ it.each([
     )![0];
     expect(page.spanContext).toEqual(existing);
     expect(page.attributes["browser.page_view.id"]).toBe(existing.traceId);
+    expect(logToEnvelope(page, "key").tags["ai.operation.parentId"]).toBe(existing.spanId);
 
     history.pushState(null, "", "/next");
     pipeline.logger.emit({ body: "next operation" });
@@ -241,6 +294,7 @@ it("keeps a delayed page event's original operation in logs-only mode", async ()
   )![0];
   expect(page.spanContext?.traceId).toBe(first);
   expect(page.attributes["browser.page_view.id"]).toBe(first);
+  expect(logToEnvelope(page, "key").tags).not.toHaveProperty("ai.operation.parentId");
   pipeline.logger.emit({ body: "after" });
   expect(pipeline.onLog.mock.calls.at(-1)![0].spanContext?.traceId).not.toBe(first);
 });

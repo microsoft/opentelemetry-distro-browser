@@ -82,7 +82,7 @@ export function logToEnvelope(
   );
   const tags = createTags(
     logRecord.spanContext?.traceId,
-    logRecord.spanContext?.spanId,
+    logRecord.spanContext,
     logRecord.resource.attributes["service.name"],
   );
   const severityLevel = mapSeverity(logRecord.severityNumber);

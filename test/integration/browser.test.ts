@@ -5,6 +5,7 @@ import { ROOT_CONTEXT, context, diag, propagation, trace } from "@opentelemetry/
 import { logs } from "@opentelemetry/api-logs";
 import { afterEach, expect, inject, it, vi } from "vitest";
 import { version } from "../../package.json";
+import type { AzureMonitorEnvelope } from "../../src/exporter/telemetryModels.js";
 import { createInMemoryPipeline } from "../fixtures/telemetry.js";
 
 afterEach(() => {
@@ -34,9 +35,22 @@ it("sends telemetry from a browser interaction to Azure Monitor ingestion", asyn
     pageView: { applyCustomLogRecordData: () => pageReady() },
   });
   const button = document.createElement("button");
+  let applicationSpanId: string | undefined;
   button.addEventListener("click", () => {
     const logger = logs.getLogger("browser-ingestion-test");
-    trace.getTracer("browser-ingestion-test").startSpan("checkout.click").end();
+    const span = trace.getTracer("browser-ingestion-test").startSpan("checkout.click");
+    applicationSpanId = span.spanContext().spanId;
+    const applicationContext = trace.setSpan(ROOT_CONTEXT, span);
+    logger.emit({
+      eventName: "checkout.context",
+      context: applicationContext,
+      attributes: { "test.run_id": runId },
+    });
+    trace
+      .getTracer("browser-ingestion-test")
+      .startSpan("checkout.child", {}, applicationContext)
+      .end();
+    span.end();
     logger.emit({
       eventName: "checkout.clicked",
       body: runId,
@@ -64,7 +78,7 @@ it("sends telemetry from a browser interaction to Azure Monitor ingestion", asyn
     button.click();
     await telemetry.forceFlush();
 
-    const captured = await fetch(
+    const captured: AzureMonitorEnvelope[] = await fetch(
       `${new URL(ingestionEndpoint).origin}/captured?runId=${encodeURIComponent(runId)}`,
     ).then((response) => response.json());
     expect(captured).toEqual(
@@ -120,6 +134,28 @@ it("sends telemetry from a browser interaction to Azure Monitor ingestion", asyn
               measurements: expect.objectContaining({ itemCount: 2 }),
             }),
           },
+        }),
+      ]),
+    );
+    const parented = captured.filter((envelope) =>
+      Object.hasOwn(envelope.tags, "ai.operation.parentId"),
+    );
+    expect(parented).toHaveLength(2);
+    expect(parented).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          tags: expect.objectContaining({ "ai.operation.parentId": applicationSpanId }),
+          data: expect.objectContaining({
+            baseType: "EventData",
+            baseData: expect.objectContaining({ name: "checkout.context" }),
+          }),
+        }),
+        expect.objectContaining({
+          tags: expect.objectContaining({ "ai.operation.parentId": applicationSpanId }),
+          data: expect.objectContaining({
+            baseType: "RemoteDependencyData",
+            baseData: expect.objectContaining({ name: "checkout.child" }),
+          }),
         }),
       ]),
     );

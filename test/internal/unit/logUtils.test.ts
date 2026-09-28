@@ -45,6 +45,7 @@ describe("Azure Monitor log envelope mapping", () => {
         instrumentationKey,
       );
       expect(envelope.tags["ai.operation.id"]).toBe(spanContext.traceId);
+      expect(envelope.tags["ai.operation.parentId"]).toBe(spanContext.spanId);
       expect(envelope.data).toMatchObject({
         baseType: "PageViewData",
         baseData: { id: id || spanContext.traceId, name: "Checkout", duration: "00:00:00.1250000" },
