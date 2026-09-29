@@ -192,6 +192,10 @@ async function measureScenario(scenario) {
   const bundle = await rollup({
     input,
     plugins: [nodeResolve({ browser: true }), commonjs()],
+    onwarn(warning, defaultHandler) {
+      if (warning.code === "UNRESOLVED_IMPORT") throw new Error(warning.message);
+      defaultHandler(warning);
+    },
     treeshake: {
       moduleSideEffects: "no-external",
       propertyReadSideEffects: false,
