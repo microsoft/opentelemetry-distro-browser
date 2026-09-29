@@ -50,7 +50,10 @@ test("uses measured baselines and a directly measured combined scenario", () => 
   assert.equal(scenarios.find(({ id }) => id === "sdk")?.baseline, "api");
   assert.equal(scenarios.find(({ id }) => id === "distribution")?.baseline, "sdk");
   assert.equal(scenarios.find(({ id }) => id === "azure-monitor-exporters")?.baseline, "api");
-  assert.equal(scenarios.find(({ id }) => id === "everything")?.baseline, undefined);
+  const everything = scenarios.find(({ id }) => id === "everything");
+  assert.equal(everything?.baseline, undefined);
+  assert.match(everything?.code ?? "", /getInstrumentations/);
+  assert.doesNotMatch(everything?.code ?? "", /browser-instrumentation\/experimental/);
 });
 
 test("reports measured totals alongside baseline-relative deltas", () => {
@@ -123,8 +126,11 @@ test("reports measured totals alongside baseline-relative deltas", () => {
     scenarios: measured,
   });
   assert.match(markdown, /Do not sum deltas/);
-  assert.match(markdown, /SDK \| api \| 0\.24 kB \| \+0\.15 kB \| 0\.20 kB \| \+0\.12 kB/);
-  assert.match(markdown, /Everything \| 0\.39 kB \| 0\.31 kB/);
+  assert.match(
+    markdown,
+    /SDK \| api \| 0\.49 kB \| 0\.24 kB \| \+0\.15 kB \| 0\.20 kB \| \+0\.12 kB/,
+  );
+  assert.match(markdown, /Everything \| 0\.88 kB \| 0\.39 kB \| 0\.31 kB/);
 });
 
 test("records the resolved Rollup runtime version", () => {

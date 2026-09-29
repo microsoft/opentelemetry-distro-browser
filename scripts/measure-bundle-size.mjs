@@ -121,12 +121,6 @@ const publishedInstrumentationsScenario = {
   code: `import * as publishedInstrumentations from "${packageName}/instrumentations";\n${sink("publishedInstrumentations")}`,
 };
 
-const allInstrumentationImports = INSTRUMENTATIONS.map(
-  ([, subpath, symbol]) =>
-    `import { ${symbol} } from "@opentelemetry/browser-instrumentation/experimental/${subpath}";`,
-).join("\n");
-const allInstrumentationSymbols = INSTRUMENTATIONS.map(([, , symbol]) => symbol);
-
 const everythingScenario = {
   id: "everything",
   label: "Distribution, exporters, loader, and every instrumentation",
@@ -138,14 +132,11 @@ const everythingScenario = {
     DISTRIBUTION_IMPORTS +
     EXPORTER_IMPORTS +
     `import { getInstrumentations } from "${packageName}/instrumentations";\n` +
-    allInstrumentationImports +
-    "\n" +
     sink(
       ...DISTRIBUTION_SYMBOLS,
       "AzureMonitorLogRecordExporter",
       "AzureMonitorSpanExporter",
       "getInstrumentations",
-      ...allInstrumentationSymbols,
     ),
 };
 
@@ -264,15 +255,15 @@ export function addDeltas(measurements) {
 function markdownTable(rows, includeBaseline = true) {
   const lines = [
     includeBaseline
-      ? "| Scenario | Baseline | Total gzip | Gzip delta | Total Brotli | Brotli delta | Chunks |"
-      : "| Scenario | Total gzip | Total Brotli | Chunks |",
-    includeBaseline ? "|---|---|---:|---:|---:|---:|---:|" : "|---|---:|---:|---:|",
+      ? "| Scenario | Baseline | Minified | Total gzip | Gzip delta | Total Brotli | Brotli delta | Chunks |"
+      : "| Scenario | Minified | Total gzip | Total Brotli | Chunks |",
+    includeBaseline ? "|---|---|---:|---:|---:|---:|---:|---:|" : "|---|---:|---:|---:|---:|",
   ];
   for (const row of rows) {
     lines.push(
       includeBaseline
-        ? `| ${row.label} | ${row.baseline ?? "-"} | ${formatKilobytes(row.gzipBytes)} | ${row.gzipDeltaBytes === undefined ? "-" : formatDelta(row.gzipDeltaBytes)} | ${formatKilobytes(row.brotliBytes)} | ${row.brotliDeltaBytes === undefined ? "-" : formatDelta(row.brotliDeltaBytes)} | ${row.chunks.length} |`
-        : `| ${row.label} | ${formatKilobytes(row.gzipBytes)} | ${formatKilobytes(row.brotliBytes)} | ${row.chunks.length} |`,
+        ? `| ${row.label} | ${row.baseline ?? "-"} | ${formatKilobytes(row.rawBytes)} | ${formatKilobytes(row.gzipBytes)} | ${row.gzipDeltaBytes === undefined ? "-" : formatDelta(row.gzipDeltaBytes)} | ${formatKilobytes(row.brotliBytes)} | ${row.brotliDeltaBytes === undefined ? "-" : formatDelta(row.brotliDeltaBytes)} | ${row.chunks.length} |`
+        : `| ${row.label} | ${formatKilobytes(row.rawBytes)} | ${formatKilobytes(row.gzipBytes)} | ${formatKilobytes(row.brotliBytes)} | ${row.chunks.length} |`,
     );
   }
   return lines;
