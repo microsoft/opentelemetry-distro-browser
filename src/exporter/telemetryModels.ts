@@ -45,7 +45,7 @@ export interface ExceptionData extends EnvelopeData {
 }
 
 export interface PageViewData extends EnvelopeData {
-  readonly id?: string;
+  readonly id: string;
   readonly name: string;
   readonly url?: string;
   readonly duration?: string;

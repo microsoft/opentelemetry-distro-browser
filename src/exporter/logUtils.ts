@@ -3,6 +3,7 @@
 
 import type { Attributes } from "@opentelemetry/api";
 import type { ReadableLogRecord } from "@opentelemetry/sdk-logs";
+import { generatePageViewId } from "../instrumentation/pageView/pageViewContext.js";
 import {
   ATTR_PAGE_VIEW_DURATION,
   ATTR_PAGE_VIEW_ID,
@@ -112,7 +113,7 @@ export function logToEnvelope(
     baseType = "PageViewData";
     baseData = {
       ver: 2,
-      ...(pageViewId === undefined ? {} : { id: serializeAttribute(pageViewId) }),
+      id: pageViewId === undefined ? generatePageViewId() : serializeAttribute(pageViewId),
       name: serializeAttribute(
         logRecord.body ??
           logRecord.attributes[ATTR_PAGE_VIEW_NAME] ??

@@ -140,6 +140,7 @@ describe("Azure Monitor log envelope mapping", () => {
       baseType: "PageViewData",
       baseData: {
         ver: 2,
+        id: expect.stringMatching(/^[0-9a-f]{32}$/),
         name: "https://shop.example.test/cart",
         url: "https://shop.example.test/cart",
         duration: "00:00:00.4252500",
