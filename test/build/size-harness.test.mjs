@@ -3,9 +3,11 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
+import { VERSION as rollupVersion } from "rollup";
 import {
   addDeltas,
   createMarkdownReport,
+  createReport,
   executablePublishedEntryPoints,
   scenarios,
 } from "../../scripts/measure-bundle-size.mjs";
@@ -60,7 +62,16 @@ test("reports measured totals alongside baseline-relative deltas", () => {
       entryPoint: "api",
       rawBytes: 200,
       gzipBytes: 100,
-      chunks: [{ fileName: "entry.js", type: "entry", rawBytes: 200, gzipBytes: 100 }],
+      brotliBytes: 80,
+      chunks: [
+        {
+          fileName: "entry.js",
+          type: "entry",
+          rawBytes: 200,
+          gzipBytes: 100,
+          brotliBytes: 80,
+        },
+      ],
     },
     {
       id: "sdk",
@@ -70,7 +81,16 @@ test("reports measured totals alongside baseline-relative deltas", () => {
       baseline: "api",
       rawBytes: 500,
       gzipBytes: 250,
-      chunks: [{ fileName: "entry.js", type: "entry", rawBytes: 500, gzipBytes: 250 }],
+      brotliBytes: 200,
+      chunks: [
+        {
+          fileName: "entry.js",
+          type: "entry",
+          rawBytes: 500,
+          gzipBytes: 250,
+          brotliBytes: 200,
+        },
+      ],
     },
     {
       id: "everything",
@@ -79,18 +99,36 @@ test("reports measured totals alongside baseline-relative deltas", () => {
       entryPoint: ".",
       rawBytes: 900,
       gzipBytes: 400,
-      chunks: [{ fileName: "entry.js", type: "entry", rawBytes: 900, gzipBytes: 400 }],
+      brotliBytes: 320,
+      chunks: [
+        {
+          fileName: "entry.js",
+          type: "entry",
+          rawBytes: 900,
+          gzipBytes: 400,
+          brotliBytes: 320,
+        },
+      ],
     },
   ]);
   assert.equal(measured[1].baselineGzipBytes, 100);
   assert.equal(measured[1].gzipDeltaBytes, 150);
+  assert.equal(measured[1].baselineBrotliBytes, 80);
+  assert.equal(measured[1].brotliDeltaBytes, 120);
   assert.equal(measured[2].gzipDeltaBytes, undefined);
+  assert.equal(measured[2].brotliDeltaBytes, undefined);
 
   const markdown = createMarkdownReport({
     package: { name: "test-package", version: "1.0.0" },
     scenarios: measured,
   });
   assert.match(markdown, /Do not sum deltas/);
-  assert.match(markdown, /SDK \| api \| 0\.24 kB \| \+0\.15 kB/);
-  assert.match(markdown, /Everything \| 0\.39 kB/);
+  assert.match(markdown, /SDK \| api \| 0\.24 kB \| \+0\.15 kB \| 0\.20 kB \| \+0\.12 kB/);
+  assert.match(markdown, /Everything \| 0\.39 kB \| 0\.31 kB/);
+});
+
+test("records the resolved Rollup runtime version", () => {
+  const report = createReport([]);
+  assert.equal(report.bundler.version, rollupVersion);
+  assert.doesNotMatch(report.bundler.version, /^[~^<>=]/);
 });

@@ -27,10 +27,11 @@ transforming their contents. The `sideEffects: false` contract remains in place;
 package does not initialize telemetry.
 
 `npm run size` bundles real consumers of every published JavaScript entry point with Rollup,
-tree-shakes and minifies each scenario, and reports gzip transfer size. It measures the API, SDK,
-distribution, Azure Monitor exporters, instrumentation loader, each selectable instrumentation,
-and the complete combined configuration. Marginal deltas are always shown beside independently
-measured totals; do not add deltas because combined bundles count shared dependencies once.
+tree-shakes and minifies each scenario, and reports gzip and Brotli transfer sizes. It measures the
+API, SDK, distribution, Azure Monitor exporters, instrumentation loader, each selectable
+instrumentation, and the complete combined configuration. Marginal deltas are always shown beside
+independently measured totals; do not add deltas because combined bundles count shared dependencies
+once.
 
 Every run regenerates `reports/bundle-size.json` and `reports/bundle-size.md`. The production build
 also generates `reports/bundle-stats.html` for dependency analysis. CI renders the Markdown report
