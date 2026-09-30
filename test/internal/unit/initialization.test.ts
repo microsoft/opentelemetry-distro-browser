@@ -362,6 +362,41 @@ it("turns synchronous force flush errors into rejections and permits retry", asy
   expect(spanProcessor.forceFlush).toHaveBeenCalledTimes(2);
 });
 
+it("waits for every processor flush before reporting failures", async () => {
+  const failure = new Error("span flush failure");
+  let finishLogFlush!: () => void;
+  const logFlush = new Promise<void>((resolve) => {
+    finishLogFlush = resolve;
+  });
+  const spanProcessor = {
+    onStart() {},
+    onEnd() {},
+    forceFlush: vi.fn(() => {
+      throw failure;
+    }),
+    shutdown: vi.fn(async () => {}),
+  };
+  const logProcessor = {
+    onEmit() {},
+    forceFlush: vi.fn(() => logFlush),
+    shutdown: vi.fn(async () => {}),
+  };
+  const handle = await useMicrosoftOpenTelemetry({
+    spanProcessors: [spanProcessor],
+    logRecordProcessors: [logProcessor],
+    pageView: { enabled: false },
+  });
+  handles.add(handle);
+
+  const flush = handle.forceFlush();
+  let settled = false;
+  void flush.catch(() => {}).finally(() => (settled = true));
+  await vi.waitFor(() => expect(logProcessor.forceFlush).toHaveBeenCalledOnce());
+  expect(settled).toBe(false);
+  finishLogFlush();
+  await expect(flush).rejects.toBe(failure);
+});
+
 it("clears unload state when a processor throws synchronously during flush", async () => {
   const spanProcessor = {
     onStart() {},
@@ -391,6 +426,68 @@ it("clears unload state when a processor throws synchronously during flush", asy
     expect(spanProcessor.forceFlush).toHaveBeenCalledTimes(2);
     expect(isUnloading()).toBe(false);
   });
+});
+
+it("keeps shared unload mode active until every handle finishes flushing", async () => {
+  const finishFlushes: Array<() => void> = [];
+  const createProcessor = () => ({
+    onStart() {},
+    onEnd() {},
+    forceFlush: vi.fn(() => new Promise<void>((resolve) => finishFlushes.push(resolve))),
+    shutdown: vi.fn(async () => {}),
+  });
+  const firstProcessor = createProcessor();
+  const secondProcessor = createProcessor();
+  const firstHandle = await useMicrosoftOpenTelemetry({
+    spanProcessors: [firstProcessor],
+    pageView: { enabled: false },
+  });
+  const secondHandle = await useMicrosoftOpenTelemetry({
+    spanProcessors: [secondProcessor],
+    pageView: { enabled: false },
+  });
+  handles.add(firstHandle);
+  handles.add(secondHandle);
+
+  globalThis.dispatchEvent(new Event("pagehide"));
+  await vi.waitFor(() => {
+    expect(firstProcessor.forceFlush).toHaveBeenCalledOnce();
+    expect(secondProcessor.forceFlush).toHaveBeenCalledOnce();
+  });
+  expect(isUnloading()).toBe(true);
+  finishFlushes[0]();
+  await Promise.resolve();
+  expect(isUnloading()).toBe(true);
+  finishFlushes[1]();
+  await vi.waitFor(() => expect(isUnloading()).toBe(false));
+});
+
+it("waits for an active manual flush before shutting down providers", async () => {
+  let finishFlush!: () => void;
+  const pendingFlush = new Promise<void>((resolve) => {
+    finishFlush = resolve;
+  });
+  const spanProcessor = {
+    onStart() {},
+    onEnd() {},
+    forceFlush: vi.fn(() => pendingFlush),
+    shutdown: vi.fn(async () => {}),
+  };
+  const upstreamHandle = { shutdown: vi.fn(async () => {}) };
+  vi.mocked(startBrowserSdk).mockReturnValueOnce(upstreamHandle);
+  const handle = await useMicrosoftOpenTelemetry({
+    spanProcessors: [spanProcessor],
+    pageView: { enabled: false },
+  });
+
+  const flush = handle.forceFlush();
+  await vi.waitFor(() => expect(spanProcessor.forceFlush).toHaveBeenCalledOnce());
+  const shutdown = handle.shutdown();
+  expect(handle.forceFlush()).toBe(shutdown);
+  expect(upstreamHandle.shutdown).not.toHaveBeenCalled();
+  finishFlush();
+  await Promise.all([flush, shutdown]);
+  expect(upstreamHandle.shutdown).toHaveBeenCalledOnce();
 });
 
 it("propagates initialization failures without returning a success-shaped handle", async () => {
