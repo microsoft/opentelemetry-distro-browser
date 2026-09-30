@@ -71,7 +71,6 @@ export function logToEnvelope(
   logRecord: ReadableLogRecord,
   instrumentationKey: string,
 ): AzureMonitorEnvelope<MessageData | ExceptionData | PageViewData | CustomEventData> {
-  const isNativePageView = logRecord.eventName === EVENT_BROWSER_PAGE_VIEW;
   const customFields = mapAttributes(
     logRecord.attributes as Attributes,
     isPageView(logRecord.eventName) ? promotedPageViewAttributes : promotedLogAttributes,
@@ -108,9 +107,7 @@ export function logToEnvelope(
   } else if (isPageView(logRecord.eventName)) {
     const duration =
       logRecord.attributes[ATTR_PAGE_VIEW_DURATION] ?? logRecord.attributes[NAVIGATION_DURATION];
-    const pageViewId = isNativePageView
-      ? logRecord.attributes[ATTR_PAGE_VIEW_ID] || logRecord.spanContext?.traceId
-      : logRecord.attributes[ATTR_PAGE_VIEW_ID];
+    const pageViewId = logRecord.attributes[ATTR_PAGE_VIEW_ID] || logRecord.spanContext?.traceId;
     const referrer = logRecord.attributes[ATTR_PAGE_VIEW_REFERRER];
     name = "Microsoft.ApplicationInsights.PageView";
     baseType = "PageViewData";

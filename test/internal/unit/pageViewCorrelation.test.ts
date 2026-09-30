@@ -4,6 +4,7 @@
 import {
   ROOT_CONTEXT,
   context,
+  createContextKey,
   diag,
   isSpanContextValid,
   propagation,
@@ -161,6 +162,10 @@ it.each([false, true])(
       expect(logToEnvelope(log, "key").tags["ai.operation.id"]).toBe(id);
       expect(logToEnvelope(log, "key").tags).not.toHaveProperty("ai.operation.parentId");
       expect(logToEnvelope(routeLog, "key").tags).not.toHaveProperty("ai.operation.parentId");
+      expect(logToEnvelope(routeLog, "key").data).toMatchObject({
+        baseType: "PageViewData",
+        baseData: { id },
+      });
     }
     expect(ids[0]).not.toBe(ids[1]);
     await pipeline.spanProcessor.forceFlush();
@@ -317,6 +322,48 @@ it("keeps correlation disabled when page views are off, and stops it at shutdown
   late.end();
   await stopping;
 });
+
+it.each([false, true])(
+  "removes bound synthetic page contexts at shutdown without changing application contexts (custom manager=%s)",
+  async (customManager) => {
+    const pipeline = await start(
+      customManager ? { traces: { contextManager: new StackContextManager() } } : {},
+    );
+    const key = createContextKey("application-data");
+    const pageContext = context.active().setValue(key, "retained");
+    const pageOperation = trace.getSpanContext(pageContext)!;
+    const pageCallback = context.bind(pageContext, () => context.active());
+    const applicationSpan = pipeline.tracer.startSpan("application");
+    const applicationContext = trace.setSpan(pageContext, applicationSpan);
+    const applicationCallback = context.bind(applicationContext, () => context.active());
+    applicationSpan.end();
+
+    history.pushState(null, "", "/next");
+    expect(trace.getSpanContext(context.active())?.traceId).not.toBe(pageOperation.traceId);
+    expect(trace.getSpanContext(pageCallback())).toBe(pageOperation);
+
+    const verifyStopped = () => {
+      const activePageContext = pageCallback();
+      expect(trace.getSpanContext(activePageContext)).toBeUndefined();
+      expect(activePageContext.getValue(key)).toBe("retained");
+      expect(trace.getSpanContext(pageContext)).toBe(pageOperation);
+      const pageHeaders: Record<string, string> = {};
+      propagation.inject(activePageContext, pageHeaders);
+      expect(pageHeaders).not.toHaveProperty("traceparent");
+
+      expect(applicationCallback()).toBe(applicationContext);
+      const applicationHeaders: Record<string, string> = {};
+      propagation.inject(applicationCallback(), applicationHeaders);
+      const operation = applicationSpan.spanContext();
+      expect(applicationHeaders.traceparent).toBe(`00-${operation.traceId}-${operation.spanId}-01`);
+    };
+
+    const stopping = handle!.shutdown();
+    verifyStopped();
+    await stopping;
+    verifyStopped();
+  },
+);
 
 it("does not bypass caller log filtering or disabled signal arrays", async () => {
   const onEmit = vi.fn();

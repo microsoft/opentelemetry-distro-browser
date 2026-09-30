@@ -4,8 +4,12 @@
 import { trace, type ContextManager, type SpanContext } from "@opentelemetry/api";
 import type { LogRecordProcessor, ReadWriteLogRecord } from "@opentelemetry/sdk-logs";
 import { StackContextManager } from "@opentelemetry/sdk-trace-web";
+import { syntheticPageContexts } from "../../shared/pageOperationContext.js";
 
-/** Uses the page operation only when telemetry has no application-supplied span context. */
+/**
+ * Uses the page operation only when telemetry has no application-supplied span context.
+ * Stops exposing synthetic page contexts at shutdown while preserving application contexts.
+ */
 export class PageViewCorrelation implements ContextManager, LogRecordProcessor {
   private running = false;
 
@@ -16,7 +20,13 @@ export class PageViewCorrelation implements ContextManager, LogRecordProcessor {
 
   active(): ReturnType<ContextManager["active"]> {
     const active = this.delegate.active();
-    const operation = this.running ? this.getOperation?.() : undefined;
+    if (!this.running) {
+      const spanContext = trace.getSpanContext(active);
+      return spanContext && syntheticPageContexts.has(spanContext)
+        ? trace.deleteSpan(active)
+        : active;
+    }
+    const operation = this.getOperation?.();
     return operation && !trace.getSpan(active) ? trace.setSpanContext(active, operation) : active;
   }
 
@@ -50,6 +60,7 @@ export class PageViewCorrelation implements ContextManager, LogRecordProcessor {
   async forceFlush(): Promise<void> {}
 
   shutdown(): Promise<void> {
+    this.running = false;
     this.getOperation = undefined;
     return Promise.resolve();
   }
