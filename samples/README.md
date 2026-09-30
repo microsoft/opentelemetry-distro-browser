@@ -1,14 +1,14 @@
 # Browser samples
 
-These applications consume the published
-`@microsoft/opentelemetry-browser@0.1.0-alpha.1` package, following the same
-self-contained sample pattern as the Microsoft OpenTelemetry Node.js distribution.
+These applications consume the package from this repository, following the same self-contained
+sample pattern as the Microsoft OpenTelemetry Node.js distribution.
 
-| Sample                          | Purpose                                                                          | Command                     |
-| ------------------------------- | -------------------------------------------------------------------------------- | --------------------------- |
-| [Azure Monitor](azure-monitor/) | Export browser spans and logs to an Application Insights resource                | `npm run dev:azure-monitor` |
-| [Console](console/)             | Start locally without a telemetry backend and inspect spans and logs in DevTools | `npm run dev:console`       |
-| [OTLP](otlp/)                   | Export browser spans and logs to an OTLP/HTTP collector                          | `npm run dev:otlp`          |
+| Sample                                | Purpose                                                                          | Command                        |
+| ------------------------------------- | -------------------------------------------------------------------------------- | ------------------------------ |
+| [Azure Monitor](azure-monitor/)       | Export browser spans and logs to an Application Insights resource                | `npm run dev:azure-monitor`    |
+| [Console](console/)                   | Start locally without a telemetry backend and inspect spans and logs in DevTools | `npm run dev:console`          |
+| [OTLP](otlp/)                         | Export browser spans and logs to an OTLP/HTTP collector                          | `npm run dev:otlp`             |
+| [Telemetry viewer](telemetry-viewer/) | Exercise a realistic SPA and inspect exported spans and logs in the page         | `npm run dev:telemetry-viewer` |
 
 Install dependencies once from this directory:
 
@@ -19,6 +19,16 @@ npm install
 Each sample initializes telemetry before dynamically importing application code. This ordering is
 important because browser instrumentations must patch APIs such as `fetch` before the application
 uses them.
+
+## Telemetry viewer
+
+Run `npm run dev:telemetry-viewer` and use the storefront navigation and scenario controls. The
+sample registers local in-memory span and log exporters, so it requires no credentials or telemetry
+backend. The viewer can filter signals, search exported content, pause or clear capture, inspect the
+complete normalized payload, and save a recording as JSON. Its dev and production-build commands
+first rebuild the package from the repository, ensuring that the site exercises the current source
+rather than a published version. The overview also displays the raw, minified, gzip, and Brotli
+sizes of that local package build.
 
 ## Azure Monitor configuration
 
