@@ -122,10 +122,12 @@ export async function useMicrosoftOpenTelemetry(
 
   function forceFlush(): Promise<void> {
     if (!flushPromise) {
-      const operation = Promise.all([
-        ...(spanProcessors ?? []).map((processor) => processor.forceFlush()),
-        ...(logRecordProcessors ?? []).map((processor) => processor.forceFlush()),
-      ]).then(() => undefined);
+      const operation = Promise.resolve().then(async () => {
+        await Promise.all([
+          ...(spanProcessors ?? []).map((processor) => processor.forceFlush()),
+          ...(logRecordProcessors ?? []).map((processor) => processor.forceFlush()),
+        ]);
+      });
       const tracked = operation.finally(() => {
         if (flushPromise === tracked) flushPromise = undefined;
       });

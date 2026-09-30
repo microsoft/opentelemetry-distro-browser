@@ -26,6 +26,7 @@ import {
   type MicrosoftOpenTelemetryBrowser,
   type MicrosoftOpenTelemetryBrowserOptions,
 } from "../../../src/index.js";
+import { isUnloading } from "../../../src/exporter/common.js";
 import { createInMemoryPipeline } from "../../fixtures/telemetry.js";
 
 vi.mock("@opentelemetry/browser-sdk", { spy: true });
@@ -300,10 +301,66 @@ it("coalesces concurrent force flushes across both signals", async () => {
   const first = handle.forceFlush();
   const second = handle.forceFlush();
   expect(second).toBe(first);
+  await Promise.resolve();
   expect(spanProcessor.forceFlush).toHaveBeenCalledOnce();
   expect(logProcessor.forceFlush).toHaveBeenCalledOnce();
   finishFlush();
   await Promise.all([first, second]);
+});
+
+it("turns synchronous force flush errors into rejections and permits retry", async () => {
+  const failure = new Error("synchronous flush failure");
+  const spanProcessor = {
+    onStart() {},
+    onEnd() {},
+    forceFlush: vi.fn(() => {
+      if (spanProcessor.forceFlush.mock.calls.length === 1) throw failure;
+      return Promise.resolve();
+    }),
+    shutdown: vi.fn(async () => {}),
+  };
+  const handle = await useMicrosoftOpenTelemetry({
+    spanProcessors: [spanProcessor],
+    pageView: { enabled: false },
+  });
+  handles.add(handle);
+
+  const first = handle.forceFlush();
+  expect(first).toBeInstanceOf(Promise);
+  await expect(first).rejects.toBe(failure);
+  await expect(handle.forceFlush()).resolves.toBeUndefined();
+  expect(spanProcessor.forceFlush).toHaveBeenCalledTimes(2);
+});
+
+it("clears unload state when a processor throws synchronously during flush", async () => {
+  const spanProcessor = {
+    onStart() {},
+    onEnd() {},
+    forceFlush: vi.fn(() => {
+      if (spanProcessor.forceFlush.mock.calls.length === 1) {
+        throw new Error("synchronous flush failure");
+      }
+      return Promise.resolve();
+    }),
+    shutdown: vi.fn(async () => {}),
+  };
+  const handle = await useMicrosoftOpenTelemetry({
+    spanProcessors: [spanProcessor],
+    pageView: { enabled: false },
+  });
+  handles.add(handle);
+
+  globalThis.dispatchEvent(new Event("pagehide"));
+  await vi.waitFor(() => {
+    expect(spanProcessor.forceFlush).toHaveBeenCalledOnce();
+    expect(isUnloading()).toBe(false);
+  });
+
+  globalThis.dispatchEvent(new Event("pagehide"));
+  await vi.waitFor(() => {
+    expect(spanProcessor.forceFlush).toHaveBeenCalledTimes(2);
+    expect(isUnloading()).toBe(false);
+  });
 });
 
 it("propagates initialization failures without returning a success-shaped handle", async () => {
