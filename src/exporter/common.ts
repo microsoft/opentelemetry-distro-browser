@@ -6,14 +6,18 @@ import { OPENTELEMETRY_BROWSER_VERSION } from "../shared/constants.js";
 import { syntheticPageContexts } from "../shared/pageOperationContext.js";
 import type { AzureMonitorBaseData, AzureMonitorEnvelope } from "./telemetryModels.js";
 
-let unloading = false;
+let unloadingCount = 0;
 
 export function isUnloading(): boolean {
-  return unloading;
+  return unloadingCount > 0;
 }
 
-export function setUnloading(value: boolean): void {
-  unloading = value;
+export function beginUnloading(): void {
+  unloadingCount++;
+}
+
+export function endUnloading(): void {
+  unloadingCount = Math.max(0, unloadingCount - 1);
 }
 
 export function hrTimeToMilliseconds(hrTime: HrTime): number {
