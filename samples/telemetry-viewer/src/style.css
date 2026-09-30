@@ -75,7 +75,7 @@ button,
 
 .brand small {
   margin-top: 0.08rem;
-  color: #788499;
+  color: #526078;
   font-size: 0.7rem;
   text-transform: uppercase;
   letter-spacing: 0.08em;
@@ -522,6 +522,17 @@ button:hover,
   padding: 1rem 2rem;
   grid-template-columns: repeat(3, minmax(7rem, 11rem));
   gap: 0.7rem;
+}
+
+.retention-status {
+  display: block;
+  margin: 0 2rem 1rem;
+  color: #f0b86e;
+  font-size: 0.75rem;
+}
+
+.retention-status[hidden] {
+  display: none;
 }
 
 .summary-card {

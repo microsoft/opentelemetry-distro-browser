@@ -35,7 +35,8 @@ complete normalized payload, and save a recording as JSON. Its dev and productio
 first rebuild the package from the repository, ensuring that the site exercises the current source
 rather than a published version. The overview also displays the raw, minified, gzip, and Brotli
 sizes of equivalent "everything" and "defaults only" consumer bundles generated from that local
-package build.
+package build. The viewer retains the 500 most recent telemetry items; the UI and JSON export report
+how many older items were dropped.
 
 ## Azure Monitor configuration
 

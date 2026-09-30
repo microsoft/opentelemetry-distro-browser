@@ -20,12 +20,13 @@ function formatDuration(durationMs: number | undefined): string {
   return durationMs < 1 ? `${durationMs.toFixed(2)} ms` : `${durationMs.toFixed(1)} ms`;
 }
 
-function download(items: readonly TelemetryItem[]): void {
+function download(items: readonly TelemetryItem[], droppedItems: number): void {
   const anchor = document.createElement("a");
   const payload = JSON.stringify(
     {
       exportedAt: new Date().toISOString(),
       service: "contoso-telemetry-lab",
+      droppedItems,
       items: items.map(({ searchText: _, ...item }) => item),
     },
     null,
@@ -42,6 +43,7 @@ export function startTelemetryViewer(): void {
   const emptyState = requiredElement<HTMLDivElement>("#empty-state");
   const details = requiredElement<HTMLElement>("#event-details");
   const search = requiredElement<HTMLInputElement>("#telemetry-search");
+  const retentionStatus = requiredElement<HTMLOutputElement>("#retention-status");
   const captureToggle = requiredElement<HTMLButtonElement>("#capture-toggle");
   const filterButtons = Array.from(document.querySelectorAll<HTMLButtonElement>(".summary-card"));
   let kind: TelemetryKind | "all" = "all";
@@ -84,6 +86,10 @@ export function startTelemetryViewer(): void {
 
   function render(): void {
     const allItems = telemetryStore.getItems();
+    const focusedItemId =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement.closest<HTMLElement>(".event-row")?.dataset.itemId
+        : undefined;
     const query = search.value.trim().toLowerCase();
     const filtered = allItems.filter(
       (item) =>
@@ -98,6 +104,12 @@ export function startTelemetryViewer(): void {
     );
     captureToggle.textContent = telemetryStore.isCapturing() ? "Pause capture" : "Resume capture";
     captureToggle.classList.toggle("paused", !telemetryStore.isCapturing());
+    const droppedItems = telemetryStore.getDroppedItems();
+    retentionStatus.hidden = droppedItems === 0;
+    retentionStatus.textContent =
+      droppedItems === 0
+        ? ""
+        : `${droppedItems.toLocaleString()} older telemetry items were dropped.`;
     emptyState.hidden = filtered.length > 0;
     eventList.replaceChildren();
 
@@ -111,6 +123,8 @@ export function startTelemetryViewer(): void {
 
       row.type = "button";
       row.className = `event-row${selectedId === item.id ? " selected" : ""}`;
+      row.dataset.itemId = item.id;
+      row.setAttribute("aria-pressed", String(selectedId === item.id));
       row.addEventListener("click", () => select(item));
       signal.className = `signal-icon ${item.kind}`;
       signal.textContent = item.kind === "span" ? "S" : "L";
@@ -123,6 +137,12 @@ export function startTelemetryViewer(): void {
       time.textContent = formatTime(item.timestamp);
       row.append(signal, name, time);
       eventList.append(row);
+    }
+
+    if (focusedItemId) {
+      eventList
+        .querySelector<HTMLButtonElement>(`[data-item-id="${focusedItemId}"]`)
+        ?.focus({ preventScroll: true });
     }
   }
 
@@ -137,7 +157,7 @@ export function startTelemetryViewer(): void {
     telemetryStore.clear();
   });
   requiredElement("#download-telemetry").addEventListener("click", () => {
-    download(telemetryStore.getItems());
+    download(telemetryStore.getItems(), telemetryStore.getDroppedItems());
   });
   for (const button of filterButtons) {
     button.addEventListener("click", () => {

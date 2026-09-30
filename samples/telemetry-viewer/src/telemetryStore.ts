@@ -4,6 +4,7 @@ import type { LogRecordExporter, ReadableLogRecord } from "@opentelemetry/sdk-lo
 import type { ReadableSpan, SpanExporter } from "@opentelemetry/sdk-trace-base";
 
 export type TelemetryKind = "span" | "log";
+export const MAX_TELEMETRY_ITEMS = 500;
 
 export interface TelemetryItem {
   id: string;
@@ -24,6 +25,7 @@ const listeners = new Set<Listener>();
 let items: TelemetryItem[] = [];
 let capturing = true;
 let nextId = 1;
+let droppedItems = 0;
 
 function hrTimeToMilliseconds(time: readonly [number, number]): number {
   return time[0] * 1_000 + time[1] / 1_000_000;
@@ -41,7 +43,9 @@ function createItem(item: Omit<TelemetryItem, "id" | "searchText">): TelemetryIt
 
 function add(newItems: TelemetryItem[]): void {
   if (!capturing || newItems.length === 0) return;
-  items = [...newItems.reverse(), ...items];
+  const nextItems = [...newItems.reverse(), ...items];
+  droppedItems += Math.max(0, nextItems.length - MAX_TELEMETRY_ITEMS);
+  items = nextItems.slice(0, MAX_TELEMETRY_ITEMS);
   listeners.forEach((listener) => listener());
 }
 
@@ -108,6 +112,9 @@ export const telemetryStore = {
   getItems(): readonly TelemetryItem[] {
     return items;
   },
+  getDroppedItems(): number {
+    return droppedItems;
+  },
   isCapturing(): boolean {
     return capturing;
   },
@@ -117,6 +124,7 @@ export const telemetryStore = {
   },
   clear(): void {
     items = [];
+    droppedItems = 0;
     listeners.forEach((listener) => listener());
   },
   subscribe(listener: Listener): () => void {
