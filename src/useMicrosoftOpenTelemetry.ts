@@ -99,6 +99,7 @@ export async function useMicrosoftOpenTelemetry(
   };
 
   let shutdownPromise: Promise<void> | undefined;
+  let flushPromise: Promise<void> | undefined;
   let unloading = false;
   const flushForUnload = (): void => {
     if (unloading) return;
@@ -119,11 +120,18 @@ export async function useMicrosoftOpenTelemetry(
   globalThis.addEventListener?.("pagehide", flushForUnload);
   globalThis.document?.addEventListener("visibilitychange", visibilityChange);
 
-  async function forceFlush(): Promise<void> {
-    await Promise.all([
-      ...(spanProcessors ?? []).map((processor) => processor.forceFlush()),
-      ...(logRecordProcessors ?? []).map((processor) => processor.forceFlush()),
-    ]);
+  function forceFlush(): Promise<void> {
+    if (!flushPromise) {
+      const operation = Promise.all([
+        ...(spanProcessors ?? []).map((processor) => processor.forceFlush()),
+        ...(logRecordProcessors ?? []).map((processor) => processor.forceFlush()),
+      ]).then(() => undefined);
+      const tracked = operation.finally(() => {
+        if (flushPromise === tracked) flushPromise = undefined;
+      });
+      flushPromise = tracked;
+    }
+    return flushPromise;
   }
 
   function shutdown(): Promise<void> {

@@ -274,6 +274,38 @@ it("force flushes both signal processors", async () => {
   expect(logFlush).toHaveBeenCalledOnce();
 });
 
+it("coalesces concurrent force flushes across both signals", async () => {
+  let finishFlush!: () => void;
+  const pendingFlush = new Promise<void>((resolve) => {
+    finishFlush = resolve;
+  });
+  const spanProcessor = {
+    onStart() {},
+    onEnd() {},
+    forceFlush: vi.fn(() => pendingFlush),
+    shutdown: vi.fn(async () => {}),
+  };
+  const logProcessor = {
+    onEmit() {},
+    forceFlush: vi.fn(() => pendingFlush),
+    shutdown: vi.fn(async () => {}),
+  };
+  const handle = await useMicrosoftOpenTelemetry({
+    spanProcessors: [spanProcessor],
+    logRecordProcessors: [logProcessor],
+    pageView: { enabled: false },
+  });
+  handles.add(handle);
+
+  const first = handle.forceFlush();
+  const second = handle.forceFlush();
+  expect(second).toBe(first);
+  expect(spanProcessor.forceFlush).toHaveBeenCalledOnce();
+  expect(logProcessor.forceFlush).toHaveBeenCalledOnce();
+  finishFlush();
+  await Promise.all([first, second]);
+});
+
 it("propagates initialization failures without returning a success-shaped handle", async () => {
   const failure = new Error("initialization failed");
   vi.mocked(startBrowserSdk).mockImplementationOnce(() => {
