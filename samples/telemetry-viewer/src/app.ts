@@ -1,4 +1,4 @@
-import { SpanStatusCode, trace } from "@opentelemetry/api";
+import { context, SpanStatusCode, trace } from "@opentelemetry/api";
 import { logs, SeverityNumber } from "@opentelemetry/api-logs";
 import type { MicrosoftOpenTelemetryBrowser } from "@microsoft/opentelemetry-browser";
 
@@ -202,7 +202,13 @@ function render(path = window.location.pathname): void {
   const supportedPath = ["/", "/catalog", "/checkout", "/settings"].includes(path) ? path : "/";
   app.innerHTML = pageTemplate(supportedPath);
   document.querySelectorAll("[data-route]").forEach((link) => {
-    link.classList.toggle("active", link.getAttribute("data-route") === supportedPath);
+    const active = link.getAttribute("data-route") === supportedPath;
+    link.classList.toggle("active", active);
+    if (active) {
+      link.setAttribute("aria-current", "page");
+    } else {
+      link.removeAttribute("aria-current");
+    }
   });
   app.focus({ preventScroll: true });
   if (supportedPath === "/") void loadBuildInfo();
@@ -215,6 +221,7 @@ function navigate(path: string): void {
 
 async function runCheckout(success: boolean): Promise<void> {
   await tracer.startActiveSpan("checkout.submit", async (checkoutSpan) => {
+    const checkoutContext = trace.setSpan(context.active(), checkoutSpan);
     checkoutSpan.setAttributes({
       "checkout.item_count": cartItems + 1,
       "checkout.total": 3_499 + 24 * cartItems,
@@ -236,6 +243,7 @@ async function runCheckout(success: boolean): Promise<void> {
     if (success) {
       logger.emit({
         eventName: "checkout.completed",
+        context: checkoutContext,
         severityNumber: SeverityNumber.INFO,
         severityText: "INFO",
         attributes: { "order.id": `ORD-${Date.now()}`, "checkout.item_count": cartItems + 1 },
@@ -245,6 +253,7 @@ async function runCheckout(success: boolean): Promise<void> {
     } else {
       logger.emit({
         eventName: "checkout.declined",
+        context: checkoutContext,
         severityNumber: SeverityNumber.ERROR,
         severityText: "ERROR",
         body: "The simulated payment provider declined the transaction.",
@@ -271,9 +280,19 @@ export function startApplication(telemetry: MicrosoftOpenTelemetryBrowser): void
     switch (target.dataset.action) {
       case "load-catalog":
         await tracer.startActiveSpan("catalog.refresh", async (span) => {
-          const response = await fetch(`/products.json?refresh=${Date.now()}`);
-          span.setAttribute("http.response.status_code", response.status);
-          span.end();
+          try {
+            const response = await fetch(`/products.json?refresh=${Date.now()}`);
+            span.setAttribute("http.response.status_code", response.status);
+          } catch (error) {
+            span.recordException(error instanceof Error ? error : String(error));
+            span.setStatus({
+              code: SpanStatusCode.ERROR,
+              message: error instanceof Error ? error.message : String(error),
+            });
+            throw error;
+          } finally {
+            span.end();
+          }
         });
         notify("Catalog request completed.");
         break;

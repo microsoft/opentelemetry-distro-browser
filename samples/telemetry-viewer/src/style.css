@@ -840,6 +840,16 @@ button:hover,
     grid-template-columns: repeat(2, 1fr);
   }
 
+  .viewer-summary {
+    padding-inline: 1rem;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .summary-card {
+    min-width: 0;
+    padding-inline: 0.65rem;
+  }
+
   .viewer-content {
     height: auto;
     grid-template-columns: 1fr;
