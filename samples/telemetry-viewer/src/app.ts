@@ -114,7 +114,7 @@ function pageTemplate(path: string): string {
     <section class="bundle-panel">
       <div class="bundle-heading">
         <div><p class="eyebrow">Current repository build</p><h2>Package bundle size</h2></div>
-        <p>Measured from the local package output each time this sample starts.</p>
+        <p>Equivalent consumer bundles measured before and after minification.</p>
       </div>
       <div id="bundle-metrics" class="bundle-metrics" aria-live="polite">
         <span>Loading current build measurements…</span>

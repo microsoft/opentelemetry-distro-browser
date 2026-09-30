@@ -18,7 +18,7 @@
     "dev:console": "vite console",
     "dev:otlp": "vite otlp",
     "dev:telemetry-viewer": "npm run prepare:telemetry-viewer && vite telemetry-viewer",
-    "prepare:telemetry-viewer": "npm run build:local-package && node scripts/write-telemetry-viewer-build-info.mjs",
+    "prepare:telemetry-viewer": "npm run build:local-package && node ../scripts/write-telemetry-viewer-build-info.mjs",
     "typecheck": "npm run build:local-package && tsc --noEmit"
   },
   "dependencies": {
