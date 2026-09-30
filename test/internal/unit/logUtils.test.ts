@@ -52,9 +52,31 @@ describe("Azure Monitor log envelope mapping", () => {
         baseType: "PageViewData",
         baseData: { id: id || spanContext.traceId, name: "Checkout", duration: "00:00:00.1250000" },
       });
-      expect(envelope.data.baseData.properties?.["browser.page_view.id"]).toBe(id);
+      expect(envelope.data.baseData.properties).toBeUndefined();
+      expect(envelope.data.baseData).not.toHaveProperty("referredUri");
     },
   );
+
+  it.each([
+    ["browser.page_view", undefined],
+    ["browser.page_view", ""],
+    ["browser.navigation", undefined],
+  ])("generates a page-view ID without a span context for %s (%j)", (eventName, id) => {
+    const envelope = logToEnvelope(
+      makeLog({
+        eventName,
+        spanContext: undefined,
+        attributes: { "browser.page_view.id": id },
+      }),
+      instrumentationKey,
+    );
+
+    expect(envelope.data.baseData).toMatchObject({
+      id: expect.stringMatching(/^[0-9a-f]{32}$/),
+    });
+    expect(envelope.data.baseData).not.toMatchObject({ id: "00000000000000000000000000000000" });
+    expect(envelope.data.baseData.properties).toBeUndefined();
+  });
 
   it.each([undefined, "Legacy"])("preserves legacy navigation mapping with body %j", (body) => {
     const envelope = logToEnvelope(
@@ -65,18 +87,20 @@ describe("Azure Monitor log envelope mapping", () => {
           "browser.page_view.id": "other-id",
           "browser.page_view.name": "Other",
           "browser.page_view.duration": 250,
+          "browser.page_view.referrer": "https://example.test/products",
           "browser.navigation.duration": 10,
         },
       }),
       instrumentationKey,
     );
     expect(envelope.data.baseData).toMatchObject({
+      id: "other-id",
       name: body ?? "Other",
       duration: "00:00:00.2500000",
-      properties: { "browser.page_view.id": "other-id" },
+      referredUri: "https://example.test/products",
+      properties: undefined,
       measurements: undefined,
     });
-    expect(envelope.data.baseData).not.toHaveProperty("id");
   });
 
   it("maps exception semantic attributes and severity", () => {
@@ -149,8 +173,10 @@ describe("Azure Monitor log envelope mapping", () => {
         makeLog({
           eventName: "browser.page_view",
           attributes: {
+            "browser.page_view.id": "0123456789abcdef0123456789abcdef",
             "browser.page_view.name": "Cart",
             [durationAttribute]: 425.25,
+            "browser.page_view.referrer": "https://shop.example.test/products",
             "url.full": "https://shop.example.test/cart",
             "browser.page_view.same_document": true,
           },
@@ -166,6 +192,7 @@ describe("Azure Monitor log envelope mapping", () => {
           name: "Cart",
           url: "https://shop.example.test/cart",
           duration: "00:00:00.4252500",
+          referredUri: "https://shop.example.test/products",
           properties: { "browser.page_view.same_document": "true" },
           measurements: undefined,
         },
@@ -190,6 +217,7 @@ describe("Azure Monitor log envelope mapping", () => {
       baseType: "PageViewData",
       baseData: {
         ver: 2,
+        id: expect.stringMatching(/^[0-9a-f]{32}$/),
         name: "https://shop.example.test/cart",
         url: "https://shop.example.test/cart",
         duration: "00:00:00.4252500",

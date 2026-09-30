@@ -7,11 +7,16 @@ All notable changes to this package are documented in this file.
 ### Added
 
 - Promote the size harness into a repository tool
+- Map page view ID and referrer to Azure Monitor envelopes
 
 ### Changed
 
 - Correlate page views, spans, and logs through shared operation IDs while preserving explicit
   application span contexts.
+- Fixed post-merge performance publishing for fork contributions by using the upstream
+  workflow context while retaining merged-commit-only checkout and export safeguards.
+- Added offline browser performance measurements and explicit result publishing after upstream
+  pull requests merge into `main`, including minified, gzip, and Brotli bundle sizes.
 - Replaced proposal-era README content with installation, initialization, configuration,
   instrumentation, OTLP, resource detection, bundle size, and published-alpha guidance.
 - Cover page view and custom event e2e integration
