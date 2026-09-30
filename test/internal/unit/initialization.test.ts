@@ -308,6 +308,36 @@ it("coalesces concurrent force flushes across both signals", async () => {
   await Promise.all([first, second]);
 });
 
+it("starts an unload flush while a manual flush is pending", async () => {
+  const finishFlushes: Array<() => void> = [];
+  const unloadStates: boolean[] = [];
+  const spanProcessor = {
+    onStart() {},
+    onEnd() {},
+    forceFlush: vi.fn(() => {
+      unloadStates.push(isUnloading());
+      return new Promise<void>((resolve) => finishFlushes.push(resolve));
+    }),
+    shutdown: vi.fn(async () => {}),
+  };
+  const handle = await useMicrosoftOpenTelemetry({
+    spanProcessors: [spanProcessor],
+    pageView: { enabled: false },
+  });
+  handles.add(handle);
+
+  const manualFlush = handle.forceFlush();
+  await vi.waitFor(() => expect(spanProcessor.forceFlush).toHaveBeenCalledOnce());
+  globalThis.dispatchEvent(new Event("pagehide"));
+  await vi.waitFor(() => expect(spanProcessor.forceFlush).toHaveBeenCalledTimes(2));
+
+  expect(unloadStates).toEqual([false, true]);
+  finishFlushes[1]();
+  await vi.waitFor(() => expect(isUnloading()).toBe(false));
+  finishFlushes[0]();
+  await manualFlush;
+});
+
 it("turns synchronous force flush errors into rejections and permits retry", async () => {
   const failure = new Error("synchronous flush failure");
   const spanProcessor = {

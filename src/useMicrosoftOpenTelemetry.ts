@@ -105,7 +105,7 @@ export async function useMicrosoftOpenTelemetry(
     if (unloading) return;
     unloading = true;
     setUnloading(true);
-    void forceFlush()
+    void flushProcessors()
       .catch((error: unknown) => {
         diag.error("Telemetry unload flush failed", error);
       })
@@ -120,14 +120,18 @@ export async function useMicrosoftOpenTelemetry(
   globalThis.addEventListener?.("pagehide", flushForUnload);
   globalThis.document?.addEventListener("visibilitychange", visibilityChange);
 
+  function flushProcessors(): Promise<void> {
+    return Promise.resolve().then(async () => {
+      await Promise.all([
+        ...(spanProcessors ?? []).map((processor) => processor.forceFlush()),
+        ...(logRecordProcessors ?? []).map((processor) => processor.forceFlush()),
+      ]);
+    });
+  }
+
   function forceFlush(): Promise<void> {
     if (!flushPromise) {
-      const operation = Promise.resolve().then(async () => {
-        await Promise.all([
-          ...(spanProcessors ?? []).map((processor) => processor.forceFlush()),
-          ...(logRecordProcessors ?? []).map((processor) => processor.forceFlush()),
-        ]);
-      });
+      const operation = flushProcessors();
       const tracked = operation.finally(() => {
         if (flushPromise === tracked) flushPromise = undefined;
       });
