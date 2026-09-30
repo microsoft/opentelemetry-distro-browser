@@ -33,9 +33,13 @@ describe("Azure Monitor log envelope mapping", () => {
     ["browser.page_view", undefined],
     ["browser.page_view", ""],
     ["browser.page_view", "explicit-page-id"],
+    ["browser.page_view", 0],
+    ["browser.page_view", false],
     ["browser.navigation", undefined],
     ["browser.navigation", ""],
     ["browser.navigation", "explicit-page-id"],
+    ["browser.navigation", 0],
+    ["browser.navigation", false],
   ])("maps %s IDs using the AppInsights fallback (%j)", (eventName, id) => {
     const envelope = logToEnvelope(
       makeLog({
@@ -55,10 +59,32 @@ describe("Azure Monitor log envelope mapping", () => {
     expect(envelope.tags["ai.operation.parentId"]).toBe(spanContext.spanId);
     expect(envelope.data).toMatchObject({
       baseType: "PageViewData",
-      baseData: { id: id || spanContext.traceId, name: "Checkout", duration: "00:00:00.1250000" },
+      baseData: {
+        id: id === undefined || id === "" ? spanContext.traceId : String(id),
+        name: "Checkout",
+        duration: "00:00:00.1250000",
+      },
     });
-    expect(envelope.data.baseData.properties).toBeUndefined();
+    expect(envelope.data.baseData.properties?.["browser.page_view.id"]).toBeUndefined();
+    expect(envelope.data.baseData.measurements?.["browser.page_view.id"]).toBeUndefined();
     expect(envelope.data.baseData).not.toHaveProperty("referredUri");
+  });
+
+  it.each([
+    ["browser.page_view", 0],
+    ["browser.page_view", false],
+    ["browser.navigation", 0],
+    ["browser.navigation", false],
+  ])("preserves explicit %s IDs without a span context (%j)", (eventName, id) => {
+    const envelope = logToEnvelope(
+      makeLog({
+        eventName,
+        spanContext: undefined,
+        attributes: { "browser.page_view.id": id },
+      }),
+      instrumentationKey,
+    );
+    expect(envelope.data.baseData).toMatchObject({ id: String(id) });
   });
 
   it.each([

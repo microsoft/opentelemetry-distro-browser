@@ -107,7 +107,9 @@ export function logToEnvelope(
   } else if (isPageView(logRecord.eventName)) {
     const duration =
       logRecord.attributes[ATTR_PAGE_VIEW_DURATION] ?? logRecord.attributes[NAVIGATION_DURATION];
-    const pageViewId = logRecord.attributes[ATTR_PAGE_VIEW_ID] || logRecord.spanContext?.traceId;
+    const explicitId = logRecord.attributes[ATTR_PAGE_VIEW_ID];
+    const pageViewId =
+      explicitId === undefined || explicitId === "" ? logRecord.spanContext?.traceId : explicitId;
     const referrer = logRecord.attributes[ATTR_PAGE_VIEW_REFERRER];
     name = "Microsoft.ApplicationInsights.PageView";
     baseType = "PageViewData";

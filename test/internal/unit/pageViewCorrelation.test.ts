@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 import {
+  INVALID_SPAN_CONTEXT,
   ROOT_CONTEXT,
   context,
   createContextKey,
@@ -21,6 +22,7 @@ import type {
 } from "../../../src/types.js";
 import { logToEnvelope } from "../../../src/exporter/logUtils.js";
 import { spanToEnvelope } from "../../../src/exporter/spanUtils.js";
+import { PageViewCorrelation } from "../../../src/instrumentation/pageView/pageViewCorrelation.js";
 import { createInMemoryPipeline } from "../../fixtures/telemetry.js";
 
 const originalUrl = location.href;
@@ -278,6 +280,45 @@ it.each([
   expect(page.spanContext?.traceId).not.toBe(invalid.traceId);
   expect(page.attributes["browser.page_view.id"]).toBe(page.spanContext?.traceId);
 });
+
+it.each([false, true])(
+  "correlates telemetry with invalid explicit contexts (logsOnly=%s)",
+  async (logsOnly) => {
+    const pipeline = await start(logsOnly ? { spanProcessors: [] } : {});
+    pipeline.logger.emit({ body: "page operation" });
+    const operation = pipeline.onLog.mock.calls.at(-1)![0].spanContext!;
+    const invalid = trace.setSpanContext(ROOT_CONTEXT, INVALID_SPAN_CONTEXT);
+
+    if (!logsOnly) {
+      context.with(invalid, () => {
+        expect(trace.getSpanContext(context.active())).toBe(operation);
+        const child = pipeline.tracer.startSpan("child");
+        expect(child.spanContext().traceId).toBe(operation.traceId);
+        child.end();
+        const headers: Record<string, string> = {};
+        propagation.inject(context.active(), headers);
+        expect(headers.traceparent?.split("-")[1]).toBe(operation.traceId);
+      });
+    }
+    pipeline.logger.emit({ body: "invalid context", context: invalid });
+    expect(pipeline.onLog.mock.calls.at(-1)![0].spanContext).toBe(operation);
+
+    const correlation = new PageViewCorrelation(() => operation);
+    pipeline.onLog.mockImplementationOnce((record) => {
+      record.spanContext = INVALID_SPAN_CONTEXT;
+      correlation.onEmit(record);
+      expect(record.spanContext).toBe(operation);
+    });
+    pipeline.logger.emit({ body: "invalid processor context" });
+    await correlation.shutdown();
+    pipeline.onLog.mockImplementationOnce((record) => {
+      record.spanContext = INVALID_SPAN_CONTEXT;
+      correlation.onEmit(record);
+      expect(record.spanContext).toBe(INVALID_SPAN_CONTEXT);
+    });
+    pipeline.logger.emit({ body: "stopped processor" });
+  },
+);
 
 it("keeps a delayed page event's original operation in logs-only mode", async () => {
   const pipeline = await start({

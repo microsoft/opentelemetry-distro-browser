@@ -1,13 +1,18 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-import { trace, type ContextManager, type SpanContext } from "@opentelemetry/api";
+import {
+  isSpanContextValid,
+  trace,
+  type ContextManager,
+  type SpanContext,
+} from "@opentelemetry/api";
 import type { LogRecordProcessor, ReadWriteLogRecord } from "@opentelemetry/sdk-logs";
 import { StackContextManager } from "@opentelemetry/sdk-trace-web";
 import { syntheticPageContexts } from "../../shared/pageOperationContext.js";
 
 /**
- * Uses the page operation only when telemetry has no application-supplied span context.
+ * Uses the page operation only when telemetry has no valid application-supplied span context.
  * Stops exposing synthetic page contexts at shutdown while preserving application contexts.
  */
 export class PageViewCorrelation implements ContextManager, LogRecordProcessor {
@@ -27,7 +32,10 @@ export class PageViewCorrelation implements ContextManager, LogRecordProcessor {
         : active;
     }
     const operation = this.getOperation?.();
-    return operation && !trace.getSpan(active) ? trace.setSpanContext(active, operation) : active;
+    const spanContext = trace.getSpanContext(active);
+    return operation && (!spanContext || !isSpanContextValid(spanContext))
+      ? trace.setSpanContext(active, operation)
+      : active;
   }
 
   with: ContextManager["with"] = (ctx, fn, thisArg, ...args) =>
@@ -53,7 +61,8 @@ export class PageViewCorrelation implements ContextManager, LogRecordProcessor {
   }
 
   onEmit(record: ReadWriteLogRecord): void {
-    const operation = !record.spanContext && this.getOperation?.();
+    const operation =
+      (!record.spanContext || !isSpanContextValid(record.spanContext)) && this.getOperation?.();
     if (operation) record.spanContext = operation;
   }
 
