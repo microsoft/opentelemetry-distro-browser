@@ -112,7 +112,7 @@ function pageTemplate(path: string): string {
           <button class="secondary" type="button" data-action="quick-trace">Generate sample trace</button>
         </div>
       </div>
-      <div class="hero-visual" aria-label="Telemetry flow illustration">
+      <div class="hero-visual" role="img" aria-label="Telemetry flow illustration">
         <div class="pulse"></div><span class="node browser-node">Browser</span>
         <span class="flow-line"></span><span class="node sdk-node">OTel SDK</span>
         <span class="flow-line second"></span><span class="node viewer-node">Viewer</span>
@@ -273,6 +273,9 @@ export function startApplication(telemetry: MicrosoftOpenTelemetryBrowser): void
     if (!target) return;
     const route = target.dataset.route;
     if (route) {
+      if (event.button !== 0 || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) {
+        return;
+      }
       event.preventDefault();
       navigate(route);
       return;
