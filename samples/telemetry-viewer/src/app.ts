@@ -7,6 +7,7 @@ const logger = logs.getLogger("contoso-store", "0.1.0");
 const app = document.querySelector<HTMLElement>("#app");
 const toast = document.querySelector<HTMLElement>("#toast");
 let cartItems = 2;
+let toastTimer: number | undefined;
 
 interface BundleMeasurement {
   rawBytes: number;
@@ -35,9 +36,13 @@ const products = [
 
 function notify(message: string): void {
   if (!toast) return;
+  if (toastTimer !== undefined) window.clearTimeout(toastTimer);
   toast.textContent = message;
   toast.classList.add("visible");
-  window.setTimeout(() => toast.classList.remove("visible"), 2_400);
+  toastTimer = window.setTimeout(() => {
+    toast.classList.remove("visible");
+    toastTimer = undefined;
+  }, 2_400);
 }
 
 function pageTemplate(path: string): string {

@@ -142,9 +142,11 @@ export function startTelemetryViewer(): void {
   for (const button of filterButtons) {
     button.addEventListener("click", () => {
       kind = button.dataset.kind as TelemetryKind | "all";
-      filterButtons.forEach((candidate) =>
-        candidate.classList.toggle("selected", candidate === button),
-      );
+      filterButtons.forEach((candidate) => {
+        const selected = candidate === button;
+        candidate.classList.toggle("selected", selected);
+        candidate.setAttribute("aria-pressed", String(selected));
+      });
       render();
     });
   }

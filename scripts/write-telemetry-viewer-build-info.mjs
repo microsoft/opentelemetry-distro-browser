@@ -99,7 +99,6 @@ function measure(output, dynamicChunkNames) {
 async function measureScenario(scenario) {
   const bundle = await rollup({
     input,
-    external: ["@opentelemetry/api", "@opentelemetry/api-logs"],
     plugins: [
       {
         name: "telemetry-viewer-size-entry",

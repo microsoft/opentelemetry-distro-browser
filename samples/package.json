@@ -8,18 +8,28 @@
     "npm": ">=10"
   },
   "scripts": {
-    "build": "npm run build:azure-monitor && npm run build:console && npm run build:otlp && npm run build:telemetry-viewer",
+    "prebuild": "npm run build:local-package",
+    "build": "vite build azure-monitor && vite build console && vite build otlp && node ../scripts/write-telemetry-viewer-build-info.mjs && vite build telemetry-viewer",
+    "prebuild:azure-monitor": "npm run build:local-package",
     "build:azure-monitor": "vite build azure-monitor",
+    "prebuild:console": "npm run build:local-package",
     "build:console": "vite build console",
+    "prebuild:otlp": "npm run build:local-package",
     "build:otlp": "vite build otlp",
-    "build:telemetry-viewer": "npm run prepare:telemetry-viewer && vite build telemetry-viewer",
+    "prebuild:telemetry-viewer": "npm run prepare:telemetry-viewer",
+    "build:telemetry-viewer": "vite build telemetry-viewer",
     "build:local-package": "npm --prefix .. run build",
+    "predev:azure-monitor": "npm run build:local-package",
     "dev:azure-monitor": "vite azure-monitor",
+    "predev:console": "npm run build:local-package",
     "dev:console": "vite console",
+    "predev:otlp": "npm run build:local-package",
     "dev:otlp": "vite otlp",
-    "dev:telemetry-viewer": "npm run prepare:telemetry-viewer && vite telemetry-viewer",
+    "predev:telemetry-viewer": "npm run prepare:telemetry-viewer",
+    "dev:telemetry-viewer": "vite telemetry-viewer",
     "prepare:telemetry-viewer": "npm run build:local-package && node ../scripts/write-telemetry-viewer-build-info.mjs",
-    "typecheck": "npm run build:local-package && tsc --noEmit"
+    "pretypecheck": "npm run build:local-package",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@microsoft/opentelemetry-browser": "file:..",

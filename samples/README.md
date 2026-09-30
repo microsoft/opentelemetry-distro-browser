@@ -10,11 +10,17 @@ sample pattern as the Microsoft OpenTelemetry Node.js distribution.
 | [OTLP](otlp/)                         | Export browser spans and logs to an OTLP/HTTP collector                          | `npm run dev:otlp`             |
 | [Telemetry viewer](telemetry-viewer/) | Exercise a realistic SPA and inspect exported spans and logs in the page         | `npm run dev:telemetry-viewer` |
 
-Install dependencies once from this directory:
+Install the package build dependencies from the repository root, then install the sample
+dependencies:
 
 ```bash
 npm install
+cd samples
+npm install
 ```
+
+Every public sample build, development, and typecheck command rebuilds the local package before
+consuming it.
 
 Each sample initializes telemetry before dynamically importing application code. This ordering is
 important because browser instrumentations must patch APIs such as `fetch` before the application
@@ -22,7 +28,7 @@ uses them.
 
 ## Telemetry viewer
 
-Run `npm run dev:telemetry-viewer` and use the storefront navigation and scenario controls. The
+Run `npm run dev:telemetry-viewer` from `samples` and use the storefront navigation and scenario controls. The
 sample registers local in-memory span and log exporters, so it requires no credentials or telemetry
 backend. The viewer can filter signals, search exported content, pause or clear capture, inspect the
 complete normalized payload, and save a recording as JSON. Its dev and production-build commands
