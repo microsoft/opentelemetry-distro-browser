@@ -86,6 +86,7 @@ function fixture() {
     provenance: {
       rollupConfigSha256: "b".repeat(64),
       bundleSizeReportSha256: "c".repeat(64),
+      bundleSizeConfigSha256: "d".repeat(64),
       rollup: "4.0.0-test",
       terser: "5.0.0-test",
     },
@@ -199,6 +200,11 @@ test("emits named native OTLP events with exact identity, timestamp, units and t
       assert.deepEqual(fields["benchmark.artifact.format"], {
         stringValue: scenario ? "rollup-esm-scenario" : "esm",
       });
+      assert.deepEqual(fields["benchmark.build.config.sha256"], {
+        stringValue: scenario
+          ? run.provenance.bundleSizeConfigSha256
+          : run.provenance.rollupConfigSha256,
+      });
       assert.ok(Number.isFinite(fields["benchmark.value"].doubleValue));
       assert.match(fields["benchmark.sample_count"].intValue, /^[1-9]\d*$/);
       assert.match(fields["benchmark.operation_count"].intValue, /^[1-9]\d*$/);
@@ -289,6 +295,7 @@ test("rejects invalid or invented measurements rather than exporting zeros", () 
     (r) => (r.bundleSizeReport.scenarios[0].id = "invalid/id"),
     (r) => (r.bundleSizeReport.bundler.version = "different"),
     (r) => (r.provenance.bundleSizeReportSha256 = ""),
+    (r) => (r.provenance.bundleSizeConfigSha256 = ""),
   ];
   for (const mutate of mutations) {
     const run = fixture();

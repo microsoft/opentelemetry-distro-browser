@@ -270,7 +270,9 @@ export function createPayload(run) {
             ? text(run.provenance?.bundleSizeReportSha256, "bundle-size report hash")
             : run.artifact.sha256,
           "benchmark.build.config.sha256": text(
-            run.provenance?.rollupConfigSha256,
+            scenarioProfile
+              ? run.provenance?.bundleSizeConfigSha256
+              : run.provenance?.rollupConfigSha256,
             "build config hash",
           ),
           "benchmark.minifier.name": "terser",

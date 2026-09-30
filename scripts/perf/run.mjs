@@ -32,6 +32,7 @@ const packageJson = JSON.parse(await readFile("package.json", "utf8"));
 const lock = JSON.parse(await readFile("package-lock.json", "utf8"));
 const bundleSizeReportBytes = await readFile("reports/bundle-size.json");
 const bundleSizeReport = JSON.parse(bundleSizeReportBytes);
+const bundleSizeConfig = await readFile("scripts/measure-bundle-size.mjs", "utf8");
 const status = git("status", "--porcelain");
 const diff = git("diff", "--binary", "HEAD");
 await writeFile(join(output, "source.diff"), `${diff}\n`, { flag: "wx" });
@@ -63,6 +64,8 @@ const provenance = {
   playwright: lock.packages["node_modules/playwright"].version,
   rollupConfig: await readFile("rollup.config.mjs", "utf8"),
   rollupConfigSha256: sha256(await readFile("rollup.config.mjs")),
+  bundleSizeConfig,
+  bundleSizeConfigSha256: sha256(bundleSizeConfig),
   packageLockSha256: sha256(await readFile("package-lock.json")),
   bundleSizeReportSha256: sha256(bundleSizeReportBytes),
   externalImports: ["@opentelemetry/api", "@opentelemetry/api-logs"],
