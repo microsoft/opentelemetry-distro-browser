@@ -373,7 +373,7 @@ test("workflow binds exact merged commit and explicit variable, without extra up
   assert.equal([...workflow.matchAll(/uses: .*@[0-9a-f]{40}/g)].length, 2);
 });
 
-test("PR validation runs the offline benchmark after Chromium installation and build", async () => {
+test("PR validation runs the offline benchmark after Chromium installation, build, and size", async () => {
   const workflow = await readFile(
     new URL("../../.github/workflows/pr-validation.yml", import.meta.url),
     "utf8",
@@ -381,8 +381,9 @@ test("PR validation runs the offline benchmark after Chromium installation and b
   const tests = workflow.slice(workflow.indexOf("\n  tests:"));
   const install = tests.indexOf("run: npm run test:install-browsers -- --with-deps");
   const build = tests.indexOf("run: npm run build\n");
+  const size = tests.indexOf("run: npm run size\n");
   const measure = tests.indexOf("run: npm run perf\n");
-  assert.ok(install >= 0 && install < build && build < measure);
+  assert.ok(install >= 0 && install < build && build < size && size < measure);
   assert.match(tests, /node-version: \["22", "24"\]/);
   assert.doesNotMatch(tests, /perf:export|SDK_PERF_COLLECTOR_ENDPOINT|continue-on-error/);
 });
