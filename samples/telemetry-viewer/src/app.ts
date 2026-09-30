@@ -243,6 +243,7 @@ async function runCheckout(success: boolean): Promise<void> {
     if (success) {
       logger.emit({
         eventName: "checkout.completed",
+        body: "Checkout completed successfully.",
         context: checkoutContext,
         severityNumber: SeverityNumber.INFO,
         severityText: "INFO",
@@ -352,6 +353,7 @@ export function startApplication(telemetry: MicrosoftOpenTelemetryBrowser): void
   render();
   logger.emit({
     eventName: "app.ready",
+    body: "Contoso telemetry lab is ready.",
     severityNumber: SeverityNumber.INFO,
     severityText: "INFO",
     attributes: { "app.route": window.location.pathname },
