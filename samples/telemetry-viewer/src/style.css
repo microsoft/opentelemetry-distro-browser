@@ -312,11 +312,45 @@ button:hover,
 
 .bundle-metrics {
   display: grid;
+  gap: 0.7rem;
+}
+
+.bundle-scenario {
+  padding: 1rem;
+  border: 1px solid #334158;
+  border-radius: 0.7rem;
+  background: #1c293e;
+}
+
+.bundle-scenario-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 0.8rem;
+  gap: 1rem;
+}
+
+.bundle-scenario-heading h3,
+.bundle-scenario-heading p {
+  margin: 0;
+}
+
+.bundle-scenario-heading h3 {
+  font-size: 0.95rem;
+}
+
+.bundle-scenario-heading p {
+  color: #91a0b7;
+  font-size: 0.72rem;
+}
+
+.bundle-cards {
+  display: grid;
   grid-template-columns: repeat(4, 1fr);
   gap: 0.7rem;
 }
 
-.bundle-metrics article {
+.bundle-cards article {
   display: flex;
   padding: 1rem;
   border: 1px solid #334158;
@@ -325,13 +359,13 @@ button:hover,
   flex-direction: column;
 }
 
-.bundle-metrics small,
-.bundle-metrics span {
+.bundle-cards small,
+.bundle-cards span {
   color: #91a0b7;
   font-size: 0.7rem;
 }
 
-.bundle-metrics strong {
+.bundle-cards strong {
   margin: 0.3rem 0 0.15rem;
   font-size: 1.35rem;
 }
@@ -802,7 +836,7 @@ button:hover,
     text-align: left;
   }
 
-  .bundle-metrics {
+  .bundle-cards {
     grid-template-columns: repeat(2, 1fr);
   }
 

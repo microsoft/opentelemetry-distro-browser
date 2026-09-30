@@ -28,7 +28,8 @@ backend. The viewer can filter signals, search exported content, pause or clear 
 complete normalized payload, and save a recording as JSON. Its dev and production-build commands
 first rebuild the package from the repository, ensuring that the site exercises the current source
 rather than a published version. The overview also displays the raw, minified, gzip, and Brotli
-sizes of equivalent consumer bundles generated from that local package build.
+sizes of equivalent "everything" and "defaults only" consumer bundles generated from that local
+package build.
 
 ## Azure Monitor configuration
 

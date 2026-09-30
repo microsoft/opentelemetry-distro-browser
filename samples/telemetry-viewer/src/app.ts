@@ -12,12 +12,19 @@ interface BundleMeasurement {
   rawBytes: number;
   gzipBytes: number;
   brotliBytes: number;
+  chunks: number;
+}
+
+interface BundleScenario {
+  id: string;
+  label: string;
+  description: string;
+  unminified: BundleMeasurement;
+  minified: BundleMeasurement;
 }
 
 interface BuildInfo {
-  source: string;
-  unminified: BundleMeasurement;
-  minified: BundleMeasurement;
+  scenarios: BundleScenario[];
 }
 
 const products = [
@@ -113,8 +120,8 @@ function pageTemplate(path: string): string {
     </section>
     <section class="bundle-panel">
       <div class="bundle-heading">
-        <div><p class="eyebrow">Current repository build</p><h2>Package bundle size</h2></div>
-        <p>Equivalent consumer bundles measured before and after minification.</p>
+        <div><p class="eyebrow">Current repository build</p><h2>Package bundle scenarios</h2></div>
+        <p>Equivalent package consumers measured before and after minification.</p>
       </div>
       <div id="bundle-metrics" class="bundle-metrics" aria-live="polite">
         <span>Loading current build measurements…</span>
@@ -134,28 +141,49 @@ async function loadBuildInfo(): Promise<void> {
     const response = await fetch("/build-info.json", { cache: "no-store" });
     if (!response.ok) throw new Error(`Build information request failed: ${response.status}`);
     const info = (await response.json()) as BuildInfo;
-    const difference = (info.minified.rawBytes / info.unminified.rawBytes - 1) * 100;
-    const minifiedComparison =
-      difference > 0
-        ? `${difference.toFixed(1)}% larger`
-        : `${Math.abs(difference).toFixed(1)}% smaller`;
-    const measurements = [
-      ["Unminified", formatBytes(info.unminified.rawBytes), "index.js"],
-      ["Minified", formatBytes(info.minified.rawBytes), minifiedComparison],
-      ["Minified + gzip", formatBytes(info.minified.gzipBytes), "transfer size"],
-      ["Minified + Brotli", formatBytes(info.minified.brotliBytes), "transfer size"],
-    ];
     container.replaceChildren(
-      ...measurements.map(([label, value, context]) => {
-        const card = document.createElement("article");
-        const labelElement = document.createElement("small");
-        const valueElement = document.createElement("strong");
-        const contextElement = document.createElement("span");
-        labelElement.textContent = label;
-        valueElement.textContent = value;
-        contextElement.textContent = context;
-        card.append(labelElement, valueElement, contextElement);
-        return card;
+      ...info.scenarios.map((scenario) => {
+        const section = document.createElement("section");
+        const heading = document.createElement("div");
+        const title = document.createElement("h3");
+        const description = document.createElement("p");
+        const cards = document.createElement("div");
+        const difference = (scenario.minified.rawBytes / scenario.unminified.rawBytes - 1) * 100;
+        const measurements = [
+          [
+            "Unminified",
+            formatBytes(scenario.unminified.rawBytes),
+            `${scenario.unminified.chunks} chunks`,
+          ],
+          [
+            "Minified",
+            formatBytes(scenario.minified.rawBytes),
+            `${Math.abs(difference).toFixed(1)}% smaller`,
+          ],
+          ["Minified + gzip", formatBytes(scenario.minified.gzipBytes), "transfer size"],
+          ["Minified + Brotli", formatBytes(scenario.minified.brotliBytes), "transfer size"],
+        ];
+        section.className = "bundle-scenario";
+        heading.className = "bundle-scenario-heading";
+        title.textContent = scenario.label;
+        description.textContent = scenario.description;
+        heading.append(title, description);
+        cards.className = "bundle-cards";
+        cards.append(
+          ...measurements.map(([label, value, context]) => {
+            const card = document.createElement("article");
+            const labelElement = document.createElement("small");
+            const valueElement = document.createElement("strong");
+            const contextElement = document.createElement("span");
+            labelElement.textContent = label;
+            valueElement.textContent = value;
+            contextElement.textContent = context;
+            card.append(labelElement, valueElement, contextElement);
+            return card;
+          }),
+        );
+        section.append(heading, cards);
+        return section;
       }),
     );
   } catch (error) {
