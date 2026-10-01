@@ -283,22 +283,26 @@ export function startApplication(telemetry: MicrosoftOpenTelemetryBrowser): void
 
     switch (target.dataset.action) {
       case "load-catalog":
-        await tracer.startActiveSpan("catalog.refresh", async (span) => {
-          try {
-            const response = await fetch(`/products.json?refresh=${Date.now()}`);
-            span.setAttribute("http.response.status_code", response.status);
-          } catch (error) {
-            span.recordException(error instanceof Error ? error : String(error));
-            span.setStatus({
-              code: SpanStatusCode.ERROR,
-              message: error instanceof Error ? error.message : String(error),
-            });
-            throw error;
-          } finally {
-            span.end();
-          }
-        });
-        notify("Catalog request completed.");
+        try {
+          await tracer.startActiveSpan("catalog.refresh", async (span) => {
+            try {
+              const response = await fetch(`/products.json?refresh=${Date.now()}`);
+              span.setAttribute("http.response.status_code", response.status);
+            } catch (error) {
+              span.recordException(error instanceof Error ? error : String(error));
+              span.setStatus({
+                code: SpanStatusCode.ERROR,
+                message: error instanceof Error ? error.message : String(error),
+              });
+              throw error;
+            } finally {
+              span.end();
+            }
+          });
+          notify("Catalog request completed.");
+        } catch {
+          notify("Catalog request failed.");
+        }
         break;
       case "add-cart":
         await tracer.startActiveSpan("cart.add_item", async (span) => {
