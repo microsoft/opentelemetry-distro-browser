@@ -27,6 +27,11 @@ export function sha256(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
+function validateSha256(value, name) {
+  if (!/^[0-9a-f]{64}$/.test(value)) throw new Error(`Invalid ${name}`);
+  return value;
+}
+
 export function measureBundle(bytes) {
   if (!Buffer.isBuffer(bytes) || bytes.length === 0)
     throw new Error("Bundle must be nonempty bytes");
@@ -124,7 +129,10 @@ export function createPayload(run) {
   if (run.artifact?.path !== artifactPath || run.artifact.format !== "esm") {
     throw new Error("Unexpected measured artifact");
   }
-  if (!/^[0-9a-f]{64}$/.test(run.artifact.sha256)) throw new Error("Invalid artifact hash");
+  validateSha256(run.artifact.sha256, "artifact hash");
+  validateSha256(run.provenance?.rollupConfigSha256, "Rollup config hash");
+  validateSha256(run.provenance?.bundleSizeReportSha256, "bundle-size report hash");
+  validateSha256(run.provenance?.bundleSizeConfigSha256, "bundle-size config hash");
   if (JSON.stringify(run.artifact.compression) !== JSON.stringify(compression)) {
     throw new Error("Unexpected compression configuration");
   }

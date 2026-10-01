@@ -296,8 +296,9 @@ test("rejects invalid or invented measurements rather than exporting zeros", () 
     (r) => (r.bundleSizeReport.scenarios[0].id = "invalid/id"),
     (r) => (r.bundleSizeReport.bundler.version = "different"),
     (r) => (r.provenance.rollupLock = "different"),
-    (r) => (r.provenance.bundleSizeReportSha256 = ""),
-    (r) => (r.provenance.bundleSizeConfigSha256 = ""),
+    (r) => (r.provenance.rollupConfigSha256 = "B".repeat(64)),
+    (r) => (r.provenance.bundleSizeReportSha256 = "not-a-hash"),
+    (r) => (r.provenance.bundleSizeConfigSha256 = "D".repeat(64)),
   ];
   for (const mutate of mutations) {
     const run = fixture();
