@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { VERSION as rollupVersion } from "rollup";
 import {
@@ -235,6 +236,21 @@ test("publishes absolute entry-point budgets and their policy in Markdown", () =
   assert.match(markdown, /Alpha releases report violations/);
   assert.match(markdown, /\| \. \| 0\.88 kB \| 0\.98 kB/);
   assert.match(markdown, /\| Pass \|/);
+});
+
+test("publishes generated size diagnostics when budget enforcement fails", async () => {
+  const workflow = await readFile(
+    new URL("../../.github/workflows/pr-validation.yml", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    workflow,
+    /Publish bundle sizes to the check summary\s+if: \$\{\{ !cancelled\(\) && hashFiles\('reports\/bundle-size\.md'\) != '' \}\}/,
+  );
+  assert.match(
+    workflow,
+    /Upload bundle-size reports\s+if: \$\{\{ !cancelled\(\) && hashFiles\('reports\/bundle-size\.json'\) != '' \}\}/,
+  );
 });
 
 test("records the resolved Rollup runtime version", () => {

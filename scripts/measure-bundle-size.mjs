@@ -260,7 +260,7 @@ const formatKilobytes = (bytes) => `${(bytes / 1024).toFixed(2)} kB`;
 const formatDelta = (bytes) => `${bytes >= 0 ? "+" : "-"}${formatKilobytes(Math.abs(bytes))}`;
 
 export function getBudgetPolicy(version) {
-  const prereleaseChannel = version.match(/^[^-]+-([^.]+)/)?.[1];
+  const prereleaseChannel = version.match(/^[^-]+-([^.+]+)/)?.[1];
   return {
     mode: prereleaseChannel === "alpha" ? "report-only" : "blocking",
     blockingFrom: "beta",
