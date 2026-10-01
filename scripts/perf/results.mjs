@@ -133,7 +133,8 @@ export function createPayload(run) {
     run.bundleSizeReport.package?.name !== run.package.name ||
     run.bundleSizeReport.package?.version !== run.package.version ||
     run.bundleSizeReport.bundler?.name !== "rollup" ||
-    run.bundleSizeReport.bundler?.version !== run.provenance?.rollup
+    run.bundleSizeReport.bundler?.version !== run.provenance?.rollup ||
+    run.bundleSizeReport.bundler?.version !== run.provenance?.rollupLock
   ) {
     throw new Error("Bundle-size report does not match the measured build");
   }

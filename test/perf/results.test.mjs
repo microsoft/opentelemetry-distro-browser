@@ -88,6 +88,7 @@ function fixture() {
       bundleSizeReportSha256: "c".repeat(64),
       bundleSizeConfigSha256: "d".repeat(64),
       rollup: "4.0.0-test",
+      rollupLock: "4.0.0-test",
       terser: "5.0.0-test",
     },
     environments: {
@@ -294,6 +295,7 @@ test("rejects invalid or invented measurements rather than exporting zeros", () 
     (r) => (r.bundleSizeReport.scenarios[0].gzipBytes += 1),
     (r) => (r.bundleSizeReport.scenarios[0].id = "invalid/id"),
     (r) => (r.bundleSizeReport.bundler.version = "different"),
+    (r) => (r.provenance.rollupLock = "different"),
     (r) => (r.provenance.bundleSizeReportSha256 = ""),
     (r) => (r.provenance.bundleSizeConfigSha256 = ""),
   ];
