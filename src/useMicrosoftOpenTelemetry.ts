@@ -6,10 +6,7 @@ import { logs } from "@opentelemetry/api-logs";
 import { startBrowserSdk } from "@opentelemetry/browser-sdk";
 import { SessionLogRecordProcessor, SessionSpanProcessor } from "./session/sessionProcessors.js";
 import { createSession } from "./session/createSession.js";
-import {
-  BatchLogRecordProcessor,
-  type BatchLogRecordProcessorBrowserOptions,
-} from "@opentelemetry/sdk-logs";
+import { type BatchLogRecordProcessorBrowserOptions } from "@opentelemetry/sdk-logs";
 import { BatchSpanProcessor } from "@opentelemetry/sdk-trace-base";
 import { beginUnloading, endUnloading } from "./exporter/common.js";
 import { AzureMonitorLogRecordExporter } from "./exporter/log.js";
@@ -21,6 +18,8 @@ import {
   ATTR_TELEMETRY_DISTRO_VERSION,
 } from "@opentelemetry/semantic-conventions";
 import { OPENTELEMETRY_BROWSER_VERSION } from "./shared/constants.js";
+import { ApplicationInsightsSampler, isTraceSampled } from "./sampling.js";
+import { AzureMonitorSamplingLogRecordProcessor } from "./samplingLogRecordProcessor.js";
 import type {
   MicrosoftOpenTelemetryBrowser,
   MicrosoftOpenTelemetryBrowserOptions,
@@ -43,6 +42,7 @@ import type {
  */
 function createOwnedInstrumentations(
   options: MicrosoftOpenTelemetryBrowserOptions,
+  samplingPercentage: number,
 ): PageViewInstrumentation[] {
   if (typeof document === "undefined" || typeof location === "undefined") return [];
 
@@ -53,6 +53,7 @@ function createOwnedInstrumentations(
       new PageViewInstrumentation(
         { ...pageView, enabled: false },
         options.traces?.contextManager?.active() ?? context.active(),
+        (traceId) => isTraceSampled(traceId, samplingPercentage),
       ),
     );
   }
@@ -69,6 +70,7 @@ function createOwnedInstrumentations(
 export async function useMicrosoftOpenTelemetry(
   options: MicrosoftOpenTelemetryBrowserOptions = {},
 ): Promise<MicrosoftOpenTelemetryBrowser> {
+  const sampler = new ApplicationInsightsSampler(options.samplingPercentage);
   const azureBatchOptions = {
     disableAutoFlushOnDocumentHide: true,
   } satisfies Pick<BatchLogRecordProcessorBrowserOptions, "disableAutoFlushOnDocumentHide">;
@@ -83,8 +85,9 @@ export async function useMicrosoftOpenTelemetry(
     : options.spanProcessors?.slice();
   const logRecordProcessors = options.azureMonitor
     ? [
-        new BatchLogRecordProcessor({
+        new AzureMonitorSamplingLogRecordProcessor({
           exporter: new AzureMonitorLogRecordExporter(options.azureMonitor),
+          samplingPercentage: sampler.samplingPercentage,
           ...azureBatchOptions,
         }),
         ...(options.logRecordProcessors ?? []),
@@ -92,7 +95,7 @@ export async function useMicrosoftOpenTelemetry(
     : options.logRecordProcessors?.slice();
   const session = options.session?.enabled === true ? createSession() : undefined;
   const traceOptions = options.traces;
-  const owned = createOwnedInstrumentations(options);
+  const owned = createOwnedInstrumentations(options, sampler.samplingPercentage);
   const pageView = owned[0];
   const correlation = pageView
     ? new PageViewCorrelation(() => pageView.getOperationContext(), traceOptions?.contextManager)
@@ -208,6 +211,7 @@ export async function useMicrosoftOpenTelemetry(
         ...options.resource?.attributes,
       },
       traces: {
+        sampler,
         ...(correlation
           ? { contextManager: correlation }
           : traceOptions?.contextManager === undefined
