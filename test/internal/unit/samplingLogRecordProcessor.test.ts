@@ -95,9 +95,7 @@ describe("AzureMonitorSamplingLogRecordProcessor", () => {
       maxQueueSize: 17,
     });
 
-    expect(
-      (processor as unknown as { _maxQueueSize: number })._maxQueueSize,
-    ).toBe(17);
+    expect((processor as unknown as { _maxQueueSize: number })._maxQueueSize).toBe(17);
     await processor.shutdown();
   });
 
