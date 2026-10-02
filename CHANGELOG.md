@@ -12,6 +12,7 @@ All notable changes to this package are documented in this file.
 - Map page view ID and referrer to Azure Monitor envelopes
 - Add an interactive storefront sample with local span and log exporters and a built-in telemetry
   viewer.
+- Add Azure Monitor page-view performance telemetry
 
 ### Changed
 
