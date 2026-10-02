@@ -192,7 +192,10 @@ export function logToEnvelopes(
   instrumentationKey: string,
 ): readonly AzureMonitorEnvelope[] {
   const pageViewEnvelope = logToEnvelope(logRecord, instrumentationKey);
-  if (logRecord.eventName !== EVENT_BROWSER_PAGE_VIEW) {
+  if (
+    logRecord.eventName !== EVENT_BROWSER_PAGE_VIEW ||
+    pageViewEnvelope.data.baseType !== "PageViewData"
+  ) {
     return [pageViewEnvelope];
   }
 

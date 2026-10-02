@@ -299,6 +299,26 @@ describe("Azure Monitor log envelope mapping", () => {
     expect(envelopes[0]?.data.baseType).toBe("PageViewData");
   });
 
+  it("does not emit page-view performance when the record maps to an exception", () => {
+    const envelopes = logToEnvelopes(
+      makeLog({
+        eventName: "browser.page_view",
+        attributes: {
+          "exception.type": "NavigationError",
+          "browser.page_view.performance.total": 425.25,
+          "browser.page_view.performance.network_connect": 25,
+          "browser.page_view.performance.sent_request": 100.5,
+          "browser.page_view.performance.received_response": 50.25,
+          "browser.page_view.performance.dom_processing": 249.5,
+        },
+      }),
+      instrumentationKey,
+    );
+
+    expect(envelopes).toHaveLength(1);
+    expect(envelopes[0]?.data.baseType).toBe("ExceptionData");
+  });
+
   it("maps legacy browser.navigation to PageViewData", () => {
     const envelope = logToEnvelope(
       makeLog({

@@ -434,7 +434,7 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
         target,
         timing.loadEventEnd - timing.startTime,
         DURATION_SOURCE_NAVIGATION_TIMING,
-        this.getNavigationPerformanceAttributes(timing),
+        this.getNavigationPerformanceAttributes(timing) ?? {},
       );
       return;
     }
@@ -454,10 +454,10 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
     ];
     if (
       !boundaries.every(Number.isFinite) ||
-      timing.connectEnd < timing.startTime ||
-      timing.responseStart < timing.requestStart ||
-      timing.responseEnd < timing.responseStart ||
-      timing.loadEventEnd < timing.responseEnd
+      boundaries.some((boundary, index) => {
+        const previousBoundary = boundaries[index - 1];
+        return previousBoundary !== undefined && boundary < previousBoundary;
+      })
     ) {
       return undefined;
     }
