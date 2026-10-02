@@ -5,7 +5,7 @@ import type { Attributes, HrTime, SpanContext } from "@opentelemetry/api";
 import { OPENTELEMETRY_BROWSER_VERSION } from "../shared/constants.js";
 import { syntheticPageContexts } from "../shared/pageOperationContext.js";
 import type { AzureMonitorBaseData, AzureMonitorEnvelope } from "./telemetryModels.js";
-import { AZURE_MONITOR_SAMPLE_RATE } from "../sampling";
+import { AZURE_MONITOR_SAMPLE_RATE } from "../sampling.js";
 
 let unloadingCount = 0;
 

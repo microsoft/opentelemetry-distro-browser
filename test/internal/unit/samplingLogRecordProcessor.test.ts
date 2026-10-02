@@ -109,6 +109,21 @@ describe("AzureMonitorSamplingLogRecordProcessor", () => {
     expect(accepted.attributes[AZURE_MONITOR_SAMPLE_RATE]).toBe(25);
   });
 
+  it("does not assign a zero sample rate to a sampled correlated record", async () => {
+    const accepted = makeRecord(sampledContext);
+
+    expect(await exportRecords(0, [accepted])).toEqual([accepted]);
+    expect(accepted.attributes[AZURE_MONITOR_SAMPLE_RATE]).toBeUndefined();
+  });
+
+  it("preserves producer-provided sampling metadata", async () => {
+    const accepted = makeRecord(sampledContext);
+    accepted.setAttribute(AZURE_MONITOR_SAMPLE_RATE, 20);
+
+    expect(await exportRecords(50, [accepted])).toEqual([accepted]);
+    expect(accepted.attributes[AZURE_MONITOR_SAMPLE_RATE]).toBe(20);
+  });
+
   it("handles uncorrelated zero and full sampling boundaries", async () => {
     expect(await exportRecords(0, [makeRecord()])).toEqual([]);
     expect(await exportRecords(100, [makeRecord()])).toHaveLength(1);
