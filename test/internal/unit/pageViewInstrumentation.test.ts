@@ -230,7 +230,7 @@ describe("PageViewInstrumentation", () => {
         {
           startTime: 0,
           connectEnd: 20,
-          requestStart: 80,
+          requestStart: 10,
           responseStart: 30,
           responseEnd: 110,
           loadEventEnd: 170,
