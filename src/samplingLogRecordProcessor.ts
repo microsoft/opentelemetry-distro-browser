@@ -20,8 +20,9 @@ export class AzureMonitorSamplingLogRecordProcessor extends BatchLogRecordProces
     options: AzureMonitorSamplingLogRecordProcessorOptions,
     private readonly random: () => number = Math.random,
   ) {
-    super(options);
-    this.samplingPercentage = validateSamplingPercentage(options.samplingPercentage);
+    const { samplingPercentage, ...batchOptions } = options;
+    super(batchOptions);
+    this.samplingPercentage = validateSamplingPercentage(samplingPercentage);
   }
 
   public override onEmit(record: ReadWriteLogRecord): void {

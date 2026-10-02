@@ -51,9 +51,10 @@ export class ApplicationInsightsSampler implements Sampler {
     attributes: Attributes,
     _links: Parameters<Sampler["shouldSample"]>[5],
   ): SamplingResult {
-    if (this.samplingPercentage !== 100) {
-      attributes[AZURE_MONITOR_SAMPLE_RATE] = this.samplingPercentage;
-    }
+    const resultAttributes =
+      this.samplingPercentage === 100
+        ? attributes
+        : { ...attributes, [AZURE_MONITOR_SAMPLE_RATE]: this.samplingPercentage };
 
     const parent = trace.getSpanContext(parentContext);
     const sampled =
@@ -62,7 +63,7 @@ export class ApplicationInsightsSampler implements Sampler {
         : isTraceSampled(traceId, this.samplingPercentage);
     return {
       decision: sampled ? SamplingDecision.RECORD_AND_SAMPLED : SamplingDecision.NOT_RECORD,
-      attributes,
+      attributes: resultAttributes,
     };
   }
 

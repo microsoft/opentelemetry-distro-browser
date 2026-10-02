@@ -47,6 +47,25 @@ describe("ApplicationInsightsSampler", () => {
     });
   });
 
+  it("adds the sample rate without mutating input attributes", () => {
+    const attributes = { existing: "value" };
+    const result = new ApplicationInsightsSampler(50).shouldSample(
+      ROOT_CONTEXT,
+      TRACE_ID,
+      "test",
+      SpanKind.INTERNAL,
+      attributes,
+      [],
+    );
+
+    expect(attributes).toEqual({ existing: "value" });
+    expect(result.attributes).not.toBe(attributes);
+    expect(result.attributes).toEqual({
+      existing: "value",
+      [AZURE_MONITOR_SAMPLE_RATE]: 50,
+    });
+  });
+
   it.each([
     [TraceFlags.SAMPLED, SamplingDecision.RECORD_AND_SAMPLED],
     [TraceFlags.NONE, SamplingDecision.NOT_RECORD],
