@@ -11,39 +11,36 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-function makeLog(overrides: Partial<ReadableLogRecord> = {}): ReadableLogRecord {
-  return {
-    hrTime: [1_735_689_600, 0],
-    hrTimeObserved: [1_735_689_600, 0],
-    body: "checkout completed",
-    resource: { attributes: {} },
-    instrumentationScope: { name: "test" },
-    attributes: {},
-    droppedAttributesCount: 0,
-    ...overrides,
-  } as unknown as ReadableLogRecord;
-}
-
->>>>>>> a0e9d5d (Export Azure Monitor page-view performance telemetry)
 describe("AzureMonitorLogRecordExporter", () => {
   it("maps and exports log records", async () => {
-    const fetch = vi.fn<typeof globalThis.fetch>(async () => new Response("", { status: 200 }));
-    vi.stubGlobal("fetch", fetch);
-    const exporter = new AzureMonitorLogRecordExporter({ connectionString });
-
-    const result = await new Promise<{ code: ExportResultCode }>((resolve) => {
-      exporter.export([makeLog()], resolve);
+    const ingestion = createMockIngestionEndpoint();
+    vi.stubGlobal("fetch", ingestion.fetch);
+    const exporter = new AzureMonitorLogRecordExporter({
+      connectionString: ingestion.connectionString,
     });
 
-    expect(result).toEqual({ code: ExportResultCode.SUCCESS });
-    expect(fetch).toHaveBeenCalledOnce();
+    try {
+      const result = await new Promise<{ code: ExportResultCode }>((resolve) => {
+        exporter.export([createReadableLogRecord({ body: "checkout completed" })], resolve);
+      });
+      await exporter.forceFlush();
+      expect(result).toEqual({ code: ExportResultCode.SUCCESS });
+      expect(ingestion.fetch).toHaveBeenCalledOnce();
+      expect(ingestion.requests[0].envelopes[0]).toMatchObject({
+        data: { baseType: "MessageData", baseData: { message: "checkout completed" } },
+      });
+    } finally {
+      await exporter.shutdown();
+    }
   });
 
   it("exports page-view and performance envelopes from one log record", async () => {
-    const fetch = vi.fn<typeof globalThis.fetch>(async () => new Response("", { status: 200 }));
-    vi.stubGlobal("fetch", fetch);
-    const exporter = new AzureMonitorLogRecordExporter({ connectionString });
-    const log = makeLog({
+    const ingestion = createMockIngestionEndpoint();
+    vi.stubGlobal("fetch", ingestion.fetch);
+    const exporter = new AzureMonitorLogRecordExporter({
+      connectionString: ingestion.connectionString,
+    });
+    const log = createReadableLogRecord({
       eventName: "browser.page_view",
       attributes: {
         "browser.page_view.name": "Cart",
@@ -55,20 +52,18 @@ describe("AzureMonitorLogRecordExporter", () => {
       },
     });
 
-    const result = await new Promise<{ code: ExportResultCode }>((resolve) => {
-      exporter.export([log], resolve);
-    });
-
-    expect(result).toEqual({ code: ExportResultCode.SUCCESS });
-    const request = fetch.mock.calls[0]?.[1];
-    const compressed = new Response(request?.body).body;
-    const json = await new Response(
-      compressed?.pipeThrough(new DecompressionStream("gzip")),
-    ).text();
-    const body = JSON.parse(json) as Array<{ data: { baseType: string } }>;
-    expect(body.map((envelope) => envelope.data.baseType)).toEqual([
-      "PageViewData",
-      "PageViewPerformanceData",
-    ]);
+    try {
+      const result = await new Promise<{ code: ExportResultCode }>((resolve) => {
+        exporter.export([log], resolve);
+      });
+      await exporter.forceFlush();
+      expect(result).toEqual({ code: ExportResultCode.SUCCESS });
+      expect(ingestion.requests[0].envelopes.map((envelope) => envelope.data.baseType)).toEqual([
+        "PageViewData",
+        "PageViewPerformanceData",
+      ]);
+    } finally {
+      await exporter.shutdown();
+    }
   });
 });
