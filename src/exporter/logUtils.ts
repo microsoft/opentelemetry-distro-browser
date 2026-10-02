@@ -8,6 +8,11 @@ import {
   ATTR_PAGE_VIEW_DURATION,
   ATTR_PAGE_VIEW_ID,
   ATTR_PAGE_VIEW_NAME,
+  ATTR_PAGE_VIEW_PERF_DOM_PROCESSING,
+  ATTR_PAGE_VIEW_PERF_NETWORK_CONNECT,
+  ATTR_PAGE_VIEW_PERF_RECEIVED_RESPONSE,
+  ATTR_PAGE_VIEW_PERF_SENT_REQUEST,
+  ATTR_PAGE_VIEW_PERF_TOTAL,
   ATTR_PAGE_VIEW_REFERRER,
   EVENT_BROWSER_PAGE_VIEW,
 } from "../instrumentation/pageView/semconv.js";
@@ -34,6 +39,7 @@ import type {
   ExceptionData,
   MessageData,
   PageViewData,
+  PageViewPerformanceData,
   SeverityLevel,
 } from "./telemetryModels.js";
 
@@ -51,9 +57,22 @@ const promotedPageViewAttributes = /* @__PURE__ */ new Set([
   ATTR_PAGE_VIEW_DURATION,
   ATTR_PAGE_VIEW_ID,
   ATTR_PAGE_VIEW_NAME,
+  ATTR_PAGE_VIEW_PERF_DOM_PROCESSING,
+  ATTR_PAGE_VIEW_PERF_NETWORK_CONNECT,
+  ATTR_PAGE_VIEW_PERF_RECEIVED_RESPONSE,
+  ATTR_PAGE_VIEW_PERF_SENT_REQUEST,
+  ATTR_PAGE_VIEW_PERF_TOTAL,
   ATTR_PAGE_VIEW_REFERRER,
   URL_FULL,
 ]);
+
+const pageViewPerformanceAttributes = [
+  ATTR_PAGE_VIEW_PERF_TOTAL,
+  ATTR_PAGE_VIEW_PERF_NETWORK_CONNECT,
+  ATTR_PAGE_VIEW_PERF_SENT_REQUEST,
+  ATTR_PAGE_VIEW_PERF_RECEIVED_RESPONSE,
+  ATTR_PAGE_VIEW_PERF_DOM_PROCESSING,
+] as const;
 
 function isPageView(eventName: string | undefined): boolean {
   return eventName === EVENT_BROWSER_PAGE_VIEW || eventName === NAVIGATION_EVENT_NAME;
@@ -166,4 +185,46 @@ export function logToEnvelope(
     baseType,
     baseData,
   );
+}
+
+export function logToEnvelopes(
+  logRecord: ReadableLogRecord,
+  instrumentationKey: string,
+): readonly AzureMonitorEnvelope[] {
+  const pageViewEnvelope = logToEnvelope(logRecord, instrumentationKey);
+  if (logRecord.eventName !== EVENT_BROWSER_PAGE_VIEW) {
+    return [pageViewEnvelope];
+  }
+
+  const durations = pageViewPerformanceAttributes.map(
+    (attribute) => logRecord.attributes[attribute],
+  );
+  if (!durations.every((duration) => typeof duration === "number" && Number.isFinite(duration))) {
+    return [pageViewEnvelope];
+  }
+
+  const pageView = pageViewEnvelope.data.baseData as PageViewData;
+  const [perfTotal, networkConnect, sentRequest, receivedResponse, domProcessing] =
+    durations as number[];
+  const performanceData: PageViewPerformanceData = {
+    ver: 2,
+    name: pageView.name,
+    url: pageView.url,
+    perfTotal: millisecondsToTimeSpan(perfTotal),
+    networkConnect: millisecondsToTimeSpan(networkConnect),
+    sentRequest: millisecondsToTimeSpan(sentRequest),
+    receivedResponse: millisecondsToTimeSpan(receivedResponse),
+    domProcessing: millisecondsToTimeSpan(domProcessing),
+    properties: pageView.properties,
+    measurements: pageView.measurements,
+  };
+  const performanceEnvelope = createEnvelope(
+    instrumentationKey,
+    "Microsoft.ApplicationInsights.PageViewPerformance",
+    pageViewEnvelope.time,
+    pageViewEnvelope.tags,
+    "PageViewPerformanceData",
+    performanceData,
+  );
+  return [pageViewEnvelope, performanceEnvelope];
 }
