@@ -1,0 +1,99 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
+import { TraceFlags, type SpanContext } from "@opentelemetry/api";
+import { InMemoryLogRecordExporter, type ReadWriteLogRecord } from "@opentelemetry/sdk-logs";
+import { resourceFromAttributes } from "@opentelemetry/resources";
+import { describe, expect, it } from "vitest";
+import { AZURE_MONITOR_SAMPLE_RATE } from "../../../src/sampling.js";
+import { AzureMonitorSamplingLogRecordProcessor } from "../../../src/samplingLogRecordProcessor.js";
+
+const sampledContext: SpanContext = {
+  traceId: "1".repeat(32),
+  spanId: "2".repeat(16),
+  traceFlags: TraceFlags.SAMPLED,
+};
+const unsampledContext: SpanContext = { ...sampledContext, traceFlags: TraceFlags.NONE };
+
+function makeRecord(spanContext?: SpanContext): ReadWriteLogRecord {
+  const attributes: Record<string, string | number> = {};
+  return {
+    hrTime: [0, 0],
+    hrTimeObserved: [0, 0],
+    spanContext,
+    resource: resourceFromAttributes({}),
+    instrumentationScope: { name: "test" },
+    attributes,
+    droppedAttributesCount: 0,
+    setAttribute(key, value) {
+      if (value === undefined) delete attributes[key];
+      else attributes[key] = value as string | number;
+      return this;
+    },
+    setAttributes(values) {
+      Object.assign(attributes, values);
+      return this;
+    },
+    setBody(body) {
+      this.body = body;
+      return this;
+    },
+    setEventName(eventName) {
+      this.eventName = eventName;
+      return this;
+    },
+    setSeverityNumber(severityNumber) {
+      this.severityNumber = severityNumber;
+      return this;
+    },
+    setSeverityText(severityText) {
+      this.severityText = severityText;
+      return this;
+    },
+  };
+}
+
+async function exportRecords(
+  samplingPercentage: number,
+  records: ReadWriteLogRecord[],
+  random = () => 0,
+): Promise<ReadWriteLogRecord[]> {
+  const exporter = new InMemoryLogRecordExporter();
+  const processor = new AzureMonitorSamplingLogRecordProcessor(
+    {
+      exporter,
+      samplingPercentage,
+      disableAutoFlushOnDocumentHide: true,
+    },
+    random,
+  );
+  for (const record of records) processor.onEmit(record);
+  await processor.forceFlush();
+  const exported = exporter.getFinishedLogRecords() as ReadWriteLogRecord[];
+  await processor.shutdown();
+  return exported;
+}
+
+describe("AzureMonitorSamplingLogRecordProcessor", () => {
+  it("follows the sampling flag for correlated records", async () => {
+    const accepted = makeRecord(sampledContext);
+    const rejected = makeRecord(unsampledContext);
+
+    expect(await exportRecords(25, [accepted, rejected])).toEqual([accepted]);
+    expect(accepted.attributes[AZURE_MONITOR_SAMPLE_RATE]).toBe(25);
+  });
+
+  it("handles uncorrelated zero and full sampling boundaries", async () => {
+    expect(await exportRecords(0, [makeRecord()])).toEqual([]);
+    expect(await exportRecords(100, [makeRecord()])).toHaveLength(1);
+  });
+
+  it("independently samples uncorrelated records", async () => {
+    const accepted = makeRecord();
+    const rejected = makeRecord();
+
+    expect(await exportRecords(50, [accepted], () => 0.499)).toEqual([accepted]);
+    expect(await exportRecords(50, [rejected], () => 0.5)).toEqual([]);
+    expect(accepted.attributes[AZURE_MONITOR_SAMPLE_RATE]).toBe(50);
+  });
+});

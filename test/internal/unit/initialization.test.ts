@@ -29,6 +29,7 @@ import { isUnloading } from "../../../src/exporter/common.js";
 import { noopLoggerProvider, noopTracerProvider } from "../../../src/routing/instanceRouter.js";
 import { startTelemetryInstance } from "../../../src/routing/telemetryInstance.js";
 import { createInMemoryPipeline } from "../../fixtures/telemetry.js";
+import { ApplicationInsightsSampler } from "../../../src/sampling.js";
 
 vi.mock("../../../src/routing/telemetryInstance.js", { spy: true });
 
@@ -84,6 +85,7 @@ it("prepends session enrichment without changing the caller's processor arrays",
       "telemetry.distro.name": "@microsoft/opentelemetry-browser",
       "telemetry.distro.version": OPENTELEMETRY_BROWSER_VERSION,
     },
+    sampler: expect.any(ApplicationInsightsSampler),
     spanProcessors: [
       expect.objectContaining({ onStart: expect.any(Function) }),
       pipeline.spanProcessor,
@@ -93,6 +95,7 @@ it("prepends session enrichment without changing the caller's processor arrays",
       pipeline.logProcessor,
     ],
     contextManager: undefined,
+    correlation: undefined,
     propagators: undefined,
   });
   expect(options.spanProcessors).toEqual([pipeline.spanProcessor]);
@@ -205,6 +208,7 @@ it.each(["both", "context manager", "propagators", "no propagators"] as const)(
         "telemetry.distro.name": "@microsoft/opentelemetry-browser",
         "telemetry.distro.version": OPENTELEMETRY_BROWSER_VERSION,
       },
+      sampler: expect.any(ApplicationInsightsSampler),
       spanProcessors: [
         expect.objectContaining({ onStart: expect.any(Function) }),
         pipeline.spanProcessor,

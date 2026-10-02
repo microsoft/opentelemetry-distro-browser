@@ -7,12 +7,27 @@ import { MAX_BEACON_BODY_SIZE } from "../../../src/exporter/constants.js";
 import type { ExceptionData } from "../../../src/exporter/telemetryModels.js";
 import { logToEnvelope, logToEnvelopes } from "../../../src/exporter/logUtils.js";
 import { OPENTELEMETRY_BROWSER_VERSION } from "../../../src/shared/constants.js";
+import { AZURE_MONITOR_SAMPLE_RATE } from "../../../src/sampling.js";
 import { TEST_INSTRUMENTATION_KEY as instrumentationKey } from "../../fixtures/azureMonitor.js";
 import { createReadableLogRecord as makeLog, createSpanContext } from "../../fixtures/telemetry.js";
 
 const spanContext = createSpanContext();
 
 describe("Azure Monitor log envelope mapping", () => {
+  it("maps the reserved sample rate without exporting it as a custom measurement", () => {
+    const envelope = logToEnvelope(
+      makeLog({ attributes: { [AZURE_MONITOR_SAMPLE_RATE]: 25 }, body: "sampled" }),
+      instrumentationKey,
+    );
+
+    expect(envelope.sampleRate).toBe(25);
+    expect(envelope.data.baseData.measurements).toBeUndefined();
+  });
+
+  it("defaults standalone log conversion to full sampling", () => {
+    expect(logToEnvelope(makeLog({ body: "default" }), instrumentationKey).sampleRate).toBe(100);
+  });
+
   it.each([
     ["browser.page_view", undefined],
     ["browser.page_view", ""],

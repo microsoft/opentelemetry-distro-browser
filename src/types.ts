@@ -125,6 +125,10 @@ export interface MicrosoftOpenTelemetryBrowserTraceOptions {
  * @public
  */
 export interface MicrosoftOpenTelemetryBrowserOptions {
+  /**
+   * Percentage of traces and log records retained, from 0 through 100. Defaults to 100.
+   */
+  samplingPercentage?: number;
   /** Azure Monitor destination. When provided, Azure Monitor export is enabled. */
   azureMonitor?: AzureMonitorOptions;
   /**
