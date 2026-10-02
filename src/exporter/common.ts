@@ -155,7 +155,7 @@ export function getSampleRate(attributes: Attributes): number {
   const sampleRate = attributes[AZURE_MONITOR_SAMPLE_RATE];
   return typeof sampleRate === "number" &&
     Number.isFinite(sampleRate) &&
-    sampleRate >= 0 &&
+    sampleRate > 0 &&
     sampleRate <= 100
     ? sampleRate
     : 100;

@@ -217,7 +217,12 @@ describe("Azure Monitor span envelope mapping", () => {
     expect(envelope.data.baseData.measurements).toBeUndefined();
   });
 
-  it("defaults standalone span conversion to full sampling", () => {
-    expect(spanToEnvelope(makeSpan(), instrumentationKey).sampleRate).toBe(100);
-  });
+  it.each([undefined, 0])(
+    "defaults standalone span conversion with sample rate %s to full sampling",
+    (sampleRate) => {
+      const attributes =
+        sampleRate === undefined ? {} : { [AZURE_MONITOR_SAMPLE_RATE]: sampleRate };
+      expect(spanToEnvelope(makeSpan({ attributes }), instrumentationKey).sampleRate).toBe(100);
+    },
+  );
 });
