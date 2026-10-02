@@ -107,14 +107,25 @@ export function createEnvelope<T extends AzureMonitorBaseData>(
   tags: Readonly<Record<string, string>>,
   baseType: AzureMonitorEnvelope["data"]["baseType"],
   baseData: T,
+  sampleRate = 100,
 ): AzureMonitorEnvelope<T> {
   return {
     name,
     time,
     iKey: instrumentationKey,
-    sampleRate: 100,
+    sampleRate,
     tags,
     ver: 1,
     data: { baseType, baseData },
   };
+}
+
+export function getSampleRate(attributes: Attributes): number {
+  const sampleRate = attributes["microsoft.sample_rate"];
+  return typeof sampleRate === "number" &&
+    Number.isFinite(sampleRate) &&
+    sampleRate >= 0 &&
+    sampleRate <= 100
+    ? sampleRate
+    : 100;
 }

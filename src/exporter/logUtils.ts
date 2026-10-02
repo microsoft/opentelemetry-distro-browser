@@ -14,6 +14,7 @@ import {
 import {
   createEnvelope,
   createTags,
+  getSampleRate,
   hrTimeToDate,
   mapAttributes,
   millisecondsToTimeSpan,
@@ -36,12 +37,14 @@ import type {
   PageViewData,
   SeverityLevel,
 } from "./telemetryModels.js";
+import { AZURE_MONITOR_SAMPLE_RATE } from "../sampling.js";
 
 const promotedLogAttributes = /* @__PURE__ */ new Set([
   EXCEPTION_MESSAGE,
   EXCEPTION_STACKTRACE,
   EXCEPTION_TYPE,
   NAVIGATION_DURATION,
+  AZURE_MONITOR_SAMPLE_RATE,
 ]);
 const promotedPageViewAttributes = /* @__PURE__ */ new Set([
   EXCEPTION_MESSAGE,
@@ -53,6 +56,7 @@ const promotedPageViewAttributes = /* @__PURE__ */ new Set([
   ATTR_PAGE_VIEW_NAME,
   ATTR_PAGE_VIEW_REFERRER,
   URL_FULL,
+  AZURE_MONITOR_SAMPLE_RATE,
 ]);
 
 function isPageView(eventName: string | undefined): boolean {
@@ -76,6 +80,7 @@ export function logToEnvelope(
     logRecord.attributes as Attributes,
     isPageView(logRecord.eventName) ? promotedPageViewAttributes : promotedLogAttributes,
   );
+  const sampleRate = getSampleRate(logRecord.attributes as Attributes);
   const tags = createTags(
     logRecord.spanContext?.traceId,
     logRecord.spanContext,
@@ -165,5 +170,6 @@ export function logToEnvelope(
     tags,
     baseType,
     baseData,
+    sampleRate,
   );
 }

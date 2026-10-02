@@ -6,6 +6,7 @@ import type { ReadableSpan } from "@opentelemetry/sdk-trace-base";
 import {
   createEnvelope,
   createTags,
+  getSampleRate,
   hrTimeToDate,
   hrTimeToMilliseconds,
   mapAttributes,
@@ -19,6 +20,7 @@ import {
   URL_FULL,
 } from "./constants.js";
 import type { AzureMonitorEnvelope, RemoteDependencyData, RequestData } from "./telemetryModels.js";
+import { AZURE_MONITOR_SAMPLE_RATE } from "../sampling.js";
 
 const promotedSpanAttributes = /* @__PURE__ */ new Set([
   HTTP_METHOD,
@@ -26,6 +28,7 @@ const promotedSpanAttributes = /* @__PURE__ */ new Set([
   SERVER_ADDRESS,
   SERVER_PORT,
   URL_FULL,
+  AZURE_MONITOR_SAMPLE_RATE,
 ]);
 
 function spanSucceeded(span: ReadableSpan, statusCode: number): boolean {
@@ -45,6 +48,7 @@ export function spanToEnvelope(
   const url = span.attributes[URL_FULL];
   const duration = millisecondsToTimeSpan(hrTimeToMilliseconds(span.duration));
   const customFields = mapAttributes(span.attributes, promotedSpanAttributes);
+  const sampleRate = getSampleRate(span.attributes);
   const tags = createTags(
     spanContext.traceId,
     span.parentSpanContext,
@@ -69,6 +73,7 @@ export function spanToEnvelope(
       tags,
       "RequestData",
       baseData,
+      sampleRate,
     );
   }
 
@@ -104,5 +109,6 @@ export function spanToEnvelope(
     tags,
     "RemoteDependencyData",
     baseData,
+    sampleRate,
   );
 }

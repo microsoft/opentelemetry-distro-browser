@@ -5,6 +5,7 @@ import { SpanKind, SpanStatusCode } from "@opentelemetry/api";
 import { describe, expect, it } from "vitest";
 import { spanToEnvelope } from "../../../src/exporter/spanUtils.js";
 import { OPENTELEMETRY_BROWSER_VERSION } from "../../../src/shared/constants.js";
+import { AZURE_MONITOR_SAMPLE_RATE } from "../../../src/sampling.js";
 import { TEST_INSTRUMENTATION_KEY as instrumentationKey } from "../../fixtures/azureMonitor.js";
 import { createReadableSpan as makeSpan, createSpanContext } from "../../fixtures/telemetry.js";
 
@@ -109,5 +110,19 @@ describe("Azure Monitor span envelope mapping", () => {
     );
 
     expect(envelope.data.baseData.duration).toBe("1.01:01:01.0010000");
+  });
+
+  it("maps the reserved sample rate without exporting it as a custom measurement", () => {
+    const envelope = spanToEnvelope(
+      makeSpan({ attributes: { [AZURE_MONITOR_SAMPLE_RATE]: 25 } }),
+      instrumentationKey,
+    );
+
+    expect(envelope.sampleRate).toBe(25);
+    expect(envelope.data.baseData.measurements).toBeUndefined();
+  });
+
+  it("defaults standalone span conversion to full sampling", () => {
+    expect(spanToEnvelope(makeSpan(), instrumentationKey).sampleRate).toBe(100);
   });
 });

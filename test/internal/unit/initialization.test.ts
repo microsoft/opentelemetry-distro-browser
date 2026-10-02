@@ -28,6 +28,7 @@ import {
 } from "../../../src/index.js";
 import { isUnloading } from "../../../src/exporter/common.js";
 import { createInMemoryPipeline } from "../../fixtures/telemetry.js";
+import { ApplicationInsightsSampler } from "../../../src/sampling.js";
 
 vi.mock("@opentelemetry/browser-sdk", { spy: true });
 
@@ -73,6 +74,7 @@ it("prepends session enrichment without changing the caller's processor arrays",
       "telemetry.distro.version": OPENTELEMETRY_BROWSER_VERSION,
     },
     traces: {
+      sampler: expect.any(ApplicationInsightsSampler),
       processors: [
         expect.objectContaining({ onStart: expect.any(Function) }),
         pipeline.spanProcessor,
@@ -177,6 +179,7 @@ it.each(["both", "context manager", "propagators", "no propagators"] as const)(
         "telemetry.distro.version": OPENTELEMETRY_BROWSER_VERSION,
       },
       traces: {
+        sampler: expect.any(ApplicationInsightsSampler),
         ...traces,
         processors: [pipeline.spanProcessor],
       },

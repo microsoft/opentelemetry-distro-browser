@@ -28,6 +28,7 @@ it("exposes distro-owned configuration and lifecycle contracts", () => {
   >();
   expectTypeOf<keyof MicrosoftOpenTelemetryBrowserOptions>().toEqualTypeOf<
     | "resource"
+    | "samplingPercentage"
     | "azureMonitor"
     | "spanProcessors"
     | "logRecordProcessors"
