@@ -20,6 +20,7 @@ export function getSamplingScore(traceId: string): number {
   if (!traceId) return 0;
 
   let input = traceId;
+  // Preserve Application Insights cross-SDK scoring for legacy operation IDs shorter than 8 chars.
   while (input.length < 8) input += input;
 
   let hash = 5381;

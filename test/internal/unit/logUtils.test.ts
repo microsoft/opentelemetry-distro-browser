@@ -21,9 +21,16 @@ describe("Azure Monitor log envelope mapping", () => {
     expect(envelope.data.baseData.measurements).toBeUndefined();
   });
 
-  it("defaults standalone log conversion to full sampling", () => {
-    expect(logToEnvelope(makeLog({ body: "default" }), instrumentationKey).sampleRate).toBe(100);
-  });
+  it.each([undefined, 0])(
+    "defaults standalone log conversion with sample rate %s to full sampling",
+    (sampleRate) => {
+      const attributes =
+        sampleRate === undefined ? {} : { [AZURE_MONITOR_SAMPLE_RATE]: sampleRate };
+      expect(
+        logToEnvelope(makeLog({ attributes, body: "default" }), instrumentationKey).sampleRate,
+      ).toBe(100);
+    },
+  );
 
   it.each([
     ["browser.page_view", undefined],
