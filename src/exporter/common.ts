@@ -12,7 +12,7 @@ import {
   ATTR_USER_ACCOUNT_ID,
   ATTR_USER_ID,
 } from "../user/constants.js";
-import { AZURE_MONITOR_SAMPLE_RATE } from "../sampling";
+import { AZURE_MONITOR_SAMPLE_RATE } from "../sampling.js";
 
 let unloadingCount = 0;
 

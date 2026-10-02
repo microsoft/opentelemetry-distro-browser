@@ -27,7 +27,7 @@ describe("ApplicationInsightsSampler", () => {
   it("handles the zero and 100 percent boundaries", () => {
     expect(sample(new ApplicationInsightsSampler(0))).toEqual({
       decision: SamplingDecision.NOT_RECORD,
-      attributes: { [AZURE_MONITOR_SAMPLE_RATE]: 0 },
+      attributes: {},
     });
     expect(sample(new ApplicationInsightsSampler(100))).toEqual({
       decision: SamplingDecision.RECORD_AND_SAMPLED,
@@ -77,5 +77,33 @@ describe("ApplicationInsightsSampler", () => {
       isRemote: true,
     });
     expect(sample(new ApplicationInsightsSampler(50), parent)).toMatchObject({ decision });
+  });
+
+  it("does not assign a zero sample rate to a sampled parent decision", () => {
+    const parent = trace.setSpanContext(ROOT_CONTEXT, {
+      traceId: "11111111111111111111111111111111",
+      spanId: "1111111111111111",
+      traceFlags: TraceFlags.SAMPLED,
+    });
+
+    expect(sample(new ApplicationInsightsSampler(0), parent)).toEqual({
+      decision: SamplingDecision.RECORD_AND_SAMPLED,
+      attributes: {},
+    });
+  });
+
+  it("preserves producer-provided sampling metadata", () => {
+    const attributes = { [AZURE_MONITOR_SAMPLE_RATE]: 20 };
+    const result = new ApplicationInsightsSampler(50).shouldSample(
+      ROOT_CONTEXT,
+      TRACE_ID,
+      "test",
+      SpanKind.INTERNAL,
+      attributes,
+      [],
+    );
+
+    expect(result.attributes).toBe(attributes);
+    expect(result.attributes).toEqual(attributes);
   });
 });

@@ -34,7 +34,11 @@ export class AzureMonitorSamplingLogRecordProcessor extends BatchLogRecordProces
           (this.samplingPercentage !== 0 && this.random() * 100 < this.samplingPercentage);
     if (!sampled) return;
 
-    if (this.samplingPercentage !== 100) {
+    if (
+      this.samplingPercentage > 0 &&
+      this.samplingPercentage < 100 &&
+      record.attributes[AZURE_MONITOR_SAMPLE_RATE] === undefined
+    ) {
       record.setAttribute(AZURE_MONITOR_SAMPLE_RATE, this.samplingPercentage);
     }
     super.onEmit(record);
