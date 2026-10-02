@@ -12,6 +12,7 @@ import {
   ATTR_USER_ACCOUNT_ID,
   ATTR_USER_ID,
 } from "../user/constants.js";
+import { AZURE_MONITOR_SAMPLE_RATE } from "../sampling";
 
 let unloadingCount = 0;
 
@@ -151,7 +152,7 @@ export function createEnvelope<T extends AzureMonitorBaseData>(
 }
 
 export function getSampleRate(attributes: Attributes): number {
-  const sampleRate = attributes["microsoft.sample_rate"];
+  const sampleRate = attributes[AZURE_MONITOR_SAMPLE_RATE];
   return typeof sampleRate === "number" &&
     Number.isFinite(sampleRate) &&
     sampleRate >= 0 &&

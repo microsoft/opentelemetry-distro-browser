@@ -75,6 +75,32 @@ async function exportRecords(
 }
 
 describe("AzureMonitorSamplingLogRecordProcessor", () => {
+  it.each([-1, 101, Number.NaN, Number.POSITIVE_INFINITY])(
+    "rejects invalid percentage %s",
+    (samplingPercentage) => {
+      expect(
+        () =>
+          new AzureMonitorSamplingLogRecordProcessor({
+            exporter: new InMemoryLogRecordExporter(),
+            samplingPercentage,
+          }),
+      ).toThrow(RangeError);
+    },
+  );
+
+  it("forwards batch processor options after removing the sampling percentage", async () => {
+    const processor = new AzureMonitorSamplingLogRecordProcessor({
+      exporter: new InMemoryLogRecordExporter(),
+      samplingPercentage: 100,
+      maxQueueSize: 17,
+    });
+
+    expect(
+      (processor as unknown as { _maxQueueSize: number })._maxQueueSize,
+    ).toBe(17);
+    await processor.shutdown();
+  });
+
   it("follows the sampling flag for correlated records", async () => {
     const accepted = makeRecord(sampledContext);
     const rejected = makeRecord(unsampledContext);
