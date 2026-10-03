@@ -10,11 +10,21 @@ All notable changes to this package are documented in this file.
 - Promote the size harness into a repository tool
 - Add a configurable SDK loader snippet generator that requires an explicit browser bundle URL.
 - Map page view ID and referrer to Azure Monitor envelopes
+- Add browser user context with anonymous and authenticated identities, opt-in persistence,
+  sign-out controls, OpenTelemetry enrichment, and Azure Monitor `ai.user.*` mapping.
 - Add an interactive storefront sample with local span and log exporters and a built-in telemetry
   viewer.
 
 ### Changed
 
+- The prerelease browser lifecycle handle now includes the required `userContext` identity and
+  persistence controls.
+- Every span and log now receives an anonymous `enduser.pseudo.id`. Azure Monitor envelopes map
+  `enduser.pseudo.id`, `user.id`, `enduser.id`, and `user.account.id` to `ai.user.*` tags instead
+  of custom dimensions.
+- Empty application `session.id` attributes are now replaced with the managed session ID.
+- Default OTLP span and log batch processors are created by the distribution so `forceFlush()`
+  and page-hide flushing cover them.
 - Correlate page views, spans, and logs through shared operation IDs while preserving explicit
   application span contexts.
 - Fixed post-merge performance publishing for fork contributions by using the upstream
