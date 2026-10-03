@@ -23,6 +23,7 @@ import {
   EXCEPTION_MESSAGE,
   EXCEPTION_STACKTRACE,
   EXCEPTION_TYPE,
+  MAX_BEACON_BODY_SIZE,
   NAVIGATION_DURATION,
   NAVIGATION_EVENT_NAME,
   URL_FULL,
@@ -35,6 +36,7 @@ import type {
   MessageData,
   PageViewData,
   SeverityLevel,
+  StackFrame,
 } from "./telemetryModels.js";
 
 const promotedLogAttributes = /* @__PURE__ */ new Set([
@@ -54,6 +56,19 @@ const promotedPageViewAttributes = /* @__PURE__ */ new Set([
   ATTR_PAGE_VIEW_REFERRER,
   URL_FULL,
 ]);
+// Azure Monitor ExceptionDetails schema limits (character lengths).
+const MAX_EXCEPTION_TYPE_LENGTH = 1024;
+const MAX_EXCEPTION_MESSAGE_LENGTH = 32 * 1024;
+const MAX_EXCEPTION_STACK_LENGTH = 32 * 1024;
+const MAX_STACK_FRAME_FIELD_LENGTH = 1024;
+// Distro byte budgets that keep the raw and parsed stacks from crowding out each other.
+const MAX_EXCEPTION_STACK_SIZE_IN_BYTES = 32 * 1024;
+const MAX_PARSED_STACK_SIZE_IN_BYTES = 32 * 1024;
+// Budgets core exception data (message, stack, parsed frames) to fit the unload beacon limit.
+// Custom fields are intentionally excluded: they are optional, so during unload the exporter's
+// custom-field fitting drops the largest ones first instead of truncating the exception here.
+const MAX_EXCEPTION_ENVELOPE_SIZE_IN_BYTES = MAX_BEACON_BODY_SIZE;
+let textEncoder: TextEncoder | undefined;
 
 function isPageView(eventName: string | undefined): boolean {
   return eventName === EVENT_BROWSER_PAGE_VIEW || eventName === NAVIGATION_EVENT_NAME;
@@ -66,6 +81,218 @@ function mapSeverity(severityNumber: number | undefined): SeverityLevel | undefi
   if (severityNumber < 17) return 2;
   if (severityNumber < 21) return 3;
   return 4;
+}
+
+function getUtf8Size(value: string): number {
+  textEncoder ??= new TextEncoder();
+  return textEncoder.encode(value).byteLength;
+}
+
+function truncateToLength(value: string, maxLength: number): string {
+  if (value.length <= maxLength) return value;
+  const truncated = value.slice(0, maxLength);
+  return /[\uD800-\uDBFF]$/.test(truncated) ? truncated.slice(0, -1) : truncated;
+}
+
+function truncateJsonStringToSize(value: string, maxSizeInBytes: number): string | undefined {
+  if (maxSizeInBytes < 2) return undefined;
+  if (getUtf8Size(JSON.stringify(value)) <= maxSizeInBytes) return value;
+
+  let low = 0;
+  let high = value.length;
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    if (getUtf8Size(JSON.stringify(truncateToLength(value, middle))) <= maxSizeInBytes) {
+      low = middle;
+    } else {
+      high = middle - 1;
+    }
+  }
+  return truncateToLength(value, low);
+}
+
+function isLikelyCodeSource(source: string): boolean {
+  return (
+    source.includes("://") ||
+    source.includes("/") ||
+    source.includes("\\") ||
+    /\.(?:[cm]?js|jsx|ts|tsx|wasm|html?)$/i.test(source)
+  );
+}
+
+// Firefox function names may contain "/" (e.g. "outer/inner", "Foo/<"), but a path or URL that
+// itself contains "@" (e.g. "node_modules/@scope/pkg.js") must not be split at the "@".
+function isLikelyAtFunctionName(prefix: string): boolean {
+  return !/:\/\/|\\|^[./]|\/$/.test(prefix);
+}
+
+function parseStack(stack: string, maxSizeInBytes: number): readonly StackFrame[] | undefined {
+  const frames: StackFrame[] = [];
+
+  for (const assembly of stack.split("\n")) {
+    const trimmed = assembly.trim();
+    const locationWithColumn = /:(\d+):\d+\)?$/.exec(trimmed);
+    const location = locationWithColumn ?? /:(\d+)\)?$/.exec(trimmed);
+    if (!location) continue;
+
+    const prefix = trimmed.slice(0, location.index);
+    const openParenthesis = prefix.indexOf(" (");
+    const startsWithAt = trimmed.startsWith("at ");
+    const atSign = trimmed.indexOf("@");
+    const atPrefix = atSign >= 0 ? trimmed.slice(0, atSign) : "";
+    const atSource =
+      atSign >= 0 && atSign < location.index ? trimmed.slice(atSign + 1, location.index) : "";
+    const hasAtLocation =
+      !startsWithAt &&
+      atSign >= 0 &&
+      atSign < location.index &&
+      isLikelyAtFunctionName(atPrefix) &&
+      isLikelyCodeSource(atSource);
+    const bareSource = trimmed.slice(0, location.index);
+    const isBareSourceLocation =
+      !bareSource.includes(" ") && isLikelyCodeSource(bareSource.replace(/\)?$/, ""));
+    const hasParenthesizedLocation =
+      openParenthesis >= 0 && isLikelyCodeSource(prefix.slice(openParenthesis + 2));
+    if (!startsWithAt && !hasAtLocation && !isBareSourceLocation && !hasParenthesizedLocation) {
+      continue;
+    }
+
+    let method = "<no_method>";
+    let fileName = prefix.replace(/^\s*at\s+/, "").trim();
+    if (openParenthesis >= 0) {
+      method =
+        prefix
+          .slice(0, openParenthesis)
+          .replace(/^\s*at\s+/, "")
+          .trim() || method;
+      fileName = prefix.slice(openParenthesis + 2).trim();
+    } else if (hasAtLocation) {
+      method =
+        prefix
+          .slice(0, atSign)
+          .replace(/^\s*at\s+/, "")
+          .trim() || method;
+      fileName = prefix.slice(atSign + 1).trim();
+    } else if (startsWithAt) {
+      const separator = fileName.lastIndexOf(" ");
+      if (separator >= 0) {
+        method = fileName.slice(0, separator).trim() || method;
+        fileName = fileName.slice(separator + 1).trim();
+      }
+    }
+    if (!fileName) continue;
+    const line = Number(location[1]);
+    if (!Number.isSafeInteger(line)) continue;
+
+    frames.push({
+      level: frames.length,
+      method: truncateToLength(method, MAX_STACK_FRAME_FIELD_LENGTH),
+      assembly: truncateToLength(trimmed, MAX_STACK_FRAME_FIELD_LENGTH),
+      fileName: truncateToLength(fileName, MAX_STACK_FRAME_FIELD_LENGTH),
+      line,
+    });
+  }
+
+  if (frames.length === 0) return undefined;
+
+  const sizes = frames.map((frame) => getUtf8Size(JSON.stringify(frame)));
+  const serializedSize = 2 + sizes.reduce((sum, size) => sum + size, 0) + frames.length - 1;
+  if (serializedSize <= maxSizeInBytes) return frames;
+
+  const first: StackFrame[] = [];
+  const last: StackFrame[] = [];
+  let selectedSize = 2;
+  let left = 0;
+  let right = frames.length - 1;
+  while (left <= right) {
+    const isPair = left !== right;
+    const addedSize =
+      sizes[left] +
+      (isPair ? sizes[right] : 0) +
+      (first.length + last.length === 0 ? 0 : 1) +
+      (isPair ? 1 : 0);
+    if (selectedSize + addedSize > maxSizeInBytes) break;
+    first.push(frames[left]);
+    if (isPair) last.push(frames[right]);
+    selectedSize += addedSize;
+    left++;
+    right--;
+  }
+
+  const capped = [...first, ...last.reverse()];
+  // Preserve original levels so gaps identify frames omitted from the middle by byte capping.
+  return capped.length === 0 ? undefined : capped;
+}
+
+/**
+ * Builds a single ExceptionDetails entry whose JSON fits in `maxSizeInBytes`.
+ *
+ * Fields are first truncated to Azure Monitor schema lengths. The remaining byte budget is then
+ * allocated in priority order: type name, raw stack (up to its distro byte cap), message, and
+ * finally parsed frames from whatever space is left.
+ */
+function createExceptionDetails(
+  attributes: ReadableLogRecord["attributes"],
+  body: ReadableLogRecord["body"],
+  maxSizeInBytes: number,
+): ExceptionData["exceptions"][number] {
+  const stack = attributes[EXCEPTION_STACKTRACE];
+  const serializedStack = stack === undefined ? undefined : serializeAttribute(stack);
+  const typeName = truncateToLength(
+    serializeAttribute(attributes[EXCEPTION_TYPE] ?? "Error"),
+    MAX_EXCEPTION_TYPE_LENGTH,
+  );
+  const schemaLimitedMessage = truncateToLength(
+    serializeAttribute(attributes[EXCEPTION_MESSAGE] ?? body ?? "Exception"),
+    MAX_EXCEPTION_MESSAGE_LENGTH,
+  );
+  const schemaLimitedStack =
+    serializedStack === undefined
+      ? undefined
+      : truncateToLength(serializedStack, MAX_EXCEPTION_STACK_LENGTH);
+  const emptyStringSize = getUtf8Size(JSON.stringify(""));
+  const exceptionWithEmptyStrings = {
+    typeName,
+    message: "",
+    hasFullStack: false,
+    ...(schemaLimitedStack === undefined ? {} : { stack: "" }),
+  };
+  const availableStringSize =
+    maxSizeInBytes -
+    getUtf8Size(JSON.stringify(exceptionWithEmptyStrings)) +
+    emptyStringSize * (schemaLimitedStack === undefined ? 1 : 2);
+  const stackSize =
+    schemaLimitedStack === undefined
+      ? 0
+      : Math.min(
+          getUtf8Size(JSON.stringify(schemaLimitedStack)),
+          MAX_EXCEPTION_STACK_SIZE_IN_BYTES,
+          Math.max(emptyStringSize, availableStringSize),
+        );
+  const messageSize =
+    schemaLimitedStack === undefined
+      ? availableStringSize
+      : Math.max(emptyStringSize, availableStringSize - stackSize);
+  const message = truncateJsonStringToSize(schemaLimitedMessage, messageSize) ?? "";
+  const emittedStack =
+    schemaLimitedStack === undefined
+      ? undefined
+      : truncateJsonStringToSize(schemaLimitedStack, stackSize);
+  const exception = {
+    typeName,
+    message,
+    hasFullStack: Boolean(serializedStack) && emittedStack === serializedStack,
+    stack: emittedStack,
+  };
+  const parsedStackSize = Math.min(
+    MAX_PARSED_STACK_SIZE_IN_BYTES,
+    maxSizeInBytes - getUtf8Size(JSON.stringify(exception)) - getUtf8Size(',"parsedStack":'),
+  );
+  const parsedStack =
+    serializedStack === undefined || parsedStackSize < 2
+      ? undefined
+      : parseStack(serializedStack, parsedStackSize);
+  return { ...exception, parsedStack };
 }
 
 export function logToEnvelope(
@@ -82,27 +309,34 @@ export function logToEnvelope(
     logRecord.resource.attributes["service.name"],
   );
   const severityLevel = mapSeverity(logRecord.severityNumber);
+  const time = hrTimeToDate(logRecord.hrTime);
   let name: string;
   let baseType: AzureMonitorEnvelope["data"]["baseType"];
   let baseData: MessageData | ExceptionData | PageViewData | CustomEventData;
 
   if (logRecord.eventName === "exception" || logRecord.attributes[EXCEPTION_TYPE]) {
-    const stack = logRecord.attributes[EXCEPTION_STACKTRACE];
     name = "Microsoft.ApplicationInsights.Exception";
     baseType = "ExceptionData";
-    baseData = {
+    const baseDataWithoutException: ExceptionData = {
       ver: 2,
-      exceptions: [
-        {
-          typeName: serializeAttribute(logRecord.attributes[EXCEPTION_TYPE] ?? "Error"),
-          message: serializeAttribute(
-            logRecord.attributes[EXCEPTION_MESSAGE] ?? logRecord.body ?? "Exception",
-          ),
-          hasFullStack: Boolean(stack),
-          stack: stack === undefined ? undefined : serializeAttribute(stack),
-        },
-      ],
+      exceptions: [],
       severityLevel,
+    };
+    const envelopeWithoutException = createEnvelope(
+      instrumentationKey,
+      name,
+      time,
+      tags,
+      baseType,
+      baseDataWithoutException,
+    );
+    const maxExceptionSize =
+      MAX_EXCEPTION_ENVELOPE_SIZE_IN_BYTES -
+      2 -
+      getUtf8Size(JSON.stringify(envelopeWithoutException));
+    baseData = {
+      ...baseDataWithoutException,
+      exceptions: [createExceptionDetails(logRecord.attributes, logRecord.body, maxExceptionSize)],
       ...customFields,
     };
   } else if (isPageView(logRecord.eventName)) {
@@ -158,12 +392,5 @@ export function logToEnvelope(
     };
   }
 
-  return createEnvelope(
-    instrumentationKey,
-    name,
-    hrTimeToDate(logRecord.hrTime),
-    tags,
-    baseType,
-    baseData,
-  );
+  return createEnvelope(instrumentationKey, name, time, tags, baseType, baseData);
 }
