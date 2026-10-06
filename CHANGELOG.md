@@ -21,6 +21,7 @@ All notable changes to this package are documented in this file.
 
 ### Changed
 
+- Update the development dependency `source-map-js` to 1.2.2.
 - Isolate telemetry pipelines per initialization: each instance owns its tracer and logger
   providers, instrumentations bind to their own instance, and global tracers and loggers bind to
   the earliest running instance that collects that signal when acquired.
