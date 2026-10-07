@@ -99,8 +99,27 @@ describe("Azure Monitor connection string", () => {
     expect(result.aadAudience).toBe("audience");
   });
 
+  it.each([";", " ; ", ";;", "; ;"])("ignores empty fields in %j", (emptyFields) => {
+    const result = parseConnectionString(
+      `${emptyFields}InstrumentationKey=${instrumentationKey};` +
+        `IngestionEndpoint=https://custom.ingest.example/${emptyFields}`,
+    );
+
+    expect(result.instrumentationKey).toBe(instrumentationKey);
+    expect(result.ingestionEndpoint).toBe("https://custom.ingest.example");
+  });
+
   it("discards a malformed connection string", () => {
     expect(parseConnectionString(`InstrumentationKey=${instrumentationKey};invalid`)).toEqual({
+      ingestionEndpoint: "https://dc.services.visualstudio.com",
+      liveEndpoint: "https://rt.services.visualstudio.com",
+    });
+  });
+
+  it("discards a connection string with multiple value separators", () => {
+    expect(
+      parseConnectionString(`InstrumentationKey=${instrumentationKey};ApplicationId=app=id`),
+    ).toEqual({
       ingestionEndpoint: "https://dc.services.visualstudio.com",
       liveEndpoint: "https://rt.services.visualstudio.com",
     });

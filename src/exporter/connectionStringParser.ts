@@ -55,6 +55,10 @@ function parseFields(connectionString: string): ParsedConnectionString | undefin
   const fields: ParsedConnectionString = {};
 
   for (const field of connectionString.split(";")) {
+    if (!field.trim()) {
+      continue;
+    }
+
     const separatorIndex = field.indexOf("=");
     if (separatorIndex <= 0 || separatorIndex !== field.lastIndexOf("=")) {
       diag.error(
