@@ -47,6 +47,17 @@ describe("ApplicationInsightsSampler", () => {
     });
   });
 
+  it.each([
+    ["y", 1_406_544_563],
+    ["ss", 1_179_811_869],
+    ["kxi", 34_202_699],
+    ["ynehgfhyuiltaiqovbpyhpm", 2_139_623_659],
+    [TRACE_ID, 718_577_102],
+    ["00000000000000000000000000000001", 50_237_190],
+  ])("matches the Application Insights cross-SDK hash for %s", (traceId, expectedHash) => {
+    expect(getSamplingScore(traceId)).toBe((expectedHash / 2_147_483_647) * 100);
+  });
+
   it("adds the sample rate without mutating input attributes", () => {
     const attributes = { existing: "value" };
     const result = new ApplicationInsightsSampler(50).shouldSample(
