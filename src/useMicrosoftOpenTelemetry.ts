@@ -30,7 +30,7 @@ import { getSharedRegistry, reportError } from "./shared/globalOwnership.js";
 import { runLifecycleTasks, subscribeToUnload } from "./shared/lifecycle.js";
 import { getPageOperation, isPageContextRegistered } from "./routing/pageContext.js";
 import { startTelemetryInstance, type TelemetryInstance } from "./routing/telemetryInstance.js";
-import { ApplicationInsightsSampler, isTraceSampled } from "./sampling.js";
+import { ApplicationInsightsSampler, isTraceSampled, PageOperationSampler } from "./sampling.js";
 import { AzureMonitorSamplingLogRecordProcessor } from "./samplingLogRecordProcessor.js";
 import type {
   MicrosoftOpenTelemetryBrowser,
@@ -97,7 +97,7 @@ export async function useMicrosoftOpenTelemetry(
   const samplingPercentage = options.samplingPercentage ?? 100;
   const sampler =
     options.samplingPercentage === undefined
-      ? undefined
+      ? new PageOperationSampler()
       : new ApplicationInsightsSampler(options.samplingPercentage);
   const userContext = createUserContext(options.userContext?.enabled === true);
   // The handle flushes owned processors on page hide; avoid a second per-processor hide flush.

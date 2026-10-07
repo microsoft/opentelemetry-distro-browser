@@ -1,8 +1,15 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-import type { Attributes, Context } from "@opentelemetry/api";
-import { SamplingDecision, type Sampler, type SamplingResult } from "@opentelemetry/sdk-trace-base";
+import { trace, type Attributes, type Context } from "@opentelemetry/api";
+import {
+  AlwaysOnSampler,
+  ParentBasedSampler,
+  SamplingDecision,
+  type Sampler,
+  type SamplingResult,
+} from "@opentelemetry/sdk-trace-base";
+import { syntheticPageContexts } from "./shared/pageOperationContext.js";
 
 export const AZURE_MONITOR_SAMPLE_RATE = "microsoft.sample_rate";
 
@@ -45,6 +52,27 @@ export function shouldSetSampleRate(
     currentSampleRate !== samplingPercentage &&
     (samplingPercentage < 100 || currentSampleRate !== undefined)
   );
+}
+
+/** Applies SDK-default sampling without inheriting another provider's synthetic page decision. */
+export class PageOperationSampler implements Sampler {
+  private readonly delegate = new ParentBasedSampler({ root: new AlwaysOnSampler() });
+
+  public shouldSample(
+    parentContext: Context,
+    ...parameters: Parameters<Sampler["shouldSample"]> extends [Context, ...infer Rest]
+      ? Rest
+      : never
+  ): SamplingResult {
+    const parent = trace.getSpanContext(parentContext);
+    const samplingContext =
+      parent && syntheticPageContexts.has(parent) ? trace.deleteSpan(parentContext) : parentContext;
+    return this.delegate.shouldSample(samplingContext, ...parameters);
+  }
+
+  public toString(): string {
+    return `PageOperationSampler{${this.delegate.toString()}}`;
+  }
 }
 
 export class ApplicationInsightsSampler implements Sampler {

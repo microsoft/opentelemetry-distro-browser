@@ -29,7 +29,7 @@ import { isUnloading } from "../../../src/exporter/common.js";
 import { noopLoggerProvider, noopTracerProvider } from "../../../src/routing/instanceRouter.js";
 import { startTelemetryInstance } from "../../../src/routing/telemetryInstance.js";
 import { createInMemoryPipeline } from "../../fixtures/telemetry.js";
-import { ApplicationInsightsSampler } from "../../../src/sampling.js";
+import { ApplicationInsightsSampler, PageOperationSampler } from "../../../src/sampling.js";
 import { AzureMonitorSamplingLogRecordProcessor } from "../../../src/samplingLogRecordProcessor.js";
 
 vi.mock("../../../src/routing/telemetryInstance.js", { spy: true });
@@ -86,7 +86,7 @@ it("prepends session enrichment without changing the caller's processor arrays",
       "telemetry.distro.name": "@microsoft/opentelemetry-browser",
       "telemetry.distro.version": OPENTELEMETRY_BROWSER_VERSION,
     },
-    sampler: undefined,
+    sampler: expect.any(PageOperationSampler),
     spanProcessors: [
       expect.objectContaining({ onStart: expect.any(Function) }),
       pipeline.spanProcessor,
@@ -231,7 +231,7 @@ it.each(["both", "context manager", "propagators", "no propagators"] as const)(
         "telemetry.distro.name": "@microsoft/opentelemetry-browser",
         "telemetry.distro.version": OPENTELEMETRY_BROWSER_VERSION,
       },
-      sampler: undefined,
+      sampler: expect.any(PageOperationSampler),
       spanProcessors: [
         expect.objectContaining({ onStart: expect.any(Function) }),
         pipeline.spanProcessor,

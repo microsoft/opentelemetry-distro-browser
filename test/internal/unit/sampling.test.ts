@@ -2,20 +2,51 @@
 // Licensed under the MIT License.
 
 import { ROOT_CONTEXT, SpanKind, TraceFlags, trace } from "@opentelemetry/api";
-import { SamplingDecision } from "@opentelemetry/sdk-trace-base";
+import { SamplingDecision, type Sampler } from "@opentelemetry/sdk-trace-base";
 import { describe, expect, it } from "vitest";
 import {
   ApplicationInsightsSampler,
   AZURE_MONITOR_SAMPLE_RATE,
   getSamplingScore,
+  PageOperationSampler,
 } from "../../../src/sampling.js";
+import { syntheticPageContexts } from "../../../src/shared/pageOperationContext.js";
 
 const TRACE_ID = "4bf92f3577b34da6a3ce929d0e0e4736";
 const LOW_SCORE_TRACE_ID = "00000000000000000000000000000001";
 
-function sample(sampler: ApplicationInsightsSampler, context = ROOT_CONTEXT) {
+function sample(sampler: Sampler, context = ROOT_CONTEXT) {
   return sampler.shouldSample(context, TRACE_ID, "test", SpanKind.INTERNAL, {}, []);
 }
+
+describe("PageOperationSampler", () => {
+  it("samples a span correlated to an unsampled synthetic page operation", () => {
+    const operation = {
+      traceId: TRACE_ID,
+      spanId: "1111111111111111",
+      traceFlags: TraceFlags.NONE,
+    };
+    syntheticPageContexts.add(operation);
+    const parent = trace.setSpanContext(ROOT_CONTEXT, operation);
+
+    expect(sample(new PageOperationSampler(), parent)).toMatchObject({
+      decision: SamplingDecision.RECORD_AND_SAMPLED,
+    });
+  });
+
+  it.each([false, true])("preserves an unsampled %s application parent", (isRemote) => {
+    const parent = trace.setSpanContext(ROOT_CONTEXT, {
+      traceId: TRACE_ID,
+      spanId: "1111111111111111",
+      traceFlags: TraceFlags.NONE,
+      isRemote,
+    });
+
+    expect(sample(new PageOperationSampler(), parent)).toMatchObject({
+      decision: SamplingDecision.NOT_RECORD,
+    });
+  });
+});
 
 describe("ApplicationInsightsSampler", () => {
   it.each([-1, 101, Number.NaN, Number.POSITIVE_INFINITY])(
