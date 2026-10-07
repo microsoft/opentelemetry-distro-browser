@@ -249,8 +249,8 @@ describe("propagation", () => {
     expect(propagation.getBaggage(context.active())).toBeUndefined();
   });
 
-  it("preserves an unsampled remote trace without exporting a sampled child", async () => {
-    await start();
+  it("preserves an unsampled remote trace without exporting a child at zero percent", async () => {
+    await start({ samplingPercentage: 0 });
     const headers = { ...incomingHeaders, traceparent: `00-${TRACE_ID}-${PARENT_ID}-00` };
     const extracted = propagation.extract(ROOT_CONTEXT, headers);
     const injected: Record<string, string> = {};
