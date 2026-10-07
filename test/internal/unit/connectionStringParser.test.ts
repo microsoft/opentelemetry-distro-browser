@@ -116,13 +116,13 @@ describe("Azure Monitor connection string", () => {
     });
   });
 
-  it("discards a connection string with multiple value separators", () => {
-    expect(
-      parseConnectionString(`InstrumentationKey=${instrumentationKey};ApplicationId=app=id`),
-    ).toEqual({
-      ingestionEndpoint: "https://dc.services.visualstudio.com",
-      liveEndpoint: "https://rt.services.visualstudio.com",
-    });
+  it("preserves equals signs in field values", () => {
+    const result = parseConnectionString(
+      `InstrumentationKey=${instrumentationKey};ApplicationId=app=id`,
+    );
+
+    expect(result.instrumentationKey).toBe(instrumentationKey);
+    expect(result.applicationId).toBe("app=id");
   });
 
   it.each([
