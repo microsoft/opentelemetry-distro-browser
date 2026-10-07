@@ -424,6 +424,7 @@ export function logToEnvelope(
       tags,
       baseType,
       baseDataWithoutException,
+      sampleRate,
     );
     const maxExceptionSize =
       MAX_EXCEPTION_ENVELOPE_SIZE_IN_BYTES -

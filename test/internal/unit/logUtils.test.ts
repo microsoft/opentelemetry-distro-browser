@@ -356,6 +356,7 @@ describe("Azure Monitor log envelope mapping", () => {
         attributes: {
           "exception.message": "Large stack",
           "exception.stacktrace": stack,
+          [AZURE_MONITOR_SAMPLE_RATE]: 0.000001,
         },
       }),
       instrumentationKey,
@@ -367,6 +368,7 @@ describe("Azure Monitor log envelope mapping", () => {
     expect(new TextEncoder().encode(JSON.stringify([envelope])).byteLength).toBeLessThanOrEqual(
       MAX_BEACON_BODY_SIZE,
     );
+    expect(envelope.sampleRate).toBe(0.000001);
     expect(exception.hasFullStack).toBe(false);
     expect(exception.stack?.length).toBeLessThan(stack.length);
     expect(parsedStack[0]?.assembly).toContain("frame0");
