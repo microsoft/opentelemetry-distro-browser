@@ -99,7 +99,7 @@ describe.each(["index.js", "index.min.js"])("export instrumentation through %s",
           captured.filter((envelope) => envelope.data.baseType === "PageViewData"),
         ).toHaveLength(1);
         expect(
-          captured.filter((envelope) => envelope.data.baseType === "PageViewPerformanceData"),
+          captured.filter((envelope) => envelope.data.baseType === "PageviewPerformanceData"),
         ).toHaveLength(1);
       }
     },

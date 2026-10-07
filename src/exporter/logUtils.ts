@@ -523,10 +523,10 @@ export function logToEnvelopes(
   };
   const performanceEnvelope = createEnvelope(
     instrumentationKey,
-    "Microsoft.ApplicationInsights.PageViewPerformance",
+    "Microsoft.ApplicationInsights.PageviewPerformance",
     pageViewEnvelope.time,
     pageViewEnvelope.tags,
-    "PageViewPerformanceData",
+    "PageviewPerformanceData",
     performanceData,
   );
   return [pageViewEnvelope, performanceEnvelope];

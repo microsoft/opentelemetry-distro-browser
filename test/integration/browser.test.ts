@@ -129,10 +129,10 @@ it("sends telemetry from a browser interaction to Azure Monitor ingestion", asyn
           },
         }),
         expect.objectContaining({
-          name: "Microsoft.ApplicationInsights.PageViewPerformance",
+          name: "Microsoft.ApplicationInsights.PageviewPerformance",
           tags: expect.objectContaining({ "ai.operation.id": operationId }),
           data: {
-            baseType: "PageViewPerformanceData",
+            baseType: "PageviewPerformanceData",
             baseData: expect.objectContaining({
               name: "Checkout",
               url: `${location.origin}/checkout`,

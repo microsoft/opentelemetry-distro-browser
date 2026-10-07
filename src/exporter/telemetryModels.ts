@@ -99,7 +99,7 @@ export interface AzureMonitorEnvelope<T extends AzureMonitorBaseData = AzureMoni
       | "MessageData"
       | "ExceptionData"
       | "PageViewData"
-      | "PageViewPerformanceData"
+      | "PageviewPerformanceData"
       | "EventData";
     readonly baseData: T;
   };

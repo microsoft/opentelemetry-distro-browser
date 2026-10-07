@@ -74,7 +74,7 @@ describe("AzureMonitorLogRecordExporter", () => {
       expect(result).toEqual({ code: ExportResultCode.SUCCESS });
       expect(ingestion.requests[0].envelopes.map((envelope) => envelope.data.baseType)).toEqual([
         "PageViewData",
-        "PageViewPerformanceData",
+        "PageviewPerformanceData",
       ]);
     } finally {
       await exporter.shutdown();

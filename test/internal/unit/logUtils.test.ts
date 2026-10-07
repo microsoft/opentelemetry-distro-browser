@@ -588,14 +588,14 @@ describe("Azure Monitor log envelope mapping", () => {
 
     expect(envelopes).toHaveLength(2);
     expect(envelopes[1]).toEqual({
-      name: "Microsoft.ApplicationInsights.PageViewPerformance",
+      name: "Microsoft.ApplicationInsights.PageviewPerformance",
       time: envelopes[0]?.time,
       iKey: instrumentationKey,
       sampleRate: 100,
       tags: envelopes[0]?.tags,
       ver: 1,
       data: {
-        baseType: "PageViewPerformanceData",
+        baseType: "PageviewPerformanceData",
         baseData: {
           ver: 2,
           name: "Cart",

@@ -108,8 +108,8 @@ export function assertAzureMonitorEnvelope(value: unknown): asserts value is Azu
       assertOptionalStrings(baseData, ["url", "referredUri"]);
       if (baseData.duration !== undefined) assertDuration(baseData.duration);
       break;
-    case "PageViewPerformanceData":
-      suffix = "PageViewPerformance";
+    case "PageviewPerformanceData":
+      suffix = "PageviewPerformance";
       expect(baseData.name).toEqual(expect.any(String));
       assertOptionalStrings(baseData, ["url"]);
       for (const duration of [
