@@ -136,6 +136,7 @@ it("sends telemetry from a browser interaction to Azure Monitor ingestion", asyn
             baseData: expect.objectContaining({
               name: "Checkout",
               url: `${location.origin}/checkout`,
+              duration: "00:00:00.4252500",
               perfTotal: "00:00:00.4252500",
               networkConnect: "00:00:00.0250000",
               sentRequest: "00:00:00.1005000",

@@ -600,6 +600,7 @@ describe("Azure Monitor log envelope mapping", () => {
           ver: 2,
           name: "Cart",
           url: "https://shop.example.test/cart",
+          duration: "00:00:00.4252500",
           perfTotal: "00:00:00.4252500",
           networkConnect: "00:00:00.0250000",
           sentRequest: "00:00:00.1005000",

@@ -507,11 +507,13 @@ export function logToEnvelopes(
   const pageView = pageViewEnvelope.data.baseData as PageViewData;
   const [perfTotal, networkConnect, sentRequest, receivedResponse, domProcessing] =
     durations as number[];
+  const totalDuration = millisecondsToTimeSpan(perfTotal);
   const performanceData: PageViewPerformanceData = {
     ver: 2,
     name: pageView.name,
     url: pageView.url,
-    perfTotal: millisecondsToTimeSpan(perfTotal),
+    duration: totalDuration,
+    perfTotal: totalDuration,
     networkConnect: millisecondsToTimeSpan(networkConnect),
     sentRequest: millisecondsToTimeSpan(sentRequest),
     receivedResponse: millisecondsToTimeSpan(receivedResponse),

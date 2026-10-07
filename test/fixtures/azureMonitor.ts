@@ -113,6 +113,7 @@ export function assertAzureMonitorEnvelope(value: unknown): asserts value is Azu
       expect(baseData.name).toEqual(expect.any(String));
       assertOptionalStrings(baseData, ["url"]);
       for (const duration of [
+        "duration",
         "perfTotal",
         "networkConnect",
         "sentRequest",

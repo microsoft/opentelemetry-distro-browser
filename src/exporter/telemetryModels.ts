@@ -64,6 +64,7 @@ export interface PageViewData extends EnvelopeData {
 export interface PageViewPerformanceData extends EnvelopeData {
   readonly name: string;
   readonly url?: string;
+  readonly duration: string;
   readonly perfTotal: string;
   readonly networkConnect: string;
   readonly sentRequest: string;
