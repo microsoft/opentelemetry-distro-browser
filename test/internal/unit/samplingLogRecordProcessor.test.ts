@@ -118,12 +118,31 @@ describe("AzureMonitorSamplingLogRecordProcessor", () => {
     expect(rejected.attributes[AZURE_MONITOR_SAMPLE_RATE]).toBeUndefined();
   });
 
-  it("preserves producer-provided sampling metadata", async () => {
+  it.each([
+    [25, 50, 25],
+    [50, "invalid", 50],
+    [50, Number.NaN, 50],
+    [50, -1, 50],
+    [50, 0, 50],
+    [50, 101, 50],
+    [100, 20, 100],
+  ])(
+    "reconciles configured percentage %s with producer sample rate %s",
+    async (samplingPercentage, producerSampleRate, expectedSampleRate) => {
+      const accepted = makeRecord(sampledContext);
+      accepted.setAttribute(AZURE_MONITOR_SAMPLE_RATE, producerSampleRate);
+
+      expect(await exportRecords(samplingPercentage, [accepted])).toEqual([accepted]);
+      expect(accepted.attributes[AZURE_MONITOR_SAMPLE_RATE]).toBe(expectedSampleRate);
+    },
+  );
+
+  it("preserves matching producer sampling metadata", async () => {
     const accepted = makeRecord(sampledContext);
-    accepted.setAttribute(AZURE_MONITOR_SAMPLE_RATE, 20);
+    accepted.setAttribute(AZURE_MONITOR_SAMPLE_RATE, 50);
 
     expect(await exportRecords(50, [accepted])).toEqual([accepted]);
-    expect(accepted.attributes[AZURE_MONITOR_SAMPLE_RATE]).toBe(20);
+    expect(accepted.attributes[AZURE_MONITOR_SAMPLE_RATE]).toBe(50);
   });
 
   it("handles uncorrelated zero and full sampling boundaries", async () => {

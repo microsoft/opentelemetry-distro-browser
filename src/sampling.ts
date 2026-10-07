@@ -37,6 +37,16 @@ export function isTraceSampled(traceId: string, samplingPercentage: number): boo
   return getSamplingScore(traceId) < samplingPercentage;
 }
 
+export function shouldSetSampleRate(
+  currentSampleRate: unknown,
+  samplingPercentage: number,
+): boolean {
+  return (
+    currentSampleRate !== samplingPercentage &&
+    (samplingPercentage < 100 || currentSampleRate !== undefined)
+  );
+}
+
 export class ApplicationInsightsSampler implements Sampler {
   public readonly samplingPercentage: number;
 
@@ -53,14 +63,12 @@ export class ApplicationInsightsSampler implements Sampler {
     _links: Parameters<Sampler["shouldSample"]>[5],
   ): SamplingResult {
     const sampled = isTraceSampled(traceId, this.samplingPercentage);
-    const shouldAddSampleRate =
-      sampled &&
-      this.samplingPercentage > 0 &&
-      this.samplingPercentage < 100 &&
-      attributes[AZURE_MONITOR_SAMPLE_RATE] === undefined;
+    const currentSampleRate = attributes[AZURE_MONITOR_SAMPLE_RATE];
+    const setSampleRate =
+      sampled && shouldSetSampleRate(currentSampleRate, this.samplingPercentage);
     return {
       decision: sampled ? SamplingDecision.RECORD_AND_SAMPLED : SamplingDecision.NOT_RECORD,
-      attributes: shouldAddSampleRate
+      attributes: setSampleRate
         ? { ...attributes, [AZURE_MONITOR_SAMPLE_RATE]: this.samplingPercentage }
         : attributes,
     };

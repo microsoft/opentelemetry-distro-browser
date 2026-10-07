@@ -11,6 +11,7 @@ import {
 } from "../../../src/sampling.js";
 
 const TRACE_ID = "4bf92f3577b34da6a3ce929d0e0e4736";
+const LOW_SCORE_TRACE_ID = "00000000000000000000000000000001";
 
 function sample(sampler: ApplicationInsightsSampler, context = ROOT_CONTEXT) {
   return sampler.shouldSample(context, TRACE_ID, "test", SpanKind.INTERNAL, {}, []);
@@ -108,8 +109,35 @@ describe("ApplicationInsightsSampler", () => {
     });
   });
 
-  it("preserves producer-provided sampling metadata", () => {
-    const attributes = { [AZURE_MONITOR_SAMPLE_RATE]: 20 };
+  it.each([
+    [25, 50, 25],
+    [50, "invalid", 50],
+    [50, Number.NaN, 50],
+    [50, -1, 50],
+    [50, 0, 50],
+    [50, 101, 50],
+    [100, 20, 100],
+  ])(
+    "reconciles configured percentage %s with producer sample rate %s",
+    (samplingPercentage, producerSampleRate, expectedSampleRate) => {
+      const attributes = { [AZURE_MONITOR_SAMPLE_RATE]: producerSampleRate };
+      const result = new ApplicationInsightsSampler(samplingPercentage).shouldSample(
+        ROOT_CONTEXT,
+        LOW_SCORE_TRACE_ID,
+        "test",
+        SpanKind.INTERNAL,
+        attributes,
+        [],
+      );
+
+      expect(attributes).toEqual({ [AZURE_MONITOR_SAMPLE_RATE]: producerSampleRate });
+      expect(result.attributes).not.toBe(attributes);
+      expect(result.attributes?.[AZURE_MONITOR_SAMPLE_RATE]).toBe(expectedSampleRate);
+    },
+  );
+
+  it("preserves matching producer sampling metadata", () => {
+    const attributes = { [AZURE_MONITOR_SAMPLE_RATE]: 50 };
     const result = new ApplicationInsightsSampler(50).shouldSample(
       ROOT_CONTEXT,
       TRACE_ID,
@@ -120,6 +148,5 @@ describe("ApplicationInsightsSampler", () => {
     );
 
     expect(result.attributes).toBe(attributes);
-    expect(result.attributes).toEqual(attributes);
   });
 });
