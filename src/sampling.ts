@@ -48,10 +48,7 @@ export function shouldSetSampleRate(
   currentSampleRate: unknown,
   samplingPercentage: number,
 ): boolean {
-  return (
-    currentSampleRate !== samplingPercentage &&
-    (samplingPercentage < 100 || currentSampleRate !== undefined)
-  );
+  return samplingPercentage !== 100 && currentSampleRate !== samplingPercentage;
 }
 
 /** Applies SDK-default sampling without inheriting another provider's synthetic page decision. */

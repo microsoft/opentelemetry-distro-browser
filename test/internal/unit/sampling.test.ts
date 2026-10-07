@@ -147,7 +147,6 @@ describe("ApplicationInsightsSampler", () => {
     [50, -1, 50],
     [50, 0, 50],
     [50, 101, 50],
-    [100, 20, 100],
   ])(
     "reconciles configured percentage %s with producer sample rate %s",
     (samplingPercentage, producerSampleRate, expectedSampleRate) => {
@@ -179,5 +178,20 @@ describe("ApplicationInsightsSampler", () => {
     );
 
     expect(result.attributes).toBe(attributes);
+  });
+
+  it("preserves producer sampling metadata at 100 percent", () => {
+    const attributes = { [AZURE_MONITOR_SAMPLE_RATE]: 20 };
+    const result = new ApplicationInsightsSampler(100).shouldSample(
+      ROOT_CONTEXT,
+      TRACE_ID,
+      "test",
+      SpanKind.INTERNAL,
+      attributes,
+      [],
+    );
+
+    expect(result.attributes).toBe(attributes);
+    expect(result.attributes?.[AZURE_MONITOR_SAMPLE_RATE]).toBe(20);
   });
 });
