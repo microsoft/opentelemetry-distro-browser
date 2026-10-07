@@ -48,13 +48,12 @@ it("retains a page view, child span, and correlated log with one effective rate"
   const pageTraceId = traceIdSampledAt(25);
   const pageBytes = Uint8Array.from(pageTraceId.match(/../g)!, (byte) => Number.parseInt(byte, 16));
   const crypto = globalThis.crypto;
-  let pageIdPending = true;
+  let pageViewCreated = false;
   vi.stubGlobal("crypto", {
     ...crypto,
     getRandomValues: <T extends ArrayBufferView>(target: T): T => {
-      if (pageIdPending && target.byteLength === 16) {
+      if (!pageViewCreated && target.byteLength === 16) {
         new Uint8Array(target.buffer, target.byteOffset, target.byteLength).set(pageBytes);
-        pageIdPending = false;
         return target;
       }
       return crypto.getRandomValues(target);
@@ -75,7 +74,10 @@ it("retains a page view, child span, and correlated log with one effective rate"
     samplingPercentage: 25,
     azureMonitor: { connectionString },
     pageView: {
-      applyCustomLogRecordData: () => pageReady(),
+      applyCustomLogRecordData: () => {
+        pageViewCreated = true;
+        pageReady();
+      },
     },
   });
   await emitted;

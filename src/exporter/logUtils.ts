@@ -487,15 +487,7 @@ export function logToEnvelope(
     };
   }
 
-  return createEnvelope(
-    instrumentationKey,
-    name,
-    time,
-    tags,
-    baseType,
-    baseData,
-    sampleRate,
-  );
+  return createEnvelope(instrumentationKey, name, time, tags, baseType, baseData, sampleRate);
 }
 
 export function logToEnvelopes(

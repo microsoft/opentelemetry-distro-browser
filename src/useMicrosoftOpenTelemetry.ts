@@ -110,15 +110,17 @@ export async function useMicrosoftOpenTelemetry(
     propagators: options.traces.propagators?.slice(),
   };
   // While another instance supplies page correlation, page views adopt its operation.
+  const correlationState: { current?: PageViewCorrelation } = {};
   const owned = createOwnedInstrumentations(
     options,
-    () => getPageOperation(correlation),
+    () => getPageOperation(correlationState.current),
     sampler.samplingPercentage,
   );
   const pageView = owned[0];
   const correlation = pageView
     ? new PageViewCorrelation(() => pageView.getOperationContext())
     : undefined;
+  correlationState.current = correlation;
   // Publish the initial page operation before caller instrumentations can emit.
   const instrumentations = [...owned, ...(options.instrumentations ?? [])];
   let instance: TelemetryInstance | undefined;
