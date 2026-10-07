@@ -30,6 +30,7 @@ import { noopLoggerProvider, noopTracerProvider } from "../../../src/routing/ins
 import { startTelemetryInstance } from "../../../src/routing/telemetryInstance.js";
 import { createInMemoryPipeline } from "../../fixtures/telemetry.js";
 import { ApplicationInsightsSampler } from "../../../src/sampling.js";
+import { AzureMonitorSamplingLogRecordProcessor } from "../../../src/samplingLogRecordProcessor.js";
 
 vi.mock("../../../src/routing/telemetryInstance.js", { spy: true });
 
@@ -85,7 +86,7 @@ it("prepends session enrichment without changing the caller's processor arrays",
       "telemetry.distro.name": "@microsoft/opentelemetry-browser",
       "telemetry.distro.version": OPENTELEMETRY_BROWSER_VERSION,
     },
-    sampler: expect.any(ApplicationInsightsSampler),
+    sampler: undefined,
     spanProcessors: [
       expect.objectContaining({ onStart: expect.any(Function) }),
       pipeline.spanProcessor,
@@ -136,6 +137,9 @@ it("adds Azure Monitor batch exporters after context enrichment and before calle
     expect.objectContaining({ onEmit: expect.any(Function) }),
   );
   expect(sdkOptions.logRecordProcessors[1]).toBeInstanceOf(BatchLogRecordProcessor);
+  expect(sdkOptions.logRecordProcessors[1]).not.toBeInstanceOf(
+    AzureMonitorSamplingLogRecordProcessor,
+  );
   expect(sdkOptions.logRecordProcessors[2]).toBe(pipeline.logProcessor);
   expect(
     addDocumentListener.mock.calls.filter(([eventName]) => eventName === "visibilitychange"),
@@ -143,6 +147,25 @@ it("adds Azure Monitor batch exporters after context enrichment and before calle
 
   await handle.shutdown();
   expect(upstreamHandle.shutdown).toHaveBeenCalledOnce();
+});
+
+it("installs fixed-percentage sampling only when explicitly configured", async () => {
+  vi.mocked(startTelemetryInstance).mockResolvedValueOnce(fakeInstance());
+
+  const handle = await useMicrosoftOpenTelemetry({
+    samplingPercentage: 25,
+    azureMonitor: {
+      connectionString:
+        "InstrumentationKey=00000000-0000-0000-0000-000000000000;IngestionEndpoint=https://example.test",
+    },
+    pageView: { enabled: false },
+  });
+  handles.add(handle);
+
+  const sdkOptions = vi.mocked(startTelemetryInstance).mock.calls[0]?.[0];
+  expect(sdkOptions?.sampler).toBeInstanceOf(ApplicationInsightsSampler);
+  expect((sdkOptions?.sampler as ApplicationInsightsSampler).samplingPercentage).toBe(25);
+  expect(sdkOptions?.logRecordProcessors[1]).toBeInstanceOf(AzureMonitorSamplingLogRecordProcessor);
 });
 
 it("honors explicit per-signal disabling with Azure Monitor configured", async () => {
@@ -208,7 +231,7 @@ it.each(["both", "context manager", "propagators", "no propagators"] as const)(
         "telemetry.distro.name": "@microsoft/opentelemetry-browser",
         "telemetry.distro.version": OPENTELEMETRY_BROWSER_VERSION,
       },
-      sampler: expect.any(ApplicationInsightsSampler),
+      sampler: undefined,
       spanProcessors: [
         expect.objectContaining({ onStart: expect.any(Function) }),
         pipeline.spanProcessor,

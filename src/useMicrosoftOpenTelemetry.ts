@@ -94,7 +94,11 @@ export async function useMicrosoftOpenTelemetry(
   options: MicrosoftOpenTelemetryBrowserOptions = {},
 ): Promise<MicrosoftOpenTelemetryBrowser> {
   getSharedRegistry();
-  const sampler = new ApplicationInsightsSampler(options.samplingPercentage);
+  const samplingPercentage = options.samplingPercentage ?? 100;
+  const sampler =
+    options.samplingPercentage === undefined
+      ? undefined
+      : new ApplicationInsightsSampler(options.samplingPercentage);
   const userContext = createUserContext(options.userContext?.enabled === true);
   // The handle flushes owned processors on page hide; avoid a second per-processor hide flush.
   const batchOptions = {
@@ -114,7 +118,7 @@ export async function useMicrosoftOpenTelemetry(
   const owned = createOwnedInstrumentations(
     options,
     () => getPageOperation(correlationState.current),
-    sampler.samplingPercentage,
+    samplingPercentage,
   );
   const pageView = owned[0];
   const correlation = pageView
@@ -257,11 +261,16 @@ export async function useMicrosoftOpenTelemetry(
     }
     if (logRecordProcessors?.length !== 0 && (azureMonitor || logRecordProcessors === undefined)) {
       const logProcessor = azureMonitor
-        ? new AzureMonitorSamplingLogRecordProcessor({
-            exporter: new AzureMonitorLogRecordExporter(azureMonitor),
-            samplingPercentage: sampler.samplingPercentage,
-            ...batchOptions,
-          })
+        ? options.samplingPercentage === undefined
+          ? new BatchLogRecordProcessor({
+              exporter: new AzureMonitorLogRecordExporter(azureMonitor),
+              ...batchOptions,
+            })
+          : new AzureMonitorSamplingLogRecordProcessor({
+              exporter: new AzureMonitorLogRecordExporter(azureMonitor),
+              samplingPercentage,
+              ...batchOptions,
+            })
         : new BatchLogRecordProcessor({
             exporter: new OTLPLogExporter(),
             ...batchOptions,
