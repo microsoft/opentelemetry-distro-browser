@@ -67,27 +67,32 @@ describe("ApplicationInsightsSampler", () => {
   });
 
   it.each([
-    [TraceFlags.SAMPLED, SamplingDecision.RECORD_AND_SAMPLED],
-    [TraceFlags.NONE, SamplingDecision.NOT_RECORD],
-  ] as const)("honors a valid parent's trace flags", (traceFlags, decision) => {
-    const parent = trace.setSpanContext(ROOT_CONTEXT, {
-      traceId: "11111111111111111111111111111111",
-      spanId: "1111111111111111",
-      traceFlags,
-      isRemote: true,
-    });
-    expect(sample(new ApplicationInsightsSampler(50), parent)).toMatchObject({ decision });
-  });
+    [TraceFlags.SAMPLED, getSamplingScore(TRACE_ID), SamplingDecision.NOT_RECORD],
+    [TraceFlags.NONE, getSamplingScore(TRACE_ID) + 0.000_001, SamplingDecision.RECORD_AND_SAMPLED],
+  ] as const)(
+    "uses the trace ID score instead of parent trace flags %s",
+    (traceFlags, samplingPercentage, decision) => {
+      const parent = trace.setSpanContext(ROOT_CONTEXT, {
+        traceId: TRACE_ID,
+        spanId: "1111111111111111",
+        traceFlags,
+        isRemote: true,
+      });
+      expect(sample(new ApplicationInsightsSampler(samplingPercentage), parent)).toMatchObject({
+        decision,
+      });
+    },
+  );
 
-  it("does not assign a zero sample rate to a sampled parent decision", () => {
+  it("rejects a sampled-parent trace at zero percent", () => {
     const parent = trace.setSpanContext(ROOT_CONTEXT, {
-      traceId: "11111111111111111111111111111111",
+      traceId: TRACE_ID,
       spanId: "1111111111111111",
       traceFlags: TraceFlags.SAMPLED,
     });
 
     expect(sample(new ApplicationInsightsSampler(0), parent)).toEqual({
-      decision: SamplingDecision.RECORD_AND_SAMPLED,
+      decision: SamplingDecision.NOT_RECORD,
       attributes: {},
     });
   });

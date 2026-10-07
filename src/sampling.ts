@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-import { TraceFlags, trace, type Attributes, type Context } from "@opentelemetry/api";
+import type { Attributes, Context } from "@opentelemetry/api";
 import { SamplingDecision, type Sampler, type SamplingResult } from "@opentelemetry/sdk-trace-base";
 
 export const AZURE_MONITOR_SAMPLE_RATE = "microsoft.sample_rate";
@@ -45,18 +45,14 @@ export class ApplicationInsightsSampler implements Sampler {
   }
 
   public shouldSample(
-    parentContext: Context,
+    _parentContext: Context,
     traceId: string,
     _spanName: Parameters<Sampler["shouldSample"]>[2],
     _spanKind: Parameters<Sampler["shouldSample"]>[3],
     attributes: Attributes,
     _links: Parameters<Sampler["shouldSample"]>[5],
   ): SamplingResult {
-    const parent = trace.getSpanContext(parentContext);
-    const sampled =
-      parent && trace.isSpanContextValid(parent)
-        ? (parent.traceFlags & TraceFlags.SAMPLED) !== 0
-        : isTraceSampled(traceId, this.samplingPercentage);
+    const sampled = isTraceSampled(traceId, this.samplingPercentage);
     const shouldAddSampleRate =
       sampled &&
       this.samplingPercentage > 0 &&

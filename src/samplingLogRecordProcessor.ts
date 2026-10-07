@@ -1,13 +1,17 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-import { TraceFlags, isSpanContextValid } from "@opentelemetry/api";
+import { isSpanContextValid } from "@opentelemetry/api";
 import {
   BatchLogRecordProcessor,
   type BatchLogRecordProcessorBrowserOptions,
   type ReadWriteLogRecord,
 } from "@opentelemetry/sdk-logs";
-import { AZURE_MONITOR_SAMPLE_RATE, validateSamplingPercentage } from "./sampling.js";
+import {
+  AZURE_MONITOR_SAMPLE_RATE,
+  isTraceSampled,
+  validateSamplingPercentage,
+} from "./sampling.js";
 
 export interface AzureMonitorSamplingLogRecordProcessorOptions extends BatchLogRecordProcessorBrowserOptions {
   samplingPercentage: number;
@@ -29,7 +33,7 @@ export class AzureMonitorSamplingLogRecordProcessor extends BatchLogRecordProces
     const spanContext = record.spanContext;
     const sampled =
       spanContext && isSpanContextValid(spanContext)
-        ? (spanContext.traceFlags & TraceFlags.SAMPLED) !== 0
+        ? isTraceSampled(spanContext.traceId, this.samplingPercentage)
         : this.samplingPercentage === 100 ||
           (this.samplingPercentage !== 0 && this.random() * 100 < this.samplingPercentage);
     if (!sampled) return;

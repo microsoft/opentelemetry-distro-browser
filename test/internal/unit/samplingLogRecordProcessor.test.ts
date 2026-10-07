@@ -5,7 +5,7 @@ import { TraceFlags, type SpanContext } from "@opentelemetry/api";
 import { InMemoryLogRecordExporter, type ReadWriteLogRecord } from "@opentelemetry/sdk-logs";
 import { resourceFromAttributes } from "@opentelemetry/resources";
 import { describe, expect, it } from "vitest";
-import { AZURE_MONITOR_SAMPLE_RATE } from "../../../src/sampling.js";
+import { AZURE_MONITOR_SAMPLE_RATE, getSamplingScore } from "../../../src/sampling.js";
 import { AzureMonitorSamplingLogRecordProcessor } from "../../../src/samplingLogRecordProcessor.js";
 
 const sampledContext: SpanContext = {
@@ -99,19 +99,23 @@ describe("AzureMonitorSamplingLogRecordProcessor", () => {
     await processor.shutdown();
   });
 
-  it("follows the sampling flag for correlated records", async () => {
-    const accepted = makeRecord(sampledContext);
-    const rejected = makeRecord(unsampledContext);
+  it("uses the trace ID score instead of trace flags for correlated records", async () => {
+    const score = getSamplingScore(sampledContext.traceId);
+    const sampledFlagRejected = makeRecord(sampledContext);
+    const unsampledFlagAccepted = makeRecord(unsampledContext);
 
-    expect(await exportRecords(25, [accepted, rejected])).toEqual([accepted]);
-    expect(accepted.attributes[AZURE_MONITOR_SAMPLE_RATE]).toBe(25);
+    expect(await exportRecords(score, [sampledFlagRejected])).toEqual([]);
+    expect(await exportRecords(score + 0.000_001, [unsampledFlagAccepted])).toEqual([
+      unsampledFlagAccepted,
+    ]);
+    expect(unsampledFlagAccepted.attributes[AZURE_MONITOR_SAMPLE_RATE]).toBe(score + 0.000_001);
   });
 
-  it("does not assign a zero sample rate to a sampled correlated record", async () => {
-    const accepted = makeRecord(sampledContext);
+  it("rejects a sampled-flag correlated record at zero percent", async () => {
+    const rejected = makeRecord(sampledContext);
 
-    expect(await exportRecords(0, [accepted])).toEqual([accepted]);
-    expect(accepted.attributes[AZURE_MONITOR_SAMPLE_RATE]).toBeUndefined();
+    expect(await exportRecords(0, [rejected])).toEqual([]);
+    expect(rejected.attributes[AZURE_MONITOR_SAMPLE_RATE]).toBeUndefined();
   });
 
   it("preserves producer-provided sampling metadata", async () => {
