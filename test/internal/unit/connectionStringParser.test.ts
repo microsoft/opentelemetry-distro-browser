@@ -1,7 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-import { describe, expect, it } from "vitest";
+import { diag } from "@opentelemetry/api";
+import { describe, expect, it, vi } from "vitest";
 import {
   isValidInstrumentationKey,
   parseConnectionString,
@@ -58,15 +59,31 @@ describe("Azure Monitor connection string", () => {
     expect(result.liveEndpoint).toBe(expected.liveEndpoint);
   });
 
-  it("prefers explicit endpoints and preserves HTTP(S) protocols", () => {
+  it("prefers explicit HTTPS endpoints", () => {
     const result = parseConnectionString(
       `InstrumentationKey=${instrumentationKey};EndpointSuffix=applicationinsights.azure.us;` +
-        "IngestionEndpoint=http://custom.ingest.example/;LiveEndpoint=https://custom.live.example/",
+        "IngestionEndpoint=https://custom.ingest.example/;LiveEndpoint=https://custom.live.example/",
     );
 
-    expect(result.ingestionEndpoint).toBe("http://custom.ingest.example");
+    expect(result.ingestionEndpoint).toBe("https://custom.ingest.example");
     expect(result.liveEndpoint).toBe("https://custom.live.example");
   });
+
+  it.each(["custom.ingest.example", "localhost", "127.0.0.1", "[::1]"])(
+    "discards HTTP endpoint on host %s with a clear diagnostic",
+    (host) => {
+      const report = vi.spyOn(diag, "error").mockImplementation(() => {});
+      const result = parseConnectionString(
+        `InstrumentationKey=${instrumentationKey};IngestionEndpoint=http://${host}:4318/`,
+      );
+
+      expect(result.ingestionEndpoint).toBe("https://dc.services.visualstudio.com");
+      expect(report).toHaveBeenCalledWith(
+        "Connection string endpoint must use HTTPS. The endpoint override will be discarded.",
+      );
+      report.mockRestore();
+    },
+  );
 
   it("discards unsupported endpoint schemes and uses suffix-derived endpoints", () => {
     const result = parseConnectionString(

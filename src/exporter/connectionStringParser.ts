@@ -41,12 +41,18 @@ const connectionStringKeys = new Set<ConnectionStringKey>([
 function sanitizeEndpoint(endpoint: string): string | undefined {
   try {
     const sanitizedEndpoint = new URL(endpoint.trim());
-    if (sanitizedEndpoint.protocol !== "http:" && sanitizedEndpoint.protocol !== "https:") {
+    if (sanitizedEndpoint.protocol !== "https:") {
+      diag.error(
+        "Connection string endpoint must use HTTPS. The endpoint override will be discarded.",
+      );
       return undefined;
     }
     const value = sanitizedEndpoint.toString();
     return value.endsWith("/") ? value.slice(0, -1) : value;
   } catch {
+    if (endpoint) {
+      diag.error("Connection string endpoint is invalid. The endpoint override will be discarded.");
+    }
     return undefined;
   }
 }
