@@ -25,19 +25,6 @@ function exportLogs(
   return new Promise((resolve) => exporter.export(logs, resolve));
 }
 
-function makeLog(overrides: Partial<ReadableLogRecord> = {}): ReadableLogRecord {
-  return {
-    hrTime: [1_735_689_600, 0],
-    hrTimeObserved: [1_735_689_600, 0],
-    body: "checkout completed",
-    resource: { attributes: {} },
-    instrumentationScope: { name: "test" },
-    attributes: {},
-    droppedAttributesCount: 0,
-    ...overrides,
-  } as unknown as ReadableLogRecord;
-}
-
 describe("AzureMonitorLogRecordExporter", () => {
   it("maps and exports log records", async () => {
     const ingestion = createMockIngestionEndpoint();
