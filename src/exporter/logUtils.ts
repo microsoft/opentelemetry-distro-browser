@@ -534,6 +534,7 @@ export function logToEnvelopes(
     pageViewEnvelope.tags,
     "PageviewPerformanceData",
     performanceData,
+    pageViewEnvelope.sampleRate,
   );
   return [pageViewEnvelope, performanceEnvelope];
 }

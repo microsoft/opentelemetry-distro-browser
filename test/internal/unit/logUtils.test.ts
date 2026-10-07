@@ -605,17 +605,19 @@ describe("Azure Monitor log envelope mapping", () => {
           "browser.page_view.performance.dom_processing": 249.5,
           "url.full": "https://shop.example.test/cart",
           "browser.page_view.same_document": false,
+          [AZURE_MONITOR_SAMPLE_RATE]: 25,
         },
       }),
       instrumentationKey,
     );
 
     expect(envelopes).toHaveLength(2);
+    expect(envelopes[0]?.sampleRate).toBe(25);
     expect(envelopes[1]).toEqual({
       name: "Microsoft.ApplicationInsights.PageviewPerformance",
       time: envelopes[0]?.time,
       iKey: instrumentationKey,
-      sampleRate: 100,
+      sampleRate: 25,
       tags: envelopes[0]?.tags,
       ver: 1,
       data: {
