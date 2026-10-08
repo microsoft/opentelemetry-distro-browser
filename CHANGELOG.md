@@ -21,6 +21,8 @@ All notable changes to this package are documented in this file.
   preserving the original stack trace.
 - Add browser user context with anonymous and authenticated identities, opt-in persistence,
   sign-out controls, OpenTelemetry enrichment, and Azure Monitor `ai.user.*` mapping.
+- Redact credentials and sensitive query-string and fragment parameters from page-view URLs and
+  referrers by default, with a configurable parameter-name replacement list.
 - Add an interactive storefront sample with local span and log exporters and a built-in telemetry
   viewer.
 - Add CommonJS npm entries and self-contained UMD and IIFE browser bundles; the UMD bundles also
