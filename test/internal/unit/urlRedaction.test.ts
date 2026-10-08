@@ -80,6 +80,12 @@ describe("redactUrl", () => {
     ).toBe("https://app.example/#/callback?access_token=REDACTED&id_token=REDACTED&state=public");
   });
 
+  it("redacts OAuth parameters on both sides of a question mark in a parameter fragment", () => {
+    expect(redactUrl("https://app.example/#access_token=SECRET?state=public&id_token=ID")).toBe(
+      "https://app.example/#access_token=REDACTED?state=public&id_token=REDACTED",
+    );
+  });
+
   it("uses case-sensitive names and collapses repeated exact keys", () => {
     expect(redactUrl("https://example.test/?TOKEN=one&token=two&token=&color=blue")).toBe(
       "https://example.test/?TOKEN=one&token=REDACTED&color=blue",
