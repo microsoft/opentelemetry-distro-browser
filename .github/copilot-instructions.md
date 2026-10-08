@@ -6,9 +6,10 @@
   distribution for traces and logs with Azure Monitor exporters, browser instrumentations,
   resource detection, session and user context, page-view telemetry, and lifecycle controls.
 - The distribution supports independent telemetry instances. Each instance owns its providers,
-  processors, exporters, instrumentations, resources, context, and lifecycle state. Global routing
-  providers select an instance and return tracers and loggers bound to that instance.
-- Executable public package entry points are `.`, `./instrumentations`, and `./snippet`. Builds emit ESM and
+  processors, exporters, instrumentations, resources, identity, session, and lifecycle state. Page
+  context, propagation, and page-operation correlation are realm-wide and coordinated across
+  instances. Global routing providers select an instance and return tracers and loggers bound to it.
+- Public package entry points are `.`, `./instrumentations`, and `./snippet`. Builds emit ESM and
   CommonJS package artifacts plus self-contained UMD and IIFE browser bundles. Preserve the
   `sideEffects: false` contract and do not initialize telemetry merely by importing the package.
 - Use `microsoft/opentelemetry-distro-javascript` as a design reference for public APIs,
