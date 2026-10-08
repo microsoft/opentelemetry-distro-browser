@@ -5,7 +5,7 @@ import { context, diag, propagation, trace } from "@opentelemetry/api";
 import { logs } from "@opentelemetry/api-logs";
 import { afterEach, expect, it, vi } from "vitest";
 import type { AzureMonitorEnvelope } from "../../src/exporter/telemetryModels.js";
-import { getSamplingScore, isTraceSampled } from "../../src/sampling.js";
+import { AZURE_MONITOR_SAMPLE_RATE, getSamplingScore, isTraceSampled } from "../../src/sampling.js";
 import { useMicrosoftOpenTelemetry, type MicrosoftOpenTelemetryBrowser } from "../../src/index.js";
 import { createInMemoryPipeline } from "../fixtures/telemetry.js";
 
@@ -45,6 +45,7 @@ function traceIdSampledAt(percentage: number): string {
 }
 
 it("retains a page view, child span, and correlated log with one effective rate", async () => {
+  const pipeline = createInMemoryPipeline();
   const pageTraceId = traceIdSampledAt(25);
   const pageBytes = Uint8Array.from(pageTraceId.match(/../g)!, (byte) => Number.parseInt(byte, 16));
   const crypto = globalThis.crypto;
@@ -71,6 +72,7 @@ it("retains a page view, child span, and correlated log with one effective rate"
   });
 
   handle = await useMicrosoftOpenTelemetry({
+    ...pipeline.options,
     samplingPercentage: 25,
     azureMonitor: { connectionString },
     pageView: {
@@ -94,6 +96,11 @@ it("retains a page view, child span, and correlated log with one effective rate"
   );
   expect(pageGroup).not.toHaveLength(0);
   expect(pageGroup.every((envelope) => envelope.sampleRate === 25)).toBe(true);
+  const callerLog = pipeline.logExporter
+    .getFinishedLogRecords()
+    .find((record) => record.eventName === "page-log");
+  expect(callerLog).toBeDefined();
+  expect(callerLog?.attributes[AZURE_MONITOR_SAMPLE_RATE]).toBeUndefined();
 });
 
 it("rejects an unsampled page group only from Azure Monitor log export", async () => {

@@ -46,7 +46,16 @@ export class AzureMonitorSamplingLogRecordProcessor extends BatchLogRecordProces
       !correlated,
     );
     if (effectiveSampleRate < 100 && currentSampleRate !== effectiveSampleRate) {
-      record.setAttribute(AZURE_MONITOR_SAMPLE_RATE, effectiveSampleRate);
+      const azureRecord = Object.create(record, {
+        attributes: {
+          value: {
+            ...record.attributes,
+            [AZURE_MONITOR_SAMPLE_RATE]: effectiveSampleRate,
+          },
+        },
+      }) as ReadWriteLogRecord;
+      super.onEmit(azureRecord);
+      return;
     }
     super.onEmit(record);
   }

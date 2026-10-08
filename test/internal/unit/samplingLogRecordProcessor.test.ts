@@ -105,10 +105,9 @@ describe("AzureMonitorSamplingLogRecordProcessor", () => {
     const unsampledFlagAccepted = makeRecord(unsampledContext);
 
     expect(await exportRecords(score, [sampledFlagRejected])).toEqual([]);
-    expect(await exportRecords(score + 0.000_001, [unsampledFlagAccepted])).toEqual([
-      unsampledFlagAccepted,
-    ]);
-    expect(unsampledFlagAccepted.attributes[AZURE_MONITOR_SAMPLE_RATE]).toBe(score + 0.000_001);
+    const [exported] = await exportRecords(score + 0.000_001, [unsampledFlagAccepted]);
+    expect(exported?.attributes[AZURE_MONITOR_SAMPLE_RATE]).toBe(score + 0.000_001);
+    expect(unsampledFlagAccepted.attributes[AZURE_MONITOR_SAMPLE_RATE]).toBeUndefined();
   });
 
   it("rejects a sampled-flag correlated record at zero percent", async () => {
@@ -133,8 +132,9 @@ describe("AzureMonitorSamplingLogRecordProcessor", () => {
       const accepted = makeRecord(sampledContext);
       accepted.setAttribute(AZURE_MONITOR_SAMPLE_RATE, producerSampleRate);
 
-      expect(await exportRecords(samplingPercentage, [accepted])).toEqual([accepted]);
-      expect(accepted.attributes[AZURE_MONITOR_SAMPLE_RATE]).toBe(expectedSampleRate);
+      const [exported] = await exportRecords(samplingPercentage, [accepted]);
+      expect(exported?.attributes[AZURE_MONITOR_SAMPLE_RATE]).toBe(expectedSampleRate);
+      expect(accepted.attributes[AZURE_MONITOR_SAMPLE_RATE]).toBe(producerSampleRate);
     },
   );
 
@@ -163,16 +163,18 @@ describe("AzureMonitorSamplingLogRecordProcessor", () => {
     const accepted = makeRecord();
     const rejected = makeRecord();
 
-    expect(await exportRecords(50, [accepted], () => 0.499)).toEqual([accepted]);
+    const [exported] = await exportRecords(50, [accepted], () => 0.499);
     expect(await exportRecords(50, [rejected], () => 0.5)).toEqual([]);
-    expect(accepted.attributes[AZURE_MONITOR_SAMPLE_RATE]).toBe(50);
+    expect(exported?.attributes[AZURE_MONITOR_SAMPLE_RATE]).toBe(50);
+    expect(accepted.attributes[AZURE_MONITOR_SAMPLE_RATE]).toBeUndefined();
   });
 
   it("combines producer and local rates for independently sampled records", async () => {
     const accepted = makeRecord();
     accepted.setAttribute(AZURE_MONITOR_SAMPLE_RATE, 20);
 
-    expect(await exportRecords(50, [accepted], () => 0)).toEqual([accepted]);
-    expect(accepted.attributes[AZURE_MONITOR_SAMPLE_RATE]).toBe(10);
+    const [exported] = await exportRecords(50, [accepted], () => 0);
+    expect(exported?.attributes[AZURE_MONITOR_SAMPLE_RATE]).toBe(10);
+    expect(accepted.attributes[AZURE_MONITOR_SAMPLE_RATE]).toBe(20);
   });
 });
