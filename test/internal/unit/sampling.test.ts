@@ -10,7 +10,7 @@ import {
   getSamplingScore,
   PageOperationSampler,
 } from "../../../src/sampling.js";
-import { syntheticPageContexts } from "../../../src/shared/pageOperationContext.js";
+import { markPageContext } from "../../../src/shared/pageOperationContext.js";
 
 const TRACE_ID = "4bf92f3577b34da6a3ce929d0e0e4736";
 const LOW_SCORE_TRACE_ID = "00000000000000000000000000000001";
@@ -26,7 +26,7 @@ describe("PageOperationSampler", () => {
       spanId: "1111111111111111",
       traceFlags: TraceFlags.NONE,
     };
-    syntheticPageContexts.add(operation);
+    markPageContext(operation);
     const parent = trace.setSpanContext(ROOT_CONTEXT, operation);
 
     expect(sample(new PageOperationSampler(), parent)).toMatchObject({

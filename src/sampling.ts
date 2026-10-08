@@ -9,7 +9,7 @@ import {
   type Sampler,
   type SamplingResult,
 } from "@opentelemetry/sdk-trace-base";
-import { syntheticPageContexts } from "./shared/pageOperationContext.js";
+import { isPageContext } from "./shared/pageOperationContext.js";
 
 export const AZURE_MONITOR_SAMPLE_RATE = "microsoft.sample_rate";
 
@@ -63,7 +63,7 @@ export class PageOperationSampler implements Sampler {
   ): SamplingResult {
     const parent = trace.getSpanContext(parentContext);
     const samplingContext =
-      parent && syntheticPageContexts.has(parent) ? trace.deleteSpan(parentContext) : parentContext;
+      parent && isPageContext(parent) ? trace.deleteSpan(parentContext) : parentContext;
     return this.delegate.shouldSample(samplingContext, ...parameters);
   }
 
