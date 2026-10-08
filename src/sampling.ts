@@ -44,11 +44,21 @@ export function isTraceSampled(traceId: string, samplingPercentage: number): boo
   return getSamplingScore(traceId) < samplingPercentage;
 }
 
-export function shouldSetSampleRate(
+export function getEffectiveSampleRate(
   currentSampleRate: unknown,
   samplingPercentage: number,
-): boolean {
-  return samplingPercentage !== 100 && currentSampleRate !== samplingPercentage;
+  independentlySampled = false,
+): number {
+  const producerSampleRate =
+    typeof currentSampleRate === "number" &&
+    Number.isFinite(currentSampleRate) &&
+    currentSampleRate > 0 &&
+    currentSampleRate <= 100
+      ? currentSampleRate
+      : 100;
+  return independentlySampled
+    ? (producerSampleRate * samplingPercentage) / 100
+    : Math.min(producerSampleRate, samplingPercentage);
 }
 
 /** Applies SDK-default sampling without inheriting another provider's synthetic page decision. */
@@ -89,12 +99,13 @@ export class ApplicationInsightsSampler implements Sampler {
   ): SamplingResult {
     const sampled = isTraceSampled(traceId, this.samplingPercentage);
     const currentSampleRate = attributes[AZURE_MONITOR_SAMPLE_RATE];
+    const effectiveSampleRate = getEffectiveSampleRate(currentSampleRate, this.samplingPercentage);
     const setSampleRate =
-      sampled && shouldSetSampleRate(currentSampleRate, this.samplingPercentage);
+      sampled && effectiveSampleRate < 100 && currentSampleRate !== effectiveSampleRate;
     return {
       decision: sampled ? SamplingDecision.RECORD_AND_SAMPLED : SamplingDecision.NOT_RECORD,
       attributes: setSampleRate
-        ? { ...attributes, [AZURE_MONITOR_SAMPLE_RATE]: this.samplingPercentage }
+        ? { ...attributes, [AZURE_MONITOR_SAMPLE_RATE]: effectiveSampleRate }
         : attributes,
     };
   }

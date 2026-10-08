@@ -9,8 +9,8 @@ import {
 } from "@opentelemetry/sdk-logs";
 import {
   AZURE_MONITOR_SAMPLE_RATE,
+  getEffectiveSampleRate,
   isTraceSampled,
-  shouldSetSampleRate,
   validateSamplingPercentage,
 } from "./sampling.js";
 
@@ -32,16 +32,21 @@ export class AzureMonitorSamplingLogRecordProcessor extends BatchLogRecordProces
 
   public override onEmit(record: ReadWriteLogRecord): void {
     const spanContext = record.spanContext;
-    const sampled =
-      spanContext && isSpanContextValid(spanContext)
-        ? isTraceSampled(spanContext.traceId, this.samplingPercentage)
-        : this.samplingPercentage === 100 ||
-          (this.samplingPercentage !== 0 && this.random() * 100 < this.samplingPercentage);
+    const correlated = !!spanContext && isSpanContextValid(spanContext);
+    const sampled = correlated
+      ? isTraceSampled(spanContext.traceId, this.samplingPercentage)
+      : this.samplingPercentage === 100 ||
+        (this.samplingPercentage !== 0 && this.random() * 100 < this.samplingPercentage);
     if (!sampled) return;
 
     const currentSampleRate = record.attributes[AZURE_MONITOR_SAMPLE_RATE];
-    if (shouldSetSampleRate(currentSampleRate, this.samplingPercentage)) {
-      record.setAttribute(AZURE_MONITOR_SAMPLE_RATE, this.samplingPercentage);
+    const effectiveSampleRate = getEffectiveSampleRate(
+      currentSampleRate,
+      this.samplingPercentage,
+      !correlated,
+    );
+    if (effectiveSampleRate < 100 && currentSampleRate !== effectiveSampleRate) {
+      record.setAttribute(AZURE_MONITOR_SAMPLE_RATE, effectiveSampleRate);
     }
     super.onEmit(record);
   }

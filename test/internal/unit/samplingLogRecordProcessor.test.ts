@@ -120,6 +120,8 @@ describe("AzureMonitorSamplingLogRecordProcessor", () => {
 
   it.each([
     [25, 50, 25],
+    [50, 20, 20],
+    [50, 75, 50],
     [50, "invalid", 50],
     [50, Number.NaN, 50],
     [50, -1, 50],
@@ -164,5 +166,13 @@ describe("AzureMonitorSamplingLogRecordProcessor", () => {
     expect(await exportRecords(50, [accepted], () => 0.499)).toEqual([accepted]);
     expect(await exportRecords(50, [rejected], () => 0.5)).toEqual([]);
     expect(accepted.attributes[AZURE_MONITOR_SAMPLE_RATE]).toBe(50);
+  });
+
+  it("combines producer and local rates for independently sampled records", async () => {
+    const accepted = makeRecord();
+    accepted.setAttribute(AZURE_MONITOR_SAMPLE_RATE, 20);
+
+    expect(await exportRecords(50, [accepted], () => 0)).toEqual([accepted]);
+    expect(accepted.attributes[AZURE_MONITOR_SAMPLE_RATE]).toBe(10);
   });
 });

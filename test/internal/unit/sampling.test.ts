@@ -142,6 +142,8 @@ describe("ApplicationInsightsSampler", () => {
 
   it.each([
     [25, 50, 25],
+    [50, 20, 20],
+    [50, 75, 50],
     [50, "invalid", 50],
     [50, Number.NaN, 50],
     [50, -1, 50],
@@ -161,7 +163,11 @@ describe("ApplicationInsightsSampler", () => {
       );
 
       expect(attributes).toEqual({ [AZURE_MONITOR_SAMPLE_RATE]: producerSampleRate });
-      expect(result.attributes).not.toBe(attributes);
+      if (producerSampleRate === expectedSampleRate) {
+        expect(result.attributes).toBe(attributes);
+      } else {
+        expect(result.attributes).not.toBe(attributes);
+      }
       expect(result.attributes?.[AZURE_MONITOR_SAMPLE_RATE]).toBe(expectedSampleRate);
     },
   );
