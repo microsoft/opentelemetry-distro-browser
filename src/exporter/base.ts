@@ -6,7 +6,7 @@ import { ExportResultCode } from "@opentelemetry/core";
 import { isSamplingRejection, parseBreezeResponse } from "./breezeUtils.js";
 import { isUnloading } from "./common.js";
 import { isValidInstrumentationKey, parseConnectionString } from "./connectionStringParser.js";
-import { MAX_BATCH_SIZE_IN_BYTES, MAX_BEACON_BODY_SIZE } from "./constants.js";
+import { MAX_BATCH_SIZE_IN_BYTES, MAX_PENDING_KEEPALIVE_BODY_SIZE } from "./constants.js";
 import { Sender, type SenderResultType } from "./sender.js";
 import type { AzureMonitorBaseData, AzureMonitorEnvelope } from "./telemetryModels.js";
 
@@ -67,8 +67,8 @@ export class AzureMonitorExportClient {
     try {
       requests = createBatchRequests(
         envelopes,
-        unloading ? MAX_BEACON_BODY_SIZE : MAX_BATCH_SIZE_IN_BYTES,
-        !unloading,
+        unloading ? MAX_PENDING_KEEPALIVE_BODY_SIZE : MAX_BATCH_SIZE_IN_BYTES,
+        unloading,
       );
     } catch (error) {
       callback({
@@ -119,7 +119,7 @@ export class AzureMonitorExportClient {
 function createBatchRequests(
   envelopes: readonly AzureMonitorEnvelope[],
   maxBatchSize: number,
-  allowMultipleBatches: boolean,
+  enforceMaxBatchSize: boolean,
 ): Array<{
   body: Uint8Array<ArrayBuffer>;
   envelopes: readonly AzureMonitorEnvelope[];
@@ -147,26 +147,21 @@ function createBatchRequests(
   for (const envelope of envelopes) {
     // Normal exports treat maxBatchSize as a split threshold only. A single oversized envelope is
     // still sent on its own so ingestion can report a per-item failure; rejecting it locally would
-    // hide that diagnostic. Only unload (beacon) exports enforce a hard aggregate limit.
+    // hide that diagnostic. Unload exports fit custom fields and enforce the transport limit.
     const separatorSize = batch.length === 0 ? 0 : 1;
     const {
       envelope: fittedEnvelope,
       serialized,
       size: serializedSize,
-    } = allowMultipleBatches
-      ? serializeEnvelope(envelope, encoder)
-      : fitEnvelopeCustomFields(envelope, maxBatchSize - batchSize - separatorSize, encoder);
-    if (!allowMultipleBatches && serializedSize + 2 > maxBatchSize) {
+    } = enforceMaxBatchSize
+      ? fitEnvelopeCustomFields(envelope, maxBatchSize - 2, encoder)
+      : serializeEnvelope(envelope, encoder);
+    if (enforceMaxBatchSize && serializedSize + 2 > maxBatchSize) {
       throw new RangeError(
         `Single-envelope payload size ${serializedSize + 2}, including JSON array brackets, exceeds the ${maxBatchSize} byte limit.`,
       );
     }
     if (batch.length > 0 && batchSize + separatorSize + serializedSize > maxBatchSize) {
-      if (!allowMultipleBatches) {
-        throw new RangeError(
-          `Unload payload size ${batchSize + separatorSize + serializedSize} exceeds the ${maxBatchSize} byte aggregate limit.`,
-        );
-      }
       flush();
     }
     batch.push(fittedEnvelope);
