@@ -74,6 +74,12 @@ describe("redactUrl", () => {
     );
   });
 
+  it("redacts OAuth parameters after a hash-router path", () => {
+    expect(
+      redactUrl("https://app.example/#/callback?access_token=ACCESS&id_token=ID&state=public"),
+    ).toBe("https://app.example/#/callback?access_token=REDACTED&id_token=REDACTED&state=public");
+  });
+
   it("uses case-sensitive names and collapses repeated exact keys", () => {
     expect(redactUrl("https://example.test/?TOKEN=one&token=two&token=&color=blue")).toBe(
       "https://example.test/?TOKEN=one&token=REDACTED&color=blue",
