@@ -8,7 +8,7 @@
 - The distribution supports independent telemetry instances. Each instance owns its providers,
   processors, exporters, instrumentations, resources, context, and lifecycle state. Global routing
   providers select an instance and return tracers and loggers bound to that instance.
-- Public package entry points are `.`, `./instrumentations`, and `./snippet`. Builds emit ESM and
+- Executable public package entry points are `.`, `./instrumentations`, and `./snippet`. Builds emit ESM and
   CommonJS package artifacts plus self-contained UMD and IIFE browser bundles. Preserve the
   `sideEffects: false` contract and do not initialize telemetry merely by importing the package.
 - Use `microsoft/opentelemetry-distro-javascript` as a design reference for public APIs,
@@ -19,8 +19,9 @@
 
 - Trace and log routing must follow the same instance-selection, binding, caching, and shutdown
   rules. Treat unexplained signal-specific behavior as suspicious.
-- Never allow one instance to read or mutate another instance's pipeline, configuration, context,
-  identity, session, or lifecycle state.
+- Keep instance-owned pipelines, configuration, identity, session, and lifecycle state isolated. Page
+  context, propagation, and page-operation correlation are realm-wide; preserve their ownership and
+  handoff rules across instances.
 - Browser APIs such as `fetch`, XHR, History, event listeners, `PerformanceObserver`, and global
   error handlers are realm-wide. Review initialization and cleanup for duplicate patching,
   duplicate telemetry, cross-instance routing, and leaks after shutdown.
