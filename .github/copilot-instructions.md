@@ -9,9 +9,10 @@
   processors, exporters, instrumentations, resources, identity, session, and lifecycle state. Page
   context, propagation, and page-operation correlation are realm-wide and coordinated across
   instances. Global routing providers select an instance and return tracers and loggers bound to it.
-- Public package entry points are `.`, `./instrumentations`, and `./snippet`. Builds emit ESM and
-  CommonJS package artifacts plus self-contained UMD and IIFE browser bundles. Preserve the
-  `sideEffects: false` contract and do not initialize telemetry merely by importing the package.
+- Public package entry points are `.`, `./instrumentations`, `./snippet`, and `./package.json`. The root
+  and instrumentations entry points emit ESM and CommonJS artifacts; `./snippet` is ESM-only. Builds
+  also emit self-contained UMD and IIFE browser bundles. Preserve the `sideEffects: false` contract
+  and do not initialize telemetry merely by importing the package.
 - Use `microsoft/opentelemetry-distro-javascript` as a design reference for public APIs,
   configuration, naming, and lifecycle behavior when compatible with browser constraints. Do not
   pursue parity when it would materially increase browser bundle size or violate browser behavior.
@@ -130,7 +131,7 @@
 - Unit and integration behavior runs in Chromium, Firefox, and WebKit. Coverage is intentionally
   Chromium-only. Do not infer browser coverage from `vitest.config.ts` alone.
 - `npm run test:build` validates output inventory, package resolution, declarations, source maps,
-  minification, and tree shaking. `npm run test:integration` executes emitted ESM, UMD, AMD, and
-  IIFE artifacts in browsers.
+  minification, and tree shaking. `npm run test:integration` executes emitted ESM, UMD, and IIFE
+  artifacts in browsers, including loading the UMD bundles through AMD/RequireJS.
 - Do not claim a check passed unless it was run successfully. Distinguish assertion failures from
   environment failures such as unavailable browsers, occupied ports, or missing platform tools.
