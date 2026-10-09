@@ -172,6 +172,42 @@ describe("AzureMonitorLogRecordExporter", () => {
     }
   });
 
+  it("preserves a core exception above the keepalive limit for beacon delivery", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => new Response("", { status: 200 }));
+    vi.stubGlobal("fetch", fetch);
+    const sendBeacon = vi.spyOn(navigator, "sendBeacon").mockReturnValue(true);
+    const exporter = new AzureMonitorLogRecordExporter({ connectionString });
+    beginUnloading();
+
+    try {
+      await expect(
+        exportLogs(exporter, [
+          createReadableLogRecord({
+            eventName: "exception",
+            attributes: {
+              "exception.message": "m".repeat(32 * 1024),
+              "exception.stacktrace": "s".repeat(32 * 1024),
+            },
+          }),
+        ]),
+      ).resolves.toEqual({ code: ExportResultCode.SUCCESS });
+      expect(fetch).not.toHaveBeenCalled();
+      expect(sendBeacon).toHaveBeenCalledOnce();
+      const body = sendBeacon.mock.calls[0][1] as Blob;
+      expect(body.size).toBeGreaterThan(MAX_PENDING_KEEPALIVE_BODY_SIZE);
+      expect(body.size).toBeLessThanOrEqual(MAX_BEACON_BODY_SIZE);
+      const envelopes = JSON.parse(await body.text()) as Array<{
+        data: { baseData: ExceptionData };
+      }>;
+      const exception = envelopes[0]?.data.baseData.exceptions[0];
+      expect(exception?.message).toHaveLength(32 * 1024);
+      expect(exception?.stack?.length).toBeGreaterThan(30 * 1024);
+      expect(exception?.parsedStack).toBeUndefined();
+    } finally {
+      endUnloading();
+    }
+  });
+
   it("removes oversized custom fields before unload delivery", async () => {
     const fetch = vi.fn<typeof globalThis.fetch>(async () => {
       throw new TypeError("page unloading");
