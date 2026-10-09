@@ -4,6 +4,10 @@ All notable changes to this package are documented in this file.
 
 ## Unreleased
 
+### Added
+
+- Document CDN loader snippet setup and failure handling in the README.
+
 ### Fixed
 
 - Prevent pending page views from being lost during unload by settling them before pagehide or
