@@ -49,6 +49,7 @@ const npmArtifacts = [
 ];
 
 const npmArtifactSources = new Map();
+let inMemoryPipelineSource;
 
 function supportMatrix() {
   return packageJson.browserslist.map((entry) => {
@@ -92,6 +93,54 @@ async function createNpmArtifactBundle(artifact) {
   }
 }
 
+async function bundleInMemoryPipeline() {
+  if (inMemoryPipelineSource) return inMemoryPipelineSource;
+
+  const input = "\0in-memory-pipeline";
+  const bundle = await rollup({
+    input,
+    plugins: [
+      {
+        name: "in-memory-pipeline",
+        resolveId(id) {
+          if (id === input) return input;
+        },
+        load(id) {
+          if (id !== input) return;
+          return `
+            import { InMemoryLogRecordExporter, SimpleLogRecordProcessor } from "@opentelemetry/sdk-logs";
+            import { InMemorySpanExporter, SimpleSpanProcessor } from "@opentelemetry/sdk-trace-base";
+
+            export function create() {
+              const spanExporter = new InMemorySpanExporter();
+              const logExporter = new InMemoryLogRecordExporter();
+              return {
+                spanExporter,
+                logExporter,
+                options: {
+                  spanProcessors: [new SimpleSpanProcessor(spanExporter)],
+                  logRecordProcessors: [new SimpleLogRecordProcessor(logExporter)],
+                },
+              };
+            }
+          `;
+        },
+      },
+      nodeResolve({ browser: true }),
+      commonjs(),
+    ],
+  });
+  try {
+    const { output } = await bundle.generate({ format: "iife", name: "InMemoryPipeline" });
+    assert.equal(output.length, 1);
+    assert.equal(output[0].type, "chunk");
+    inMemoryPipelineSource = output[0].code;
+    return inMemoryPipelineSource;
+  } finally {
+    await bundle.close();
+  }
+}
+
 const requestedFamily = process.env.BROWSER_FAMILY;
 assert.ok(requestedFamily, "BROWSER_FAMILY is required");
 
@@ -109,6 +158,10 @@ test("npm package entries bundle for browsers", async () => {
       new RegExp(`(?:var|this\\.) ${artifact.globalName}`),
     );
   }
+});
+
+test("in-memory pipeline bundles for browsers", async () => {
+  assert.match(await bundleInMemoryPipeline(), /InMemoryPipeline/);
 });
 
 test(`exercises the browser artifacts in the minimum supported ${requestedFamily}`, async (context) => {
@@ -140,6 +193,7 @@ test(`exercises the browser artifacts in the minimum supported ${requestedFamily
 
   let passed = false;
   try {
+    const pipelineSource = await bundleInMemoryPipeline();
     for (const artifact of sdkArtifacts) {
       await driver.get("about:blank");
       const source = await readFile(
@@ -150,6 +204,10 @@ test(`exercises the browser artifacts in the minimum supported ${requestedFamily
         "const script = document.createElement('script'); script.textContent = arguments[0]; document.head.appendChild(script);",
         source,
       );
+      await driver.executeScript(
+        "const script = document.createElement('script'); script.textContent = arguments[0]; document.head.appendChild(script);",
+        pipelineSource,
+      );
 
       const result = await driver.executeAsyncScript(`
         const done = arguments[arguments.length - 1];
@@ -157,17 +215,27 @@ test(`exercises the browser artifacts in the minimum supported ${requestedFamily
           try {
             const bundle = window.Microsoft?.OpenTelemetry;
             if (!bundle) throw new Error("Bundle did not define Microsoft.OpenTelemetry");
+            const pipeline = InMemoryPipeline.create();
             const telemetry = await bundle.useMicrosoftOpenTelemetry({
-              spanProcessors: [],
-              logRecordProcessors: [],
+              ...pipeline.options,
               pageView: { enabled: false },
             });
+            let result;
             try {
+              bundle.trace.getTracer("browser-support").startSpan("browser-support-span").end();
+              bundle.logs.getLogger("browser-support").emit({ eventName: "browser-support-log" });
               await telemetry.forceFlush();
+              result = {
+                version: bundle.OPENTELEMETRY_BROWSER_VERSION,
+                spans: pipeline.spanExporter.getFinishedSpans().map((span) => span.name),
+                logs: pipeline.logExporter
+                  .getFinishedLogRecords()
+                  .map((record) => record.eventName),
+              };
             } finally {
               await telemetry.shutdown();
             }
-            done({ version: bundle.OPENTELEMETRY_BROWSER_VERSION });
+            done(result);
           } catch (error) {
             done({ error: error?.stack ?? String(error) });
           }
@@ -175,6 +243,8 @@ test(`exercises the browser artifacts in the minimum supported ${requestedFamily
       `);
       assert.equal(result.error, undefined, `${artifact}: ${result.error}`);
       assert.equal(result.version, packageJson.version, artifact);
+      assert.deepEqual(result.spans, ["browser-support-span"], artifact);
+      assert.deepEqual(result.logs, ["browser-support-log"], artifact);
     }
 
     for (const artifact of npmArtifacts.filter(({ globalName }) => globalName === "NpmSdk")) {
@@ -184,22 +254,36 @@ test(`exercises the browser artifacts in the minimum supported ${requestedFamily
         "const script = document.createElement('script'); script.textContent = arguments[0]; document.head.appendChild(script);",
         source,
       );
+      await driver.executeScript(
+        "const script = document.createElement('script'); script.textContent = arguments[0]; document.head.appendChild(script);",
+        pipelineSource,
+      );
 
       const result = await driver.executeAsyncScript(`
         const done = arguments[arguments.length - 1];
         (async () => {
           try {
+            const pipeline = InMemoryPipeline.create();
             const telemetry = await NpmSdk.useMicrosoftOpenTelemetry({
-              spanProcessors: [],
-              logRecordProcessors: [],
+              ...pipeline.options,
               pageView: { enabled: false },
             });
+            let result;
             try {
+              NpmSdk.trace.getTracer("browser-support").startSpan("browser-support-span").end();
+              NpmSdk.logs.getLogger("browser-support").emit({ eventName: "browser-support-log" });
               await telemetry.forceFlush();
+              result = {
+                version: NpmSdk.OPENTELEMETRY_BROWSER_VERSION,
+                spans: pipeline.spanExporter.getFinishedSpans().map((span) => span.name),
+                logs: pipeline.logExporter
+                  .getFinishedLogRecords()
+                  .map((record) => record.eventName),
+              };
             } finally {
               await telemetry.shutdown();
             }
-            done({ version: NpmSdk.OPENTELEMETRY_BROWSER_VERSION });
+            done(result);
           } catch (error) {
             done({ error: error?.stack ?? String(error) });
           }
@@ -207,6 +291,8 @@ test(`exercises the browser artifacts in the minimum supported ${requestedFamily
       `);
       assert.equal(result.error, undefined, `${artifact.name}: ${result.error}`);
       assert.equal(result.version, packageJson.version, artifact.name);
+      assert.deepEqual(result.spans, ["browser-support-span"], artifact.name);
+      assert.deepEqual(result.logs, ["browser-support-log"], artifact.name);
     }
 
     for (const artifact of instrumentationArtifacts) {
