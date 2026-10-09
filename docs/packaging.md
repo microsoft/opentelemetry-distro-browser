@@ -79,8 +79,9 @@ including alpha:
 The browser bundles contain only ES2022 syntax. `npm run test:build` parses every emitted UMD and
 IIFE file as an ES2022 script and requires a budget for every minified browser bundle. The package
 `browserslist` declares Chrome 94, Edge 94, Firefox 93, and Safari 15.4 as the minimum supported
-versions. `npm run test:browser-support` loads the built minified IIFE bundle in those exact browser
-releases through BrowserStack and exercises initialization, flushing, and shutdown. Set
+versions. `npm run test:browser-support` loads every SDK and instrumentation UMD and IIFE artifact
+in those exact browser releases through BrowserStack. It exercises SDK initialization, flushing,
+and shutdown and instrumentation selection. Set
 `BROWSER_FAMILY` to one declared family and provide `BROWSERSTACK_USERNAME` and
 `BROWSERSTACK_ACCESS_KEY`; the PR validation workflow runs one browser family per matrix job.
 

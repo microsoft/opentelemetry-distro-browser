@@ -14,6 +14,20 @@ const browserConfigurations = {
   Safari: { browserName: "Safari", os: "OS X", osVersion: "Monterey" },
 };
 
+const sdkArtifacts = [
+  "opentelemetry-browser.umd.js",
+  "opentelemetry-browser.umd.min.js",
+  "opentelemetry-browser.iife.js",
+  "opentelemetry-browser.iife.min.js",
+];
+
+const instrumentationArtifacts = [
+  "opentelemetry-browser-instrumentations.umd.js",
+  "opentelemetry-browser-instrumentations.umd.min.js",
+  "opentelemetry-browser-instrumentations.iife.js",
+  "opentelemetry-browser-instrumentations.iife.min.js",
+];
+
 function supportMatrix() {
   return packageJson.browserslist.map((entry) => {
     const match = /^(Chrome|Edge|Firefox|Safari) >= ([\d.]+)$/.exec(entry);
@@ -32,7 +46,7 @@ test("browserslist declares each supported browser family once", () => {
   );
 });
 
-test(`initializes the published bundle in the minimum supported ${requestedFamily}`, async (context) => {
+test(`exercises the browser artifacts in the minimum supported ${requestedFamily}`, async (context) => {
   const supportedBrowser = supportMatrix().find(({ family }) => family === requestedFamily);
   assert.ok(supportedBrowser, `Unknown BROWSER_FAMILY: ${requestedFamily}`);
 
@@ -61,40 +75,76 @@ test(`initializes the published bundle in the minimum supported ${requestedFamil
 
   let passed = false;
   try {
-    await driver.get("about:blank");
-    const source = await readFile(
-      new URL("../../dist/browser/opentelemetry-browser.iife.min.js", import.meta.url),
-      "utf8",
-    );
-    await driver.executeScript(
-      "const script = document.createElement('script'); script.textContent = arguments[0]; document.head.appendChild(script);",
-      source,
-    );
+    for (const artifact of sdkArtifacts) {
+      await driver.get("about:blank");
+      const source = await readFile(
+        new URL(`../../dist/browser/${artifact}`, import.meta.url),
+        "utf8",
+      );
+      await driver.executeScript(
+        "const script = document.createElement('script'); script.textContent = arguments[0]; document.head.appendChild(script);",
+        source,
+      );
 
-    const result = await driver.executeAsyncScript(`
-      const done = arguments[arguments.length - 1];
-      (async () => {
-        try {
-          const bundle = window.Microsoft?.OpenTelemetry;
-          if (!bundle) throw new Error("Bundle did not define Microsoft.OpenTelemetry");
-          const telemetry = await bundle.useMicrosoftOpenTelemetry({
-            spanProcessors: [],
-            logRecordProcessors: [],
-            pageView: { enabled: false },
-          });
+      const result = await driver.executeAsyncScript(`
+        const done = arguments[arguments.length - 1];
+        (async () => {
           try {
-            await telemetry.forceFlush();
-          } finally {
-            await telemetry.shutdown();
+            const bundle = window.Microsoft?.OpenTelemetry;
+            if (!bundle) throw new Error("Bundle did not define Microsoft.OpenTelemetry");
+            const telemetry = await bundle.useMicrosoftOpenTelemetry({
+              spanProcessors: [],
+              logRecordProcessors: [],
+              pageView: { enabled: false },
+            });
+            try {
+              await telemetry.forceFlush();
+            } finally {
+              await telemetry.shutdown();
+            }
+            done({ version: bundle.OPENTELEMETRY_BROWSER_VERSION });
+          } catch (error) {
+            done({ error: error?.stack ?? String(error) });
           }
-          done({ version: bundle.OPENTELEMETRY_BROWSER_VERSION });
-        } catch (error) {
-          done({ error: error?.stack ?? String(error) });
-        }
-      })();
-    `);
-    assert.equal(result.error, undefined, result.error);
-    assert.equal(result.version, packageJson.version);
+        })();
+      `);
+      assert.equal(result.error, undefined, `${artifact}: ${result.error}`);
+      assert.equal(result.version, packageJson.version, artifact);
+    }
+
+    for (const artifact of instrumentationArtifacts) {
+      await driver.get("about:blank");
+      const source = await readFile(
+        new URL(`../../dist/browser/${artifact}`, import.meta.url),
+        "utf8",
+      );
+      await driver.executeScript(
+        "const script = document.createElement('script'); script.textContent = arguments[0]; document.head.appendChild(script);",
+        source,
+      );
+
+      const result = await driver.executeAsyncScript(`
+        const done = arguments[arguments.length - 1];
+        (async () => {
+          try {
+            const bundle = window.Microsoft?.OpenTelemetryInstrumentations;
+            if (!bundle) {
+              throw new Error("Bundle did not define Microsoft.OpenTelemetryInstrumentations");
+            }
+            const instrumentations = await bundle.getInstrumentations({
+              fetch: { enabled: false },
+              xhr: { enabled: false },
+            });
+            done({ count: instrumentations.length });
+          } catch (error) {
+            done({ error: error?.stack ?? String(error) });
+          }
+        })();
+      `);
+      assert.equal(result.error, undefined, `${artifact}: ${result.error}`);
+      assert.equal(result.count, 0, artifact);
+    }
+
     passed = true;
   } finally {
     await driver
