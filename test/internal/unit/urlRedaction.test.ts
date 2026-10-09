@@ -86,6 +86,21 @@ describe("redactUrl", () => {
     );
   });
 
+  it.each([
+    ["https://app.example/#?access_token=SECRET", "https://app.example/#?access_token=REDACTED"],
+    ["https://app.example/#access_token=SECRET?", "https://app.example/#access_token=REDACTED?"],
+    [
+      "https://app.example/#/search/foo=bar?access_token=SECRET",
+      "https://app.example/#/search/foo=bar?access_token=REDACTED",
+    ],
+    [
+      "https://app.example/#/callback?state=public?access_token=SECRET",
+      "https://app.example/#/callback?state=public?access_token=REDACTED",
+    ],
+  ])("handles an ambiguous fragment boundary in %s", (url, expected) => {
+    expect(redactUrl(url)).toBe(expected);
+  });
+
   it("uses case-sensitive names and collapses repeated exact keys", () => {
     expect(redactUrl("https://example.test/?TOKEN=one&token=two&token=&color=blue")).toBe(
       "https://example.test/?TOKEN=one&token=REDACTED&color=blue",

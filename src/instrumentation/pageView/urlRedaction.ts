@@ -43,15 +43,19 @@ export function redactUrl(url: string, redactedQueryParams?: readonly string[]):
   if (parsed.search) parsed.search = redactParameters(parsed.searchParams, parametersToRedact);
 
   const fragment = parsed.hash.slice(1);
-  const fragmentQueryIndex = fragment.indexOf("?");
-  if (fragmentQueryIndex >= 0) {
-    const prefix = fragment.slice(0, fragmentQueryIndex);
-    const suffix = fragment.slice(fragmentQueryIndex + 1);
-    const redactedPrefix = prefix.includes("=")
-      ? redactParameters(new URLSearchParams(prefix), parametersToRedact)
+  const fragmentParts = fragment.split("?");
+  if (fragmentParts.length > 1) {
+    const [prefix, ...queryParts] = fragmentParts;
+    const prefixParameters = new URLSearchParams(prefix);
+    const redactedPrefix = parametersToRedact.some((parameter) => prefixParameters.has(parameter))
+      ? redactParameters(prefixParameters, parametersToRedact)
       : prefix;
-    parsed.hash =
-      redactedPrefix + "?" + redactParameters(new URLSearchParams(suffix), parametersToRedact);
+    parsed.hash = [
+      redactedPrefix,
+      ...queryParts.map((query) =>
+        redactParameters(new URLSearchParams(query), parametersToRedact),
+      ),
+    ].join("?");
   } else if (fragment.includes("=")) {
     parsed.hash = redactParameters(new URLSearchParams(fragment), parametersToRedact);
   }
