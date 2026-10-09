@@ -5,7 +5,10 @@ import { ExportResultCode } from "@opentelemetry/core";
 import type { ReadableLogRecord } from "@opentelemetry/sdk-logs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { beginUnloading, endUnloading } from "../../../src/exporter/common.js";
-import { MAX_BEACON_BODY_SIZE } from "../../../src/exporter/constants.js";
+import {
+  MAX_BEACON_BODY_SIZE,
+  MAX_PENDING_KEEPALIVE_BODY_SIZE,
+} from "../../../src/exporter/constants.js";
 import { AzureMonitorLogRecordExporter } from "../../../src/exporter/log.js";
 import { createMockIngestionEndpoint } from "../../fixtures/azureMonitor.js";
 import { installFakeClock } from "../../fixtures/clock.js";
@@ -217,7 +220,7 @@ describe("AzureMonitorLogRecordExporter", () => {
     }
   });
 
-  it("removes custom fields to fit the remaining unload payload budget", async () => {
+  it("removes custom fields to fit the aggregate unload limit", async () => {
     const fetch = vi.fn<typeof globalThis.fetch>(async () => {
       throw new TypeError("page unloading");
     });
@@ -233,15 +236,17 @@ describe("AzureMonitorLogRecordExporter", () => {
           createReadableLogRecord({ attributes: { payload: "b".repeat(40 * 1024) } }),
         ]),
       ).resolves.toEqual({ code: ExportResultCode.SUCCESS });
+      expect(fetch).toHaveBeenCalledOnce();
       expect(sendBeacon).toHaveBeenCalledOnce();
-      const body = sendBeacon.mock.calls[0][1] as Blob;
-      expect(body.size).toBeLessThanOrEqual(MAX_BEACON_BODY_SIZE);
+      const body = sendBeacon.mock.calls[0]?.[1] as Blob;
+      expect(body.size).toBeLessThanOrEqual(MAX_PENDING_KEEPALIVE_BODY_SIZE);
       const envelopes = JSON.parse(await body.text()) as Array<{
         data: { baseData: { properties?: Record<string, string> } };
       }>;
       expect(envelopes).toHaveLength(2);
-      expect(envelopes[0]?.data.baseData.properties?.payload).toHaveLength(40 * 1024);
-      expect(envelopes[1]?.data.baseData.properties?.payload).toBeUndefined();
+      expect(
+        envelopes.map((envelope) => envelope.data.baseData.properties?.payload?.length ?? 0).sort(),
+      ).toEqual([0, 40 * 1024]);
     } finally {
       endUnloading();
     }
