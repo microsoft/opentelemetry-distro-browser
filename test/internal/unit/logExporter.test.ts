@@ -220,7 +220,7 @@ describe("AzureMonitorLogRecordExporter", () => {
     }
   });
 
-  it("splits unload requests instead of removing fields that fit individually", async () => {
+  it("removes custom fields to fit the aggregate unload limit", async () => {
     const fetch = vi.fn<typeof globalThis.fetch>(async () => {
       throw new TypeError("page unloading");
     });
@@ -237,19 +237,16 @@ describe("AzureMonitorLogRecordExporter", () => {
         ]),
       ).resolves.toEqual({ code: ExportResultCode.SUCCESS });
       expect(fetch).toHaveBeenCalledOnce();
-      expect(sendBeacon).toHaveBeenCalledTimes(2);
-      const envelopes = await Promise.all(
-        sendBeacon.mock.calls.map(async (call) => {
-          const body = call[1] as Blob;
-          expect(body.size).toBeLessThanOrEqual(MAX_PENDING_KEEPALIVE_BODY_SIZE);
-          return JSON.parse(await body.text()) as Array<{
-            data: { baseData: { properties?: Record<string, string> } };
-          }>;
-        }),
-      );
+      expect(sendBeacon).toHaveBeenCalledOnce();
+      const body = sendBeacon.mock.calls[0]?.[1] as Blob;
+      expect(body.size).toBeLessThanOrEqual(MAX_PENDING_KEEPALIVE_BODY_SIZE);
+      const envelopes = JSON.parse(await body.text()) as Array<{
+        data: { baseData: { properties?: Record<string, string> } };
+      }>;
       expect(envelopes).toHaveLength(2);
-      expect(envelopes[0]?.[0]?.data.baseData.properties?.payload).toHaveLength(40 * 1024);
-      expect(envelopes[1]?.[0]?.data.baseData.properties?.payload).toHaveLength(40 * 1024);
+      expect(
+        envelopes.map((envelope) => envelope.data.baseData.properties?.payload?.length ?? 0).sort(),
+      ).toEqual([0, 40 * 1024]);
     } finally {
       endUnloading();
     }

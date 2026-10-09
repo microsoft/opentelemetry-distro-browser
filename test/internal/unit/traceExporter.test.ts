@@ -366,7 +366,7 @@ describe("AzureMonitorSpanExporter", () => {
     }
   });
 
-  it("splits unload telemetry into transport-sized requests", async () => {
+  it("fits unload telemetry into the aggregate keepalive limit", async () => {
     const fetch = vi.fn<typeof globalThis.fetch>(async () => new Response("", { status: 200 }));
     vi.stubGlobal("fetch", fetch);
     const sendBeacon = vi.spyOn(navigator, "sendBeacon").mockReturnValue(true);
@@ -381,27 +381,15 @@ describe("AzureMonitorSpanExporter", () => {
       await expect(exportSpans(exporter, spans)).resolves.toEqual({
         code: ExportResultCode.SUCCESS,
       });
-      expect(fetch.mock.calls.length + sendBeacon.mock.calls.length).toBe(2);
-
-      const bodies = [
-        ...fetch.mock.calls.map((call) => (call[1] as RequestInit).body as Uint8Array<ArrayBuffer>),
-        ...sendBeacon.mock.calls.map((call) => call[1] as Blob),
-      ];
-      for (const body of bodies) {
-        const size = body instanceof Uint8Array ? body.byteLength : body.size;
-        expect(size).toBeLessThanOrEqual(MAX_PENDING_KEEPALIVE_BODY_SIZE);
-      }
-
+      expect(fetch).toHaveBeenCalledOnce();
+      expect(sendBeacon).not.toHaveBeenCalled();
+      const body = (fetch.mock.calls[0]?.[1] as RequestInit).body as Uint8Array<ArrayBuffer>;
+      expect(body.byteLength).toBeLessThanOrEqual(MAX_PENDING_KEEPALIVE_BODY_SIZE);
       const deliveredNames = (
-        await Promise.all(
-          bodies.map(async (body) => {
-            const envelopes = JSON.parse(await new Response(body).text()) as Array<{
-              data: { baseData: { name: string } };
-            }>;
-            return envelopes.map((envelope) => envelope.data.baseData.name);
-          }),
-        )
-      ).flat();
+        JSON.parse(new TextDecoder().decode(body)) as Array<{
+          data: { baseData: { name: string } };
+        }>
+      ).map((envelope) => envelope.data.baseData.name);
       expect(deliveredNames).toEqual(spans.map((span) => span.name));
     } finally {
       endUnloading();
