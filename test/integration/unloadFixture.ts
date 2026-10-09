@@ -26,10 +26,6 @@ if (pageView) {
   window.requestAnimationFrame = () => 0;
   history.pushState(null, "", "#unsettled");
 }
-trace
-  .getTracer("browser-unload-test")
-  .startSpan("navigation-away", { attributes: { "test.run_id": runId } })
-  .end();
 const tracer = trace.getTracer("browser-unload-test");
 const spanCount = largeBatch ? 8 : 1;
 for (let index = 0; index < spanCount; index++) {
