@@ -255,7 +255,8 @@ CI runs the complete unit and emitted-bundle integration suites in current Playw
 Firefox, and WebKit. It also loads the built minified IIFE bundle in the minimum declared Chrome,
 Edge, Firefox, and Safari releases through BrowserStack. Real-browser acceptance tests require the
 `BROWSERSTACK_USERNAME` and `BROWSERSTACK_ACCESS_KEY` repository secrets and therefore do not run
-for pull requests from forks.
+for pull requests from forks. For a local run, also set `BROWSER_FAMILY` to one of the four names
+in the support table.
 
 The package publishes ESM and CommonJS entries through its `exports` map. Server-rendered builds can
 import the package, but browser telemetry should be initialized in client-side code.
