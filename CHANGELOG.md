@@ -23,6 +23,8 @@ All notable changes to this package are documented in this file.
 
 ### Fixed
 
+- Classify named browser log events as Azure Monitor custom events regardless of severity, while
+  preserving browser console records as trace messages with their severity.
 - Invoke Azure Monitor export callbacks only once when they throw, without reporting callback
   errors back to the same callback as export failures.
 
