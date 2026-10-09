@@ -255,8 +255,8 @@ The package targets ES2022 and supports these browser versions and newer release
 
 The `browserslist` field in `package.json` is the machine-readable source of truth. Raising the
 minimum versions is a compatibility change and must be reflected there and in this table. Internet
-Explorer, Opera, and other browsers outside this matrix are not supported. The ESM and CommonJS npm
-entries require a browser bundler; UMD and IIFE artifacts support classic script loading.
+Explorer and other browsers requiring ES5 are not supported. The ESM and CommonJS npm entries
+require a browser bundler; UMD and IIFE artifacts support classic script loading.
 
 CI runs the complete unit and emitted-bundle integration suites in current Playwright Chromium,
 Firefox, and WebKit. Chromium provides engine coverage for Chrome, Edge, and Opera; WebKit provides
