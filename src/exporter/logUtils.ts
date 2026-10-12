@@ -29,6 +29,7 @@ import {
   mapAttributes,
   millisecondsToTimeSpan,
   serializeAttribute,
+  truncateToLength,
 } from "./common.js";
 import {
   EXCEPTION_MESSAGE,
@@ -144,13 +145,13 @@ function truncateJsonStringToSize(value: string, maxSizeInBytes: number): string
   let high = value.length;
   while (low < high) {
     const middle = Math.ceil((low + high) / 2);
-    if (getUtf8Size(JSON.stringify(value.substring(0, middle))) <= maxSizeInBytes) {
+    if (getUtf8Size(JSON.stringify(truncateToLength(value, middle))) <= maxSizeInBytes) {
       low = middle;
     } else {
       high = middle - 1;
     }
   }
-  return value.substring(0, low);
+  return truncateToLength(value, low);
 }
 
 function isLikelyCodeSource(source: string): boolean {
@@ -224,9 +225,9 @@ function parseStackFrame(trimmed: string, level: number): StackFrame | undefined
 
   return {
     level,
-    method: method.substring(0, MAX_STACK_FRAME_FIELD_LENGTH),
-    assembly: trimmed.substring(0, MAX_STACK_FRAME_FIELD_LENGTH),
-    fileName: fileName.substring(0, MAX_STACK_FRAME_FIELD_LENGTH),
+    method: truncateToLength(method, MAX_STACK_FRAME_FIELD_LENGTH),
+    assembly: truncateToLength(trimmed, MAX_STACK_FRAME_FIELD_LENGTH),
+    fileName: truncateToLength(fileName, MAX_STACK_FRAME_FIELD_LENGTH),
     line,
   };
 }
@@ -335,17 +336,18 @@ export function createExceptionDetails(
 ): ExceptionData["exceptions"][number] {
   const stack = attributes[EXCEPTION_STACKTRACE];
   const serializedStack = stack === undefined ? undefined : serializeAttribute(stack);
-  const typeName = serializeAttribute(attributes[EXCEPTION_TYPE] ?? "Error").substring(
-    0,
+  const typeName = truncateToLength(
+    serializeAttribute(attributes[EXCEPTION_TYPE] ?? "Error"),
     MAX_EXCEPTION_TYPE_LENGTH,
   );
-  const schemaLimitedMessage = serializeAttribute(
-    attributes[EXCEPTION_MESSAGE] ?? body ?? "Exception",
-  ).substring(0, MAX_EXCEPTION_MESSAGE_LENGTH);
+  const schemaLimitedMessage = truncateToLength(
+    serializeAttribute(attributes[EXCEPTION_MESSAGE] ?? body ?? "Exception"),
+    MAX_EXCEPTION_MESSAGE_LENGTH,
+  );
   const schemaLimitedStack =
     serializedStack === undefined
       ? undefined
-      : serializedStack.substring(0, MAX_EXCEPTION_STACK_LENGTH);
+      : truncateToLength(serializedStack, MAX_EXCEPTION_STACK_LENGTH);
   const emptyStringSize = getUtf8Size(JSON.stringify(""));
   const exceptionWithEmptyStrings = {
     typeName,
@@ -449,7 +451,7 @@ export function logToEnvelope(
     const referrerValue =
       referrer === undefined
         ? undefined
-        : serializeAttribute(referrer).substring(0, MaxPropertyLengths.THIRTEEN_BIT);
+        : truncateToLength(serializeAttribute(referrer), MaxPropertyLengths.THIRTEEN_BIT);
     name = "Microsoft.ApplicationInsights.PageView";
     baseType = "PageViewData";
     baseData = {
@@ -478,7 +480,7 @@ export function logToEnvelope(
     baseType = "EventData";
     baseData = {
       ver: 2,
-      name: logRecord.eventName.substring(0, MaxPropertyLengths.NINE_BIT),
+      name: truncateToLength(logRecord.eventName, MaxPropertyLengths.NINE_BIT),
       ...customFields,
     };
   } else {
@@ -490,7 +492,7 @@ export function logToEnvelope(
         : serializeAttribute(logRecord.body) || DEFAULT_LOG_MESSAGE;
     baseData = {
       ver: 2,
-      message: message.substring(0, MaxPropertyLengths.FIFTEEN_BIT),
+      message: truncateToLength(message, MaxPropertyLengths.FIFTEEN_BIT),
       severityLevel,
       ...customFields,
     };

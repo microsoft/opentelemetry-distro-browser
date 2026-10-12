@@ -180,6 +180,25 @@ describe("Azure Monitor span envelope mapping", () => {
     expect(envelope.data.baseData).toMatchObject({ type: "Http" });
   });
 
+  it("does not split surrogate pairs in span and span-event names", () => {
+    const envelopes = spanToEnvelopes(
+      makeSpan({
+        name: `${"s".repeat(1_023)}\u{1f600}`,
+        events: [
+          {
+            name: `${"e".repeat(32_767)}\u{1f600}`,
+            time: [1_735_689_602, 0],
+            droppedAttributesCount: 0,
+          },
+        ],
+      }),
+      instrumentationKey,
+    );
+
+    expect(envelopes[0].data.baseData).toMatchObject({ name: "s".repeat(1_023) });
+    expect(envelopes[1].data.baseData).toMatchObject({ message: "e".repeat(32_767) });
+  });
+
   it("maps span events to envelopes parented to the span", () => {
     const envelopes = spanToEnvelopes(
       makeSpan({

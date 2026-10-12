@@ -11,6 +11,7 @@ import {
   hrTimeToMilliseconds,
   mapAttributes,
   millisecondsToTimeSpan,
+  truncateToLength,
 } from "./common.js";
 import {
   HTTP_METHOD,
@@ -86,7 +87,7 @@ export function spanToEnvelope(
     const baseData: RequestData = {
       ver: 2,
       id: spanContext.spanId.substring(0, MaxPropertyLengths.NINE_BIT),
-      name: span.name.substring(0, MaxPropertyLengths.TEN_BIT),
+      name: truncateToLength(span.name, MaxPropertyLengths.TEN_BIT),
       duration,
       success: spanSucceeded(span, statusCode),
       responseCode: String(statusCode),
@@ -123,13 +124,16 @@ export function spanToEnvelope(
   const baseData: RemoteDependencyData = {
     ver: 2,
     id: spanContext.spanId.substring(0, MaxPropertyLengths.NINE_BIT),
-    name: dependencyName.substring(0, MaxPropertyLengths.TEN_BIT),
+    name: truncateToLength(dependencyName, MaxPropertyLengths.TEN_BIT),
     duration,
     success: spanSucceeded(span, statusCode),
     resultCode: String(statusCode).substring(0, MaxPropertyLengths.TEN_BIT),
     type: dependencyType.substring(0, MaxPropertyLengths.TEN_BIT),
-    data: url === undefined ? undefined : String(url).substring(0, MaxPropertyLengths.THIRTEEN_BIT),
-    target: target === undefined ? undefined : target.substring(0, MaxPropertyLengths.TEN_BIT),
+    data:
+      url === undefined
+        ? undefined
+        : truncateToLength(String(url), MaxPropertyLengths.THIRTEEN_BIT),
+    target: target === undefined ? undefined : truncateToLength(target, MaxPropertyLengths.TEN_BIT),
     ...customFields,
   };
   return createEnvelope(
@@ -188,7 +192,7 @@ function spanEventToEnvelope(
 
   const baseData: MessageData = {
     ver: 2,
-    message: event.name.substring(0, MaxPropertyLengths.FIFTEEN_BIT),
+    message: truncateToLength(event.name, MaxPropertyLengths.FIFTEEN_BIT),
     ...customFields,
   };
   return createEnvelope(

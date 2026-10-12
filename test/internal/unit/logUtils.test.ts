@@ -7,7 +7,11 @@ import { ATTR_TELEMETRY_SDK_VERSION } from "@opentelemetry/semantic-conventions"
 import { describe, expect, it } from "vitest";
 import { MAX_BEACON_BODY_SIZE } from "../../../src/exporter/constants.js";
 import type { ExceptionData } from "../../../src/exporter/telemetryModels.js";
-import { logToEnvelope, logToEnvelopes } from "../../../src/exporter/logUtils.js";
+import {
+  createExceptionDetails,
+  logToEnvelope,
+  logToEnvelopes,
+} from "../../../src/exporter/logUtils.js";
 import { OPENTELEMETRY_BROWSER_VERSION } from "../../../src/shared/constants.js";
 import { AZURE_MONITOR_SAMPLE_RATE } from "../../../src/sampling.js";
 import { TEST_INSTRUMENTATION_KEY as instrumentationKey } from "../../fixtures/azureMonitor.js";
@@ -951,6 +955,31 @@ describe("Azure Monitor log envelope mapping", () => {
     expect((event.data.baseData as { name: string }).name).toHaveLength(512);
   });
 
+  it("does not split surrogate pairs at message and event-name limits", () => {
+    const message = logToEnvelope(
+      makeLog({ body: `${"m".repeat(32_767)}\u{1f600}` }),
+      instrumentationKey,
+    );
+    const event = logToEnvelope(
+      makeLog({ eventName: `${"e".repeat(511)}\u{1f600}` }),
+      instrumentationKey,
+    );
+
+    expect((message.data.baseData as { message: string }).message).toBe("m".repeat(32_767));
+    expect((event.data.baseData as { name: string }).name).toBe("e".repeat(511));
+  });
+
+  it("does not emit unpaired surrogates from exception byte-budget truncation", () => {
+    const encoder = new TextEncoder();
+    const decoder = new TextDecoder();
+    const attributes = { "exception.message": "\u{1f600}".repeat(100) };
+
+    for (let maxSize = 50; maxSize <= 256; maxSize++) {
+      const message = createExceptionDetails(attributes, undefined, maxSize).message;
+      expect(decoder.decode(encoder.encode(message))).toBe(message);
+    }
+  });
+
   it("slices custom dimension values at the Breeze UTF-8 byte limit", () => {
     const envelope = logToEnvelope(
       makeLog({ attributes: { detail: "\u20ac".repeat(3_000) } }),
@@ -958,7 +987,9 @@ describe("Azure Monitor log envelope mapping", () => {
     );
     const detail = envelope.data.baseData.properties?.detail;
 
-    expect(detail).toBe(`${"\u20ac".repeat(2_730)}\ufffd`);
+    expect(detail).toBe("\u20ac".repeat(2_730));
+    expect(detail).not.toContain("\ufffd");
+    expect(new TextEncoder().encode(detail).byteLength).toBeLessThanOrEqual(8_192);
   });
 
   it("maps other named logs to EventData regardless of body or severity", () => {

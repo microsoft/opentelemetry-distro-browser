@@ -73,6 +73,14 @@ export function serializeAttribute(value: unknown): string {
   }
 }
 
+export function truncateToLength(value: string, maxLength: number): string {
+  if (value.length <= maxLength) return value;
+  const truncated = value.substring(0, maxLength);
+  return /[\uD800-\uDBFF]$/.test(truncated)
+    ? truncated.substring(0, truncated.length - 1)
+    : truncated;
+}
+
 function getSdkVersion(): string {
   const sdkVersion = SDK_INFO[ATTR_TELEMETRY_SDK_VERSION];
   return `browser:otel${sdkVersion}:mot${OPENTELEMETRY_BROWSER_VERSION}`;
@@ -90,8 +98,10 @@ export function truncateCustomDimensions(
     const maxSize: number = MaxPropertyLengths.THIRTEEN_BIT;
     const valueBytes = textEncoder.encode(value);
     if (valueBytes.byteLength > maxSize) {
+      let end = maxSize;
+      while ((valueBytes[end] & 0xc0) === 0x80) end--;
       textDecoder ??= new TextDecoder();
-      value = textDecoder.decode(valueBytes.subarray(0, maxSize));
+      value = textDecoder.decode(valueBytes.subarray(0, end));
     }
     result[key] = value;
   }
