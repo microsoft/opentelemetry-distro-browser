@@ -9,6 +9,11 @@ All notable changes to this package are documented in this file.
 - Classify named browser log events as Azure Monitor custom events regardless of severity, while
   preserving browser console records as trace messages with their severity.
 
+### Changed
+
+- Include the browser runtime and upstream OpenTelemetry SDK version in the Azure Monitor
+  `ai.internal.sdkVersion` tag.
+
 ### Fixed
 
 - Prevent pending page views from being lost during unload by settling them before pagehide or
