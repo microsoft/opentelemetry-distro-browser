@@ -168,10 +168,12 @@ export interface MicrosoftOpenTelemetryBrowserOptions {
    * Opt-in user identity persistence.
    *
    * @remarks
-   * Spans and logs receive an anonymous `enduser.pseudo.id` unless the record or resource already
-   * has one. It is generated in memory, or
-   * restored from storage when `enabled` is `true`. Set `enabled` to `true` only when anonymous and
-   * authenticated identity may be persisted. The default implementation stores identity in
+   * Spans and logs receive a managed anonymous `enduser.pseudo.id` only while persistence is
+   * enabled and unless the record or resource already has one. It is generated in memory and
+   * restored from storage when available. Set `enabled` to `true` only when anonymous and
+   * authenticated identity may be persisted. Without persistence, applications may provide their
+   * own stable identity attributes; the distribution does not emit an ephemeral anonymous ID that
+   * would inflate user counts. The default implementation stores identity in
    * same-origin `localStorage` under one key shared by every handle in the origin, where it remains
    * across browser sessions until `userContext.setEnabled(false)` is called or the application
    * clears it. Initializing with `enabled: false` does not access storage. Any script running in
@@ -252,11 +254,12 @@ export interface MicrosoftOpenTelemetryBrowserUserContext {
    */
   clearAuthenticatedUserContext(): void;
   /**
-   * Enables or disables persistence without changing the current in-memory identity. Disabling
-   * also removes identity persisted by earlier page loads. The stored record is shared by every
-   * handle in the origin, so disabling or signing out through any handle changes that record for
-   * future page loads. Each active handle keeps its own in-memory identity, so update every active
-   * handle to change the identity it applies to telemetry.
+   * Enables or disables persistence without changing the current in-memory identity. Managed
+   * anonymous identity is applied to telemetry only while persistence is enabled. Disabling also
+   * removes identity persisted by earlier page loads. The stored record is shared by every handle
+   * in the origin, so disabling or signing out through any handle changes that record for future
+   * page loads. Each active handle keeps its own state, so update every active handle to change the
+   * identity it applies to telemetry.
    *
    * @throws Error when enabling cannot save identity, or when disabling cannot remove identity
    * this instance persisted.

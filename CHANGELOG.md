@@ -30,6 +30,8 @@ All notable changes to this package are documented in this file.
   export and cleanup failures.
 - Prevent pending page views from being lost during unload by settling them before pagehide or
   hidden-visibility flushes, including tab switches.
+- Suppress distribution-generated anonymous user IDs when identity persistence is disabled or
+  unavailable, preventing page loads and SDK instances from inflating Application Insights Users.
 
 ## 0.1.0-alpha.3 - 2026-10-09
 

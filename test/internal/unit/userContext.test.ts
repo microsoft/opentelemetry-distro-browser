@@ -67,18 +67,14 @@ async function initialize(enabled = false, resourceAttributes?: Record<string, s
   return { handle, emit };
 }
 
-it("uses one anonymous in-memory identity without accessing storage before persistence is enabled", async () => {
+it("does not apply anonymous identity or access storage before persistence is enabled", async () => {
   const access = vi.spyOn(window, "localStorage", "get");
   const { emit } = await initialize();
   const first = emit();
   const second = emit();
-  expect(first.span.attributes["enduser.pseudo.id"]).toMatch(/^[0-9a-f]{32}$/);
-  expect(first.log.attributes["enduser.pseudo.id"]).toBe(
-    first.span.attributes["enduser.pseudo.id"],
-  );
-  expect(second.span.attributes["enduser.pseudo.id"]).toBe(
-    first.span.attributes["enduser.pseudo.id"],
-  );
+  for (const record of [first.span, first.log, second.span, second.log]) {
+    expect(record.attributes["enduser.pseudo.id"]).toBeUndefined();
+  }
   expect(access).not.toHaveBeenCalled();
 });
 
@@ -91,11 +87,13 @@ it("persists, restores, and removes identity when persistence is enabled or disa
     "user.id": "signed-in-user",
     "user.account.id": "tenant-42",
   });
+  expect(emitted.span.attributes["enduser.pseudo.id"]).toBeUndefined();
 
   first.handle.userContext.setEnabled(true);
+  const persisted = first.emit();
   const stored = JSON.parse(localStorage.getItem(storageKey)!);
   expect(stored).toMatchObject({
-    anonymousId: emitted.span.attributes["enduser.pseudo.id"],
+    anonymousId: persisted.span.attributes["enduser.pseudo.id"],
     authenticatedUserId: "signed-in-user",
     accountId: "tenant-42",
   });
@@ -156,7 +154,7 @@ it("removes invalid stored identity when replacement persistence fails", async (
 
   const { emit } = await initialize(true);
 
-  expect(emit().span.attributes["enduser.pseudo.id"]).toMatch(/^[0-9a-f]{32}$/);
+  expect(emit().span.attributes["enduser.pseudo.id"]).toBeUndefined();
   expect(remove).toHaveBeenCalledWith(storageKey);
   expect(localStorage.getItem(storageKey)).toBeNull();
 });
@@ -172,7 +170,7 @@ it("continues in memory when invalid stored identity cannot be replaced or remov
 
   const { emit } = await initialize(true);
 
-  expect(emit().span.attributes["enduser.pseudo.id"]).toMatch(/^[0-9a-f]{32}$/);
+  expect(emit().span.attributes["enduser.pseudo.id"]).toBeUndefined();
 });
 
 it.each([
@@ -211,18 +209,18 @@ it.each([
 ])("generates an anonymous identity with %s", async (_name, crypto) => {
   vi.stubGlobal("crypto", crypto);
 
-  const { emit } = await initialize();
+  const { emit } = await initialize(true);
 
   expect(emit().span.attributes["enduser.pseudo.id"]).toMatch(/^[0-9a-f]{32}$/);
 });
 
-it("uses in-memory identity when localStorage is unavailable", async () => {
+it("suppresses anonymous identity when localStorage is unavailable", async () => {
   const warn = vi.spyOn(diag, "warn").mockImplementation(() => {});
   vi.stubGlobal("localStorage", undefined);
 
   const { handle, emit } = await initialize(true);
 
-  expect(emit().span.attributes["enduser.pseudo.id"]).toMatch(/^[0-9a-f]{32}$/);
+  expect(emit().span.attributes["enduser.pseudo.id"]).toBeUndefined();
   expect(() => handle.userContext.setAuthenticatedUserContext("signed-in-user")).not.toThrow();
   expect(warn).toHaveBeenCalledExactlyOnceWith(
     "User storage unavailable; using in-memory identity.",

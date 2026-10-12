@@ -74,7 +74,7 @@ function toStoredUser(value: unknown): StoredUserFields | undefined {
 }
 
 export interface UserContextProvider {
-  getAnonymousUserId(): string;
+  getAnonymousUserId(): string | undefined;
   getAuthenticatedUserId(): string | undefined;
   getAccountId(): string | undefined;
 }
@@ -219,7 +219,7 @@ export function createUserContext(
   return {
     context,
     provider: {
-      getAnonymousUserId: () => anonymousId,
+      getAnonymousUserId: () => (enabled ? anonymousId : undefined),
       getAuthenticatedUserId: () => authenticatedUserId,
       getAccountId: () => accountId,
     },
