@@ -270,7 +270,7 @@ describe("Azure Monitor log envelope mapping", () => {
       name: body ?? "Other",
       duration: "00:00:00.2500000",
       referredUri: "https://example.test/products",
-      properties: undefined,
+      properties: { refUri: "https://example.test/products" },
       measurements: undefined,
     });
   });
@@ -720,7 +720,10 @@ describe("Azure Monitor log envelope mapping", () => {
           url: "https://shop.example.test/cart",
           duration: "00:00:00.4252500",
           referredUri: "https://shop.example.test/products",
-          properties: undefined,
+          properties: {
+            "browser.page_view.same_document": "true",
+            refUri: "https://shop.example.test/products",
+          },
           measurements: undefined,
         },
       });
@@ -931,6 +934,31 @@ describe("Azure Monitor log envelope mapping", () => {
         measurements: { total: 42.5 },
       },
     });
+  });
+
+  it("truncates message, event name, and property values to Breeze schema limits", () => {
+    const message = logToEnvelope(
+      makeLog({ body: "m".repeat(40_000), attributes: { detail: "p".repeat(10_000) } }),
+      instrumentationKey,
+    );
+    const event = logToEnvelope(
+      makeLog({ eventName: "e".repeat(1_000), attributes: {} }),
+      instrumentationKey,
+    );
+
+    expect((message.data.baseData as { message: string }).message).toHaveLength(32_768);
+    expect(message.data.baseData.properties?.detail).toHaveLength(8_192);
+    expect((event.data.baseData as { name: string }).name).toHaveLength(512);
+  });
+
+  it("slices custom dimension values at the Breeze UTF-8 byte limit", () => {
+    const envelope = logToEnvelope(
+      makeLog({ attributes: { detail: "\u20ac".repeat(3_000) } }),
+      instrumentationKey,
+    );
+    const detail = envelope.data.baseData.properties?.detail;
+
+    expect(detail).toBe(`${"\u20ac".repeat(2_730)}\ufffd`);
   });
 
   it("maps other named logs to EventData regardless of body or severity", () => {

@@ -15,11 +15,19 @@ import {
 import {
   HTTP_METHOD,
   HTTP_STATUS_CODE,
+  MaxPropertyLengths,
   SERVER_ADDRESS,
   SERVER_PORT,
   URL_FULL,
 } from "./constants.js";
-import type { AzureMonitorEnvelope, RemoteDependencyData, RequestData } from "./telemetryModels.js";
+import { createExceptionDetails } from "./logUtils.js";
+import type {
+  AzureMonitorEnvelope,
+  ExceptionData,
+  MessageData,
+  RemoteDependencyData,
+  RequestData,
+} from "./telemetryModels.js";
 import {
   ATTR_ENDUSER_ID,
   ATTR_ENDUSER_PSEUDO_ID,
@@ -40,6 +48,13 @@ const promotedSpanAttributes = /* @__PURE__ */ new Set([
   ATTR_USER_ID,
   AZURE_MONITOR_SAMPLE_RATE,
 ]);
+const promotedExceptionEventAttributes = /* @__PURE__ */ new Set([
+  "exception.message",
+  "exception.stacktrace",
+  "exception.type",
+  "session.id",
+]);
+const promotedEventAttributes = /* @__PURE__ */ new Set(["session.id"]);
 
 function spanSucceeded(span: ReadableSpan, statusCode: number): boolean {
   if (span.status.code !== SpanStatusCode.UNSET) {
@@ -70,8 +85,8 @@ export function spanToEnvelope(
   if (span.kind === SpanKind.SERVER || span.kind === SpanKind.CONSUMER) {
     const baseData: RequestData = {
       ver: 2,
-      id: spanContext.spanId,
-      name: span.name,
+      id: spanContext.spanId.substring(0, MaxPropertyLengths.NINE_BIT),
+      name: span.name.substring(0, MaxPropertyLengths.TEN_BIT),
       duration,
       success: spanSucceeded(span, statusCode),
       responseCode: String(statusCode),
@@ -102,16 +117,19 @@ export function spanToEnvelope(
   const target = serverAddress
     ? `${String(serverAddress)}${serverPort ? `:${String(serverPort)}` : ""}`
     : undefined;
+  let dependencyType =
+    span.kind === SpanKind.INTERNAL && span.parentSpanContext ? "InProc" : "Dependency";
+  if (method) dependencyType = "Http";
   const baseData: RemoteDependencyData = {
     ver: 2,
-    id: spanContext.spanId,
-    name: dependencyName,
+    id: spanContext.spanId.substring(0, MaxPropertyLengths.NINE_BIT),
+    name: dependencyName.substring(0, MaxPropertyLengths.TEN_BIT),
     duration,
     success: spanSucceeded(span, statusCode),
-    resultCode: String(statusCode),
-    type: method ? "Http" : "Dependency",
-    data: url === undefined ? undefined : String(url),
-    target,
+    resultCode: String(statusCode).substring(0, MaxPropertyLengths.TEN_BIT),
+    type: dependencyType.substring(0, MaxPropertyLengths.TEN_BIT),
+    data: url === undefined ? undefined : String(url).substring(0, MaxPropertyLengths.THIRTEEN_BIT),
+    target: target === undefined ? undefined : target.substring(0, MaxPropertyLengths.TEN_BIT),
     ...customFields,
   };
   return createEnvelope(
@@ -123,4 +141,73 @@ export function spanToEnvelope(
     baseData,
     sampleRate,
   );
+}
+
+function spanEventToEnvelope(
+  span: ReadableSpan,
+  event: ReadableSpan["events"][number],
+  instrumentationKey: string,
+): AzureMonitorEnvelope<MessageData | ExceptionData> {
+  const spanContext = span.spanContext();
+  const attributes = event.attributes ?? {};
+  const isException = event.name === "exception";
+  const customFields = mapAttributes(
+    attributes,
+    isException ? promotedExceptionEventAttributes : promotedEventAttributes,
+  );
+  const tags = createTags(
+    spanContext.traceId,
+    spanContext,
+    span.resource.attributes["service.name"],
+    span.attributes,
+    span.resource.attributes,
+  );
+  const eventSessionId = attributes["session.id"];
+  const sessionId =
+    typeof eventSessionId === "string" ? eventSessionId : span.attributes["session.id"];
+  if (typeof sessionId === "string") tags["ai.session.id"] = sessionId;
+  const time = hrTimeToDate(event.time);
+  const sampleRate = getSampleRate(span.attributes);
+
+  if (isException) {
+    const baseData: ExceptionData = {
+      ver: 2,
+      exceptions: [createExceptionDetails(attributes, undefined, MaxPropertyLengths.SIXTEEN_BIT)],
+      ...customFields,
+    };
+    return createEnvelope(
+      instrumentationKey,
+      "Microsoft.ApplicationInsights.Exception",
+      time,
+      tags,
+      "ExceptionData",
+      baseData,
+      sampleRate,
+    );
+  }
+
+  const baseData: MessageData = {
+    ver: 2,
+    message: event.name.substring(0, MaxPropertyLengths.FIFTEEN_BIT),
+    ...customFields,
+  };
+  return createEnvelope(
+    instrumentationKey,
+    "Microsoft.ApplicationInsights.Message",
+    time,
+    tags,
+    "MessageData",
+    baseData,
+    sampleRate,
+  );
+}
+
+export function spanToEnvelopes(
+  span: ReadableSpan,
+  instrumentationKey: string,
+): readonly AzureMonitorEnvelope[] {
+  return [
+    spanToEnvelope(span, instrumentationKey),
+    ...span.events.map((event) => spanEventToEnvelope(span, event, instrumentationKey)),
+  ];
 }

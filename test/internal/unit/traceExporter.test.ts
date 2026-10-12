@@ -43,6 +43,16 @@ function makeSpan(name = "checkout"): ReadableSpan {
   } as unknown as ReadableSpan;
 }
 
+function makePayloadAttributes(totalLength: number): Record<string, string> {
+  const attributes: Record<string, string> = {};
+  for (let remaining = totalLength, index = 0; remaining > 0; index++) {
+    const length = Math.min(8 * 1024, remaining);
+    attributes[`payload.${index}`] = "x".repeat(length);
+    remaining -= length;
+  }
+  return attributes;
+}
+
 function exportSpan(exporter: AzureMonitorSpanExporter) {
   return exportSpans(exporter, [makeSpan()]);
 }
@@ -94,6 +104,51 @@ describe("AzureMonitorSpanExporter", () => {
     }
   });
 
+  it("exports exception and ordinary span events as correlated envelopes", async () => {
+    const ingestion = createMockIngestionEndpoint();
+    vi.stubGlobal("fetch", ingestion.fetch);
+    const exporter = new AzureMonitorSpanExporter({ connectionString: ingestion.connectionString });
+    const span = {
+      ...makeSpan(),
+      events: [
+        {
+          name: "exception",
+          time: [1_735_689_601, 0],
+          attributes: { "exception.type": "Error", "exception.message": "boom" },
+          droppedAttributesCount: 0,
+        },
+        {
+          name: "checkout.step",
+          time: [1_735_689_602, 0],
+          attributes: { phase: "validate" },
+          droppedAttributesCount: 0,
+        },
+      ],
+    } as ReadableSpan;
+
+    try {
+      await expect(exportSpans(exporter, [span])).resolves.toEqual({
+        code: ExportResultCode.SUCCESS,
+      });
+      expect(ingestion.requests[0].envelopes).toHaveLength(3);
+      expect(ingestion.requests[0].envelopes.map((envelope) => envelope.data.baseType)).toEqual([
+        "RemoteDependencyData",
+        "ExceptionData",
+        "MessageData",
+      ]);
+      expect(ingestion.requests[0].envelopes.slice(1)).toEqual([
+        expect.objectContaining({
+          tags: expect.objectContaining({ "ai.operation.parentId": spanContext.spanId }),
+        }),
+        expect.objectContaining({
+          tags: expect.objectContaining({ "ai.operation.parentId": spanContext.spanId }),
+        }),
+      ]);
+    } finally {
+      await exporter.shutdown();
+    }
+  });
+
   it("falls back to HTTPS instead of exporting spans to a non-loopback HTTP endpoint", async () => {
     const fetch = vi.fn<typeof globalThis.fetch>(async () => new Response("", { status: 200 }));
     vi.stubGlobal("fetch", fetch);
@@ -117,12 +172,12 @@ describe("AzureMonitorSpanExporter", () => {
     const first = {
       ...makeSpan(),
       name: "first",
-      attributes: { payload: "x".repeat(MAX_BATCH_SIZE_IN_BYTES / 2) },
+      attributes: makePayloadAttributes(MAX_BATCH_SIZE_IN_BYTES / 2),
     } as ReadableSpan;
     const second = {
       ...makeSpan(),
       name: "second",
-      attributes: { payload: "x".repeat(MAX_BATCH_SIZE_IN_BYTES / 2) },
+      attributes: makePayloadAttributes(MAX_BATCH_SIZE_IN_BYTES / 2),
     } as ReadableSpan;
 
     await expect(exportSpans(exporter, [first, second])).resolves.toEqual({
@@ -148,7 +203,7 @@ describe("AzureMonitorSpanExporter", () => {
 
     const oversized = {
       ...makeSpan("oversized"),
-      attributes: { payload: "x".repeat(MAX_BATCH_SIZE_IN_BYTES) },
+      attributes: makePayloadAttributes(MAX_BATCH_SIZE_IN_BYTES),
     } as ReadableSpan;
     await expect(exportSpans(exporter, [oversized])).resolves.toEqual({
       code: ExportResultCode.SUCCESS,

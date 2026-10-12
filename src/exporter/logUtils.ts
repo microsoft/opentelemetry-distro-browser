@@ -34,6 +34,7 @@ import {
   EXCEPTION_MESSAGE,
   EXCEPTION_STACKTRACE,
   EXCEPTION_TYPE,
+  MaxPropertyLengths,
   MAX_BEACON_BODY_SIZE,
   NAVIGATION_DURATION,
   NAVIGATION_EVENT_NAME,
@@ -135,12 +136,6 @@ function getUtf8Size(value: string): number {
   return textEncoder.encode(value).byteLength;
 }
 
-function truncateToLength(value: string, maxLength: number): string {
-  if (value.length <= maxLength) return value;
-  const truncated = value.slice(0, maxLength);
-  return /[\uD800-\uDBFF]$/.test(truncated) ? truncated.slice(0, -1) : truncated;
-}
-
 function truncateJsonStringToSize(value: string, maxSizeInBytes: number): string | undefined {
   if (maxSizeInBytes < 2) return undefined;
   if (getUtf8Size(JSON.stringify(value)) <= maxSizeInBytes) return value;
@@ -149,13 +144,13 @@ function truncateJsonStringToSize(value: string, maxSizeInBytes: number): string
   let high = value.length;
   while (low < high) {
     const middle = Math.ceil((low + high) / 2);
-    if (getUtf8Size(JSON.stringify(truncateToLength(value, middle))) <= maxSizeInBytes) {
+    if (getUtf8Size(JSON.stringify(value.substring(0, middle))) <= maxSizeInBytes) {
       low = middle;
     } else {
       high = middle - 1;
     }
   }
-  return truncateToLength(value, low);
+  return value.substring(0, low);
 }
 
 function isLikelyCodeSource(source: string): boolean {
@@ -229,9 +224,9 @@ function parseStackFrame(trimmed: string, level: number): StackFrame | undefined
 
   return {
     level,
-    method: truncateToLength(method, MAX_STACK_FRAME_FIELD_LENGTH),
-    assembly: truncateToLength(trimmed, MAX_STACK_FRAME_FIELD_LENGTH),
-    fileName: truncateToLength(fileName, MAX_STACK_FRAME_FIELD_LENGTH),
+    method: method.substring(0, MAX_STACK_FRAME_FIELD_LENGTH),
+    assembly: trimmed.substring(0, MAX_STACK_FRAME_FIELD_LENGTH),
+    fileName: fileName.substring(0, MAX_STACK_FRAME_FIELD_LENGTH),
     line,
   };
 }
@@ -333,25 +328,24 @@ function parseStack(stack: string, maxSizeInBytes: number): readonly StackFrame[
  * allocated in priority order: type name, raw stack (up to its distro byte cap), message, and
  * finally parsed frames from whatever space is left.
  */
-function createExceptionDetails(
+export function createExceptionDetails(
   attributes: ReadableLogRecord["attributes"],
   body: ReadableLogRecord["body"],
   maxSizeInBytes: number,
 ): ExceptionData["exceptions"][number] {
   const stack = attributes[EXCEPTION_STACKTRACE];
   const serializedStack = stack === undefined ? undefined : serializeAttribute(stack);
-  const typeName = truncateToLength(
-    serializeAttribute(attributes[EXCEPTION_TYPE] ?? "Error"),
+  const typeName = serializeAttribute(attributes[EXCEPTION_TYPE] ?? "Error").substring(
+    0,
     MAX_EXCEPTION_TYPE_LENGTH,
   );
-  const schemaLimitedMessage = truncateToLength(
-    serializeAttribute(attributes[EXCEPTION_MESSAGE] ?? body ?? "Exception"),
-    MAX_EXCEPTION_MESSAGE_LENGTH,
-  );
+  const schemaLimitedMessage = serializeAttribute(
+    attributes[EXCEPTION_MESSAGE] ?? body ?? "Exception",
+  ).substring(0, MAX_EXCEPTION_MESSAGE_LENGTH);
   const schemaLimitedStack =
     serializedStack === undefined
       ? undefined
-      : truncateToLength(serializedStack, MAX_EXCEPTION_STACK_LENGTH);
+      : serializedStack.substring(0, MAX_EXCEPTION_STACK_LENGTH);
   const emptyStringSize = getUtf8Size(JSON.stringify(""));
   const exceptionWithEmptyStrings = {
     typeName,
@@ -452,6 +446,10 @@ export function logToEnvelope(
     const pageViewId =
       explicitId === undefined || explicitId === "" ? logRecord.spanContext?.traceId : explicitId;
     const referrer = logRecord.attributes[ATTR_PAGE_VIEW_REFERRER];
+    const referrerValue =
+      referrer === undefined
+        ? undefined
+        : serializeAttribute(referrer).substring(0, MaxPropertyLengths.THIRTEEN_BIT);
     name = "Microsoft.ApplicationInsights.PageView";
     baseType = "PageViewData";
     baseData = {
@@ -468,15 +466,19 @@ export function logToEnvelope(
           ? undefined
           : serializeAttribute(logRecord.attributes[URL_FULL]),
       duration: typeof duration === "number" ? millisecondsToTimeSpan(duration) : undefined,
-      ...(referrer === undefined ? {} : { referredUri: serializeAttribute(referrer) }),
+      ...(referrerValue === undefined ? {} : { referredUri: referrerValue }),
       ...customFields,
+      properties:
+        referrerValue === undefined
+          ? customFields.properties
+          : { ...customFields.properties, refUri: referrerValue },
     };
   } else if (logRecord.eventName && logRecord.eventName !== "browser.console") {
     name = "Microsoft.ApplicationInsights.Event";
     baseType = "EventData";
     baseData = {
       ver: 2,
-      name: logRecord.eventName,
+      name: logRecord.eventName.substring(0, MaxPropertyLengths.NINE_BIT),
       ...customFields,
     };
   } else {
@@ -488,7 +490,7 @@ export function logToEnvelope(
         : serializeAttribute(logRecord.body) || DEFAULT_LOG_MESSAGE;
     baseData = {
       ver: 2,
-      message,
+      message: message.substring(0, MaxPropertyLengths.FIFTEEN_BIT),
       severityLevel,
       ...customFields,
     };
