@@ -363,9 +363,9 @@ it("removes superseded identity when a new authenticated identity cannot be save
   expect(current.emit().span.attributes["user.id"]).toBe("new-user");
 
   expect(() => current.handle.userContext.clearAuthenticatedUserContext()).not.toThrow();
-  expect(JSON.parse(localStorage.getItem(storageKey)!)).toEqual({
-    anonymousId: current.emit().span.attributes["enduser.pseudo.id"],
-  });
+  expect(localStorage.getItem(storageKey)).toBeNull();
+  expect(current.emit().span.attributes["enduser.pseudo.id"]).toBeUndefined();
+  expect(current.emit().span.attributes["user.id"]).toBeUndefined();
 });
 
 it("recovers from a quota-limited write by replacing the stored identity", async () => {
@@ -391,7 +391,7 @@ it("clears a previous account when authenticated identity is set without one", a
   expect(JSON.parse(localStorage.getItem(storageKey)!)).not.toHaveProperty("accountId");
 });
 
-it("falls back to in-memory identity when anonymous persistence cannot be restored", async () => {
+it("keeps authenticated identity in memory when persistence cannot be restored", async () => {
   const current = await initialize(true);
   current.handle.userContext.setAuthenticatedUserContext("persisted-user");
   const warn = vi.spyOn(diag, "warn").mockImplementation(() => {});
@@ -404,10 +404,14 @@ it("falls back to in-memory identity when anonymous persistence cannot be restor
   );
   expect(() => current.handle.userContext.clearAuthenticatedUserContext()).not.toThrow();
   expect(localStorage.getItem(storageKey)).toBeNull();
-  expect(warn).toHaveBeenCalledWith("User identity persistence disabled; storage writes failed.");
+  expect(warn).toHaveBeenCalledExactlyOnceWith(
+    "User storage unavailable; using in-memory identity.",
+  );
   expect(() =>
     current.handle.userContext.setAuthenticatedUserContext("in-memory-user"),
   ).not.toThrow();
+  expect(current.emit().span.attributes).toMatchObject({ "user.id": "in-memory-user" });
+  expect(current.emit().span.attributes["enduser.pseudo.id"]).toBeUndefined();
 });
 
 it("reports a persistence failure when authenticated identity cannot be saved", async () => {
@@ -419,6 +423,12 @@ it("reports a persistence failure when authenticated identity cannot be saved", 
   expect(() => current.handle.userContext.setAuthenticatedUserContext("signed-in-user")).toThrow(
     "Unable to persist user identity.",
   );
+  const { span, log } = current.emit();
+  for (const record of [span, log]) {
+    expect(record.attributes["enduser.pseudo.id"]).toBeUndefined();
+    expect(record.attributes["user.id"]).toBe("signed-in-user");
+  }
+  expect(localStorage.getItem(storageKey)).toBeNull();
 });
 
 it("does not remove an absent persisted identity", async () => {

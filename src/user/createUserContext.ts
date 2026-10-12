@@ -184,7 +184,12 @@ export function createUserContext(
       }
       authenticatedUserId = userId;
       accountId = newAccountId;
-      requireIdentityPersisted(persist());
+      try {
+        requireIdentityPersisted(persist());
+      } catch (error) {
+        enabled = false;
+        throw error;
+      }
     },
     clearAuthenticatedUserContext() {
       authenticatedUserId = undefined;
