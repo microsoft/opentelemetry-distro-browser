@@ -96,7 +96,8 @@ export function truncateCustomDimensions(
     result[key] = value;
   }
 
-
+  return result;
+}
 
 export function mapAttributes(
   attributes: Attributes,
