@@ -278,6 +278,46 @@ describe("Azure Monitor span envelope mapping", () => {
     expect(envelopes[1].data.baseData.properties).toBeUndefined();
   });
 
+  it("keeps the span session ID when the span event session ID is empty", () => {
+    const envelopes = spanToEnvelopes(
+      makeSpan({
+        attributes: { "session.id": "span-session" },
+        events: [
+          {
+            name: "checkout.step",
+            time: [1_735_689_602, 0],
+            attributes: { "session.id": "" },
+            droppedAttributesCount: 0,
+          },
+        ],
+      }),
+      instrumentationKey,
+    );
+
+    expect(envelopes[1].tags["ai.session.id"]).toBe("span-session");
+    expect(envelopes[1].data.baseData.properties).toBeUndefined();
+  });
+
+  it("omits the session tag when both span event and span session IDs are empty", () => {
+    const envelopes = spanToEnvelopes(
+      makeSpan({
+        attributes: { "session.id": "" },
+        events: [
+          {
+            name: "checkout.step",
+            time: [1_735_689_602, 0],
+            attributes: { "session.id": "" },
+            droppedAttributesCount: 0,
+          },
+        ],
+      }),
+      instrumentationKey,
+    );
+
+    expect(envelopes[1].tags).not.toHaveProperty("ai.session.id");
+    expect(envelopes[1].data.baseData.properties).toBeUndefined();
+  });
+
   it.each(["user.id", "enduser.id"])(
     "maps %s to authenticated user context and promotes user tags",
     (attribute) => {

@@ -36,6 +36,7 @@ import {
   ATTR_USER_ID,
 } from "../user/constants.js";
 import { AZURE_MONITOR_SAMPLE_RATE } from "../sampling.js";
+import { selectNonEmptyString } from "../shared/isNonEmptyString.js";
 
 const promotedSpanAttributes = /* @__PURE__ */ new Set([
   HTTP_METHOD,
@@ -167,9 +168,8 @@ function spanEventToEnvelope(
     span.resource.attributes,
   );
   const eventSessionId = attributes["session.id"];
-  const sessionId =
-    typeof eventSessionId === "string" ? eventSessionId : span.attributes["session.id"];
-  if (typeof sessionId === "string") tags["ai.session.id"] = sessionId;
+  const sessionId = selectNonEmptyString(eventSessionId, span.attributes["session.id"]);
+  if (sessionId !== undefined) tags["ai.session.id"] = sessionId;
   const time = hrTimeToDate(event.time);
   const sampleRate = getSampleRate(span.attributes);
 
