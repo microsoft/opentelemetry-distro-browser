@@ -6,7 +6,11 @@ import { ExportResultCode } from "@opentelemetry/core";
 import { isSamplingRejection, parseBreezeResponse } from "./breezeUtils.js";
 import { isUnloading } from "./common.js";
 import { isValidInstrumentationKey, parseConnectionString } from "./connectionStringParser.js";
-import { MAX_BATCH_SIZE_IN_BYTES, MAX_PENDING_KEEPALIVE_BODY_SIZE } from "./constants.js";
+import {
+  MAX_BATCH_SIZE_IN_BYTES,
+  MAX_BEACON_BODY_SIZE,
+  MAX_PENDING_KEEPALIVE_BODY_SIZE,
+} from "./constants.js";
 import { Sender, type SenderResultType } from "./sender.js";
 import type { AzureMonitorBaseData, AzureMonitorEnvelope } from "./telemetryModels.js";
 
@@ -128,9 +132,9 @@ function createBatchRequests(
   if (enforceMaxBatchSize) {
     if (envelopes.length === 0) return [];
     const fitted = fitBatchCustomFields(envelopes, maxBatchSize, encoder);
-    if (fitted.size > maxBatchSize) {
+    if (fitted.size > MAX_BEACON_BODY_SIZE) {
       throw new RangeError(
-        `Unload payload size ${fitted.size} exceeds the ${maxBatchSize} byte aggregate keepalive limit.`,
+        `Unload payload size ${fitted.size} exceeds the ${MAX_BEACON_BODY_SIZE} byte aggregate beacon limit.`,
       );
     }
     return [{ body: encoder.encode(fitted.serialized), envelopes: fitted.envelopes }];
