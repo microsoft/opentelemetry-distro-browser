@@ -14,15 +14,6 @@ it.each([
 ])(
   "delivers queued logs from %s with sampling=%s during an in-flight export on first load",
   async (artifact, sampling) => {
-  { name: "a normal batch", largeBatch: false, expectedNames: ["navigation-away"] },
-  {
-    name: "a batch above the aggregate keepalive limit",
-    largeBatch: true,
-    expectedNames: Array.from({ length: 8 }, (_, index) => `navigation-away-${index}`),
-  },
-])(
-  "delivers $name after the source document navigates away",
-  async ({ largeBatch, expectedNames }) => {
     const runId = crypto.randomUUID();
     const ingestionEndpoint = `${inject("ingestionEndpoint")}${encodeURIComponent(runId)}`;
     const fixtureUrl = new URL("./unloadFixture.html", import.meta.url);
@@ -52,13 +43,21 @@ it.each([
   },
 );
 
-it("delivers queued telemetry after the source document navigates away", async () => {
-  const runId = crypto.randomUUID();
-  const ingestionEndpoint = `${inject("ingestionEndpoint")}${encodeURIComponent(runId)}`;
-  const fixtureUrl = new URL("./unloadFixture.html", import.meta.url);
-  fixtureUrl.searchParams.set("ingestionEndpoint", ingestionEndpoint);
-  fixtureUrl.searchParams.set("runId", runId);
-  const captureUrl = `${new URL(ingestionEndpoint).origin}/captured?runId=${encodeURIComponent(runId)}`;
+it.each([
+  { name: "a normal batch", largeBatch: false, expectedNames: ["navigation-away"] },
+  {
+    name: "a batch above the aggregate keepalive limit",
+    largeBatch: true,
+    expectedNames: Array.from({ length: 8 }, (_, index) => `navigation-away-${index}`),
+  },
+])(
+  "delivers $name after the source document navigates away",
+  async ({ largeBatch, expectedNames }) => {
+    const runId = crypto.randomUUID();
+    const ingestionEndpoint = `${inject("ingestionEndpoint")}${encodeURIComponent(runId)}`;
+    const fixtureUrl = new URL("./unloadFixture.html", import.meta.url);
+    fixtureUrl.searchParams.set("ingestionEndpoint", ingestionEndpoint);
+    fixtureUrl.searchParams.set("runId", runId);
     if (largeBatch) fixtureUrl.searchParams.set("largeBatch", "true");
     const captureUrl = `${new URL(ingestionEndpoint).origin}/captured?runId=${encodeURIComponent(runId)}`;
 
