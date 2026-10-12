@@ -10,17 +10,18 @@ import {
 } from "./context/contextProcessors.js";
 import { createSession } from "./session/createSession.js";
 import { createUserContext } from "./user/createUserContext.js";
-import {
-  BatchLogRecordProcessor,
-  type BatchLogRecordProcessorBrowserOptions,
-  type LogRecordProcessor,
-} from "@opentelemetry/sdk-logs";
+import type { LogRecordProcessor } from "@opentelemetry/sdk-logs";
+import { BrowserBatchLogRecordProcessor } from "./browserBatchLogRecordProcessor.js";
 import { BatchSpanProcessor, type SpanProcessor } from "@opentelemetry/sdk-trace-base";
 import { beginUnloading, endUnloading } from "./exporter/common.js";
 import { AzureMonitorLogRecordExporter } from "./exporter/log.js";
 import { AzureMonitorSpanExporter } from "./exporter/trace.js";
 import { PageViewInstrumentation } from "./instrumentation/pageView/index.js";
 import { PageViewCorrelation } from "./instrumentation/pageView/pageViewCorrelation.js";
+import {
+  claimInstrumentations,
+  isNetworkInstrumentation,
+} from "./instrumentation/sharedBrowserPatches.js";
 import {
   ATTR_TELEMETRY_DISTRO_NAME,
   ATTR_TELEMETRY_DISTRO_VERSION,
@@ -101,10 +102,6 @@ export async function useMicrosoftOpenTelemetry(
       ? new PageOperationSampler()
       : new ApplicationInsightsSampler(options.samplingPercentage);
   const userContext = createUserContext(options.userContext?.enabled === true);
-  // The handle flushes owned processors on page hide; avoid a second per-processor hide flush.
-  const batchOptions = {
-    disableAutoFlushOnDocumentHide: true,
-  } satisfies Pick<BatchLogRecordProcessorBrowserOptions, "disableAutoFlushOnDocumentHide">;
   const azureMonitor = options.azureMonitor ? { ...options.azureMonitor } : undefined;
   let spanProcessors: SpanProcessor[] | undefined = options.spanProcessors?.slice();
   let logRecordProcessors: LogRecordProcessor[] | undefined = options.logRecordProcessors?.slice();
@@ -146,6 +143,7 @@ export async function useMicrosoftOpenTelemetry(
   let flushPromise: Promise<void> | undefined;
   let unloadFlushPromise: Promise<void> | undefined;
   let removeUnloadSubscription: (() => void) | undefined;
+  let releaseInstrumentations: (() => void) | undefined;
   const flushForUnload = (): void => {
     if (stopping || unloadFlushPromise) return;
     beginUnloading();
@@ -205,12 +203,10 @@ export async function useMicrosoftOpenTelemetry(
           errors.push(error);
         }
       }
-      for (let i = instance ? instrumentations.length - 1 : -1; i >= 0; i--) {
-        try {
-          instrumentations[i].disable();
-        } catch (error) {
-          errors.push(error);
-        }
+      try {
+        releaseInstrumentations?.();
+      } catch (error) {
+        errors.push(error);
       }
       if (!initialized) {
         try {
@@ -255,7 +251,8 @@ export async function useMicrosoftOpenTelemetry(
     if (spanProcessors?.length !== 0 && (azureMonitor || spanProcessors === undefined)) {
       const spanProcessor = new BatchSpanProcessor(
         azureMonitor ? new AzureMonitorSpanExporter(azureMonitor) : new OTLPTraceExporter(),
-        batchOptions,
+        // The handle flushes on page hide; avoid a second per-processor hide flush.
+        { disableAutoFlushOnDocumentHide: true },
       );
       ownedProcessors.push(spanProcessor);
       spanProcessors = [spanProcessor, ...(spanProcessors ?? [])];
@@ -263,18 +260,15 @@ export async function useMicrosoftOpenTelemetry(
     if (logRecordProcessors?.length !== 0 && (azureMonitor || logRecordProcessors === undefined)) {
       const logProcessor = azureMonitor
         ? options.samplingPercentage === undefined
-          ? new BatchLogRecordProcessor({
+          ? new BrowserBatchLogRecordProcessor({
               exporter: new AzureMonitorLogRecordExporter(azureMonitor),
-              ...batchOptions,
             })
           : new AzureMonitorSamplingLogRecordProcessor({
               exporter: new AzureMonitorLogRecordExporter(azureMonitor),
               samplingPercentage,
-              ...batchOptions,
             })
-        : new BatchLogRecordProcessor({
+        : new BrowserBatchLogRecordProcessor({
             exporter: new OTLPLogExporter(),
-            ...batchOptions,
           });
       ownedProcessors.push(logProcessor);
       logRecordProcessors = [logProcessor, ...(logRecordProcessors ?? [])];
@@ -311,6 +305,7 @@ export async function useMicrosoftOpenTelemetry(
     // Ownership transfers on call, including failed startup.
     processorsTransferred = true;
     instance = await startTelemetryInstance(instanceOptions);
+    releaseInstrumentations = claimInstrumentations(instrumentations);
     removeUnloadSubscription = subscribeToUnload(flushForUnload);
 
     // Bind to this instance's own providers, never the global router, so collection stays in
@@ -318,6 +313,7 @@ export async function useMicrosoftOpenTelemetry(
     for (const instrumentation of instrumentations) {
       instrumentation.setTracerProvider(instance.tracerProvider);
       instrumentation.setLoggerProvider?.(instance.loggerProvider);
+      if (!spanProcessors.length && isNetworkInstrumentation(instrumentation)) continue;
       if (!instrumentation.getConfig().enabled) instrumentation.enable();
     }
     instance.commit();

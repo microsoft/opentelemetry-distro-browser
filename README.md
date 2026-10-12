@@ -101,6 +101,35 @@ await telemetry.forceFlush();
 await telemetry.shutdown();
 ```
 
+### Snippet setup
+
+If the application does not use npm or a bundler, paste this snippet as the first script in each
+page's `<head>`, replacing `CHANNEL`, `VERSION`, `YOUR_CONNECTION_STRING`, and `YOUR_INTEGRITY`:
+
+<!-- prettier-ignore -->
+```html
+<script>
+!(function(w,d,c){var s=d.createElement("script");w.microsoftOpenTelemetry=new Promise(function(resolve,reject){s.src=c.src;s.crossOrigin=c.crossOrigin;if(c.integrity)s.integrity=c.integrity;s.onload=function(){var sdk=w.Microsoft&&w.Microsoft.OpenTelemetry;if(!sdk||typeof sdk.useMicrosoftOpenTelemetry!=="function"){reject(new Error("OpenTelemetry browser bundle did not expose Microsoft.OpenTelemetry"));return}Promise.resolve().then(function(){return sdk.useMicrosoftOpenTelemetry({azureMonitor:{connectionString:c.connectionString}})}).then(resolve,reject)};s.onerror=function(){reject(new Error("OpenTelemetry browser bundle failed to load: "+c.src))};d.head.appendChild(s)})})(window,document,{"src":"https://js.monitor.azure.com/scripts/otel/CHANNEL/opentelemetry-browser.VERSION.min.js","connectionString":"YOUR_CONNECTION_STRING","crossOrigin":"anonymous","integrity":"YOUR_INTEGRITY"});
+</script>
+```
+
+For example, `0.1.0-alpha.3` uses channel `alpha`, and its `YOUR_INTEGRITY` is the
+`ext["@min.js"].integrity` value in
+[`opentelemetry-browser.0.1.0-alpha.3.integrity.json`](https://js.monitor.azure.com/scripts/otel/alpha/opentelemetry-browser.0.1.0-alpha.3.integrity.json).
+The snippet enables Azure Monitor export and page views; use the npm package for other options.
+
+`window.microsoftOpenTelemetry` is a promise that resolves to the telemetry handle, or rejects when
+the bundle fails to load, fails its integrity check, or fails to initialize:
+
+```javascript
+window.microsoftOpenTelemetry.catch(function (error) {
+  console.error(error);
+});
+```
+
+See [Packaging](docs/packaging.md#cdn-and-loader-snippet) for CDN endpoints, Content Security
+Policy requirements, and generating the snippet with `getSdkLoaderScript()`.
+
 ## Configuration
 
 ### `MicrosoftOpenTelemetryBrowserOptions`
@@ -240,24 +269,19 @@ OpenTelemetry APIs used by the distribution, including `trace` and `logs`.
 
 ## Browser support
 
-The package targets ES2022 and supports these browser versions:
+Like the Application Insights JavaScript SDK, support tracks the latest stable releases of the
+major browser families:
 
-| Chrome | Edge | Firefox | Safari |       Opera |
-| -----: | ---: | ------: | -----: | ----------: |
-|    94+ |  94+ |     93+ |  15.4+ | Latest stable |
+| Chrome   | Firefox  | Edge     | Opera    | Safari   |
+| -------- | -------- | -------- | -------- | -------- |
+| Latest ✔ | Latest ✔ | Latest ✔ | Latest ✔ | Latest ✔ |
 
-The `browserslist` field in `package.json` is the machine-readable source of truth for the Chrome,
-Edge, Firefox, and Safari minimums. Raising one of those minimums is a compatibility change and must
-be reflected there and in this table. Opera support tracks its latest stable release. Internet
-Explorer and other browsers requiring ES5 are not supported. The ESM and CommonJS npm entries
-require a browser bundler; UMD and IIFE artifacts support classic script loading.
+Internet Explorer and other browsers requiring ES5 are not supported. The ESM and CommonJS npm
+entries require a browser bundler; UMD and IIFE artifacts support classic script loading.
 
 CI runs the complete unit and emitted-bundle integration suites in current Playwright Chromium,
 Firefox, and WebKit. Chromium provides engine coverage for Chrome, Edge, and Opera; WebKit provides
-engine coverage for Safari. Real-browser acceptance tests require the
-`BROWSERSTACK_USERNAME` and `BROWSERSTACK_ACCESS_KEY` repository secrets and therefore do not run
-for pull requests from forks. For a local run, also set `BROWSER_FAMILY` to one of the four names in
-the versioned support matrix.
+engine coverage for Safari.
 
 The package publishes ESM and CommonJS entries through its `exports` map. Server-rendered builds can
 import the package, but browser telemetry should be initialized in client-side code.
