@@ -138,35 +138,48 @@ describe("AzureMonitorLogRecordExporter", () => {
     }
   });
 
-  it("rejects unload exports that exceed the aggregate beacon body limit", async () => {
+  it("delivers a fitting subset when required unload data exceeds the beacon limit", async () => {
     const fetch = vi.fn<typeof globalThis.fetch>(async () => {
       throw new TypeError("page unloading");
     });
     vi.stubGlobal("fetch", fetch);
     const sendBeacon = vi.spyOn(navigator, "sendBeacon").mockReturnValue(true);
     const exporter = new AzureMonitorLogRecordExporter({ connectionString });
-    const largeException = createReadableLogRecord({
-      eventName: "exception",
-      attributes: {
-        "exception.message": "Large exception",
-        "exception.stacktrace": Array.from(
-          { length: 700 },
-          (_, index) =>
-            `    at frame${index} (https://example.test/${"segment/".repeat(12)}file${index}.js:${index + 1}:1)`,
-        ).join("\n"),
-      },
-    });
     beginUnloading();
 
     try {
       await expect(
         exportLogs(exporter, [
-          largeException,
-          createReadableLogRecord({ body: "x".repeat(10 * 1024) }),
+          createReadableLogRecord({
+            eventName: "exception",
+            attributes: {
+              "exception.message": "m".repeat(25 * 1024),
+              "exception.stacktrace": "s".repeat(25 * 1024),
+              marker: "first",
+            },
+          }),
+          createReadableLogRecord({ body: "x".repeat(20 * 1024) }),
+          createReadableLogRecord({ body: "small", attributes: { marker: "last" } }),
         ]),
-      ).resolves.toMatchObject({ code: ExportResultCode.FAILED });
-      expect(fetch).not.toHaveBeenCalled();
-      expect(sendBeacon).not.toHaveBeenCalled();
+      ).resolves.toMatchObject({
+        code: ExportResultCode.FAILED,
+        error: expect.objectContaining({ message: expect.stringContaining("delivered 2 of 3") }),
+      });
+      expect(fetch).toHaveBeenCalledOnce();
+      expect(sendBeacon).toHaveBeenCalledOnce();
+      const body = (fetch.mock.calls[0]?.[1] as RequestInit).body as Uint8Array<ArrayBuffer>;
+      expect(body.byteLength).toBeLessThanOrEqual(MAX_PENDING_KEEPALIVE_BODY_SIZE);
+      const envelopes = JSON.parse(new TextDecoder().decode(body)) as Array<{
+        data: {
+          baseType: string;
+          baseData: { message?: string; properties?: Record<string, string> };
+        };
+      }>;
+      expect(envelopes).toHaveLength(2);
+      expect(envelopes[0]?.data.baseType).toBe("ExceptionData");
+      expect(envelopes[0]?.data.baseData.properties?.marker).toBe("first");
+      expect(envelopes[1]?.data.baseData.message).toBe("small");
+      expect(envelopes[1]?.data.baseData.properties?.marker).toBe("last");
     } finally {
       endUnloading();
     }
@@ -222,6 +235,34 @@ describe("AzureMonitorLogRecordExporter", () => {
         data: { baseData: { properties?: Record<string, string> } };
       }>;
       expect(envelopes[0]?.data.baseData.properties?.payload).toBe(payload);
+    } finally {
+      endUnloading();
+    }
+  });
+
+  it("fits optional unload data to the beacon limit instead of the keepalive limit", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    vi.stubGlobal("fetch", fetch);
+    const sendBeacon = vi.spyOn(navigator, "sendBeacon").mockReturnValue(true);
+    const exporter = new AzureMonitorLogRecordExporter({ connectionString });
+    const attributes = Object.fromEntries(
+      Array.from({ length: 16 }, (_, index) => [`payload${index}`, "x".repeat(4 * 1024)]),
+    );
+    beginUnloading();
+
+    try {
+      await expect(
+        exportLogs(exporter, [createReadableLogRecord({ attributes })]),
+      ).resolves.toEqual({ code: ExportResultCode.SUCCESS });
+      expect(fetch).not.toHaveBeenCalled();
+      expect(sendBeacon).toHaveBeenCalledOnce();
+      const body = sendBeacon.mock.calls[0][1] as Blob;
+      expect(body.size).toBeGreaterThan(MAX_PENDING_KEEPALIVE_BODY_SIZE);
+      expect(body.size).toBeLessThanOrEqual(MAX_BEACON_BODY_SIZE);
+      const envelopes = JSON.parse(await body.text()) as Array<{
+        data: { baseData: { properties?: Record<string, string> } };
+      }>;
+      expect(Object.keys(envelopes[0]?.data.baseData.properties ?? {})).toHaveLength(15);
     } finally {
       endUnloading();
     }

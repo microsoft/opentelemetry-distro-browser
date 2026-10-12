@@ -395,4 +395,29 @@ describe("AzureMonitorSpanExporter", () => {
       endUnloading();
     }
   });
+
+  it("bounds full-batch serialization while fitting one-field unload envelopes", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => new Response("", { status: 200 }));
+    vi.stubGlobal("fetch", fetch);
+    const stringify = vi.spyOn(JSON, "stringify");
+    const exporter = new AzureMonitorSpanExporter({ connectionString });
+    const spans = Array.from({ length: 512 }, (_, index) => ({
+      ...makeSpan(`span-${index}`),
+      attributes: { payload: "x".repeat(1024) },
+    })) as ReadableSpan[];
+    beginUnloading();
+
+    try {
+      await expect(exportSpans(exporter, spans)).resolves.toMatchObject({
+        code: ExportResultCode.FAILED,
+        error: expect.objectContaining({ message: expect.stringContaining("of 512 envelopes") }),
+      });
+      const fullBatchSerializations = stringify.mock.calls.filter(
+        ([value]) => Array.isArray(value) && value.length === spans.length,
+      );
+      expect(fullBatchSerializations.length).toBeLessThanOrEqual(3);
+    } finally {
+      endUnloading();
+    }
+  });
 });
