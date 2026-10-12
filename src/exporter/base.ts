@@ -131,7 +131,11 @@ function createBatchRequests(
   const encoder = new TextEncoder();
   if (enforceMaxBatchSize) {
     if (envelopes.length === 0) return [];
-    const fitted = fitBatchCustomFields(envelopes, maxBatchSize, encoder);
+    const original = serializeBatch(envelopes, encoder);
+    const fitted =
+      original.size <= MAX_BEACON_BODY_SIZE
+        ? original
+        : fitBatchCustomFields(envelopes, maxBatchSize, encoder);
     if (fitted.size > MAX_BEACON_BODY_SIZE) {
       throw new RangeError(
         `Unload payload size ${fitted.size} exceeds the ${MAX_BEACON_BODY_SIZE} byte aggregate beacon limit.`,
@@ -188,6 +192,14 @@ interface SerializedBatch {
   size: number;
 }
 
+function serializeBatch(
+  envelopes: readonly AzureMonitorEnvelope[],
+  encoder: TextEncoder,
+): SerializedBatch {
+  const serialized = JSON.stringify(envelopes);
+  return { envelopes, serialized, size: encoder.encode(serialized).byteLength };
+}
+
 function serializeEnvelope(
   envelope: AzureMonitorEnvelope,
   encoder: TextEncoder,
@@ -201,11 +213,7 @@ function fitBatchCustomFields(
   maxBatchSize: number,
   encoder: TextEncoder,
 ): SerializedBatch {
-  const serializeBatch = (batch: readonly AzureMonitorEnvelope[]): SerializedBatch => {
-    const serialized = JSON.stringify(batch);
-    return { envelopes: batch, serialized, size: encoder.encode(serialized).byteLength };
-  };
-  const original = serializeBatch(envelopes);
+  const original = serializeBatch(envelopes, encoder);
   if (original.size <= maxBatchSize) return original;
 
   const customFields: Array<{ size: number; remove: () => boolean }> = [];
@@ -249,13 +257,13 @@ function fitBatchCustomFields(
   // normalized batch because empty containers are omitted there.
   const createBatch = (): AzureMonitorEnvelope[] =>
     createFittedEnvelopes.map((createEnvelope) => createEnvelope());
-  let fitted = serializeBatch(createBatch());
+  let fitted = serializeBatch(createBatch(), encoder);
   let estimatedSize = fitted.size;
   for (const field of customFields) {
     const emptied = field.remove();
     estimatedSize -= field.size - 1;
     if (!emptied && estimatedSize > maxBatchSize) continue;
-    fitted = serializeBatch(createBatch());
+    fitted = serializeBatch(createBatch(), encoder);
     if (fitted.size <= maxBatchSize) return fitted;
     estimatedSize = fitted.size;
   }

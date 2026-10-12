@@ -201,6 +201,32 @@ describe("AzureMonitorLogRecordExporter", () => {
     }
   });
 
+  it("preserves custom fields when the unload batch fits the beacon limit", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    vi.stubGlobal("fetch", fetch);
+    const sendBeacon = vi.spyOn(navigator, "sendBeacon").mockReturnValue(true);
+    const exporter = new AzureMonitorLogRecordExporter({ connectionString });
+    const payload = "x".repeat(60 * 1024);
+    beginUnloading();
+
+    try {
+      await expect(
+        exportLogs(exporter, [createReadableLogRecord({ attributes: { payload } })]),
+      ).resolves.toEqual({ code: ExportResultCode.SUCCESS });
+      expect(fetch).not.toHaveBeenCalled();
+      expect(sendBeacon).toHaveBeenCalledOnce();
+      const body = sendBeacon.mock.calls[0][1] as Blob;
+      expect(body.size).toBeGreaterThan(MAX_PENDING_KEEPALIVE_BODY_SIZE);
+      expect(body.size).toBeLessThanOrEqual(MAX_BEACON_BODY_SIZE);
+      const envelopes = JSON.parse(await body.text()) as Array<{
+        data: { baseData: { properties?: Record<string, string> } };
+      }>;
+      expect(envelopes[0]?.data.baseData.properties?.payload).toBe(payload);
+    } finally {
+      endUnloading();
+    }
+  });
+
   it("removes oversized custom fields before unload delivery", async () => {
     const fetch = vi.fn<typeof globalThis.fetch>(async () => {
       throw new TypeError("page unloading");
