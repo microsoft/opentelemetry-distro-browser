@@ -18,6 +18,8 @@ All notable changes to this package are documented in this file.
 
 ### Fixed
 
+- Preserve application-provided resource `session.id` values during managed context enrichment
+  and Azure Monitor export, while retaining precedence for valid record-level session IDs.
 - Prevent pending page views from being lost during unload by settling them before pagehide or
   hidden-visibility flushes, including tab switches.
 
