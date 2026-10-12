@@ -420,7 +420,6 @@ describe("AzureMonitorSpanExporter", () => {
       endUnloading();
     }
   });
-
   it("fits unload telemetry into the aggregate keepalive limit", async () => {
     const fetch = vi.fn<typeof globalThis.fetch>(async () => new Response("", { status: 200 }));
     vi.stubGlobal("fetch", fetch);
