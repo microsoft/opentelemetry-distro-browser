@@ -16,7 +16,10 @@ export function withoutPageOperation(active: Context): Context {
  * Stops exposing synthetic page contexts at shutdown while preserving application contexts.
  */
 export class PageViewCorrelation implements LogRecordProcessor {
-  constructor(private getOperation: (() => SpanContext | undefined) | undefined) {}
+  constructor(
+    private getOperation: (() => SpanContext | undefined) | undefined,
+    private getOperationName?: () => string | undefined,
+  ) {}
 
   /** Applies page correlation to the active context supplied by the page context manager. */
   decorate(active: Context): Context {
@@ -31,6 +34,11 @@ export class PageViewCorrelation implements LogRecordProcessor {
   /** The current page operation, until shutdown. */
   operation(): SpanContext | undefined {
     return this.getOperation?.();
+  }
+
+  /** The current page operation name, until shutdown. */
+  operationName(): string | undefined {
+    return this.getOperationName?.();
   }
 
   // Correlation must not enable records rejected by the application's log processors.
@@ -48,6 +56,7 @@ export class PageViewCorrelation implements LogRecordProcessor {
 
   shutdown(): Promise<void> {
     this.getOperation = undefined;
+    this.getOperationName = undefined;
     return Promise.resolve();
   }
 }

@@ -5,6 +5,7 @@ import { SDK_INFO } from "@opentelemetry/core";
 import { resourceFromAttributes } from "@opentelemetry/resources";
 import { ATTR_TELEMETRY_SDK_VERSION } from "@opentelemetry/semantic-conventions";
 import { describe, expect, it } from "vitest";
+import { setManagedOperationName } from "../../../src/context/operationName.js";
 import { MaxPropertyLengths, MAX_BEACON_BODY_SIZE } from "../../../src/exporter/constants.js";
 import type { ExceptionData, PageViewData } from "../../../src/exporter/telemetryModels.js";
 import {
@@ -27,6 +28,28 @@ const pageViewDiagnostics = {
 };
 
 describe("Azure Monitor log envelope mapping", () => {
+  it("maps service.version to application context", () => {
+    const envelope = logToEnvelope(
+      makeLog({
+        resource: resourceFromAttributes({
+          "service.name": "browser-store",
+          "service.version": "2.4.1",
+        }),
+      }),
+      instrumentationKey,
+    );
+
+    expect(envelope.tags["ai.application.ver"]).toBe("2.4.1");
+  });
+
+  it("maps the page name captured for an application log to operation context", () => {
+    const record = makeLog();
+    setManagedOperationName(record, "Products");
+
+    expect(logToEnvelope(record, instrumentationKey).tags["ai.operation.name"]).toBe("Products");
+    expect(record.attributes).not.toHaveProperty("ai.operation.name");
+  });
+
   it.each([
     undefined,
     "browser.console",
@@ -791,6 +814,7 @@ describe("Azure Monitor log envelope mapping", () => {
           measurements: undefined,
         },
       });
+      expect(envelope.tags["ai.operation.name"]).toBe("Cart");
     },
   );
 
@@ -879,6 +903,7 @@ describe("Azure Monitor log envelope mapping", () => {
         "ai.device.id": "browser",
       });
     }
+    expect(envelopes[1]?.tags["ai.operation.name"]).toBe("Cart");
   });
 
   it("does not emit page-view performance when any phase is missing", () => {

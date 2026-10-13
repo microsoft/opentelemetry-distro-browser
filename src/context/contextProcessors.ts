@@ -4,6 +4,7 @@
 import type { LogRecordProcessor, ReadWriteLogRecord } from "@opentelemetry/sdk-logs";
 import type { Span, SpanProcessor } from "@opentelemetry/sdk-trace-base";
 import { isNonEmptyString } from "../shared/isNonEmptyString.js";
+import { setManagedOperationName } from "./operationName.js";
 import {
   ATTR_ENDUSER_ID,
   ATTR_ENDUSER_PSEUDO_ID,
@@ -14,16 +15,19 @@ import type { UserContextProvider } from "../user/createUserContext.js";
 
 export interface BrowserContextProvider extends UserContextProvider {
   getSessionId(): string | null;
+  getOperationName(): string | undefined;
 }
 
 type AttributeBag = Readonly<Record<string, unknown>>;
 
 function enrich(
+  record: object,
   attributes: AttributeBag,
   resourceAttributes: AttributeBag,
   setAttribute: (name: string, value: string) => void,
   provider: BrowserContextProvider,
 ): void {
+  setManagedOperationName(record, provider.getOperationName());
   // Context configured on the record or its resource belongs to the application.
   const hasAttribute = (name: string): boolean =>
     isNonEmptyString(attributes[name]) || isNonEmptyString(resourceAttributes[name]);
@@ -53,6 +57,7 @@ export class BrowserContextSpanProcessor implements SpanProcessor {
 
   public onStart(span: Span): void {
     enrich(
+      span,
       span.attributes,
       span.resource.attributes,
       (name, value) => span.setAttribute(name, value),
@@ -81,6 +86,7 @@ export class BrowserContextLogRecordProcessor implements LogRecordProcessor {
 
   public onEmit(record: ReadWriteLogRecord): void {
     enrich(
+      record,
       record.attributes,
       record.resource.attributes,
       (name, value) => record.setAttribute(name, value),
