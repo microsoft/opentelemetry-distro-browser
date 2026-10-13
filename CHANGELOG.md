@@ -23,6 +23,10 @@ All notable changes to this package are documented in this file.
 
 ### Fixed
 
+- Include every instrumentation in the `opentelemetry-browser` CDN and global bundles, exposed as
+  `Microsoft.OpenTelemetry.getInstrumentations`, and enable the default `fetch` and XHR
+  instrumentations from the loader snippet. Snippet users previously received no dependency
+  telemetry.
 - Preserve application-provided resource `session.id` values during managed context enrichment
   and Azure Monitor export, while retaining precedence for valid record-level session IDs.
 - Share fetch, XHR, console and navigation patches across instances without nesting their

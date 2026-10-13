@@ -109,14 +109,15 @@ page's `<head>`, replacing `CHANNEL`, `VERSION`, `YOUR_CONNECTION_STRING`, and `
 <!-- prettier-ignore -->
 ```html
 <script>
-!(function(w,d,c){var s=d.createElement("script");w.microsoftOpenTelemetry=new Promise(function(resolve,reject){s.src=c.src;s.crossOrigin=c.crossOrigin;if(c.integrity)s.integrity=c.integrity;s.onload=function(){var sdk=w.Microsoft&&w.Microsoft.OpenTelemetry;if(!sdk||typeof sdk.useMicrosoftOpenTelemetry!=="function"){reject(new Error("OpenTelemetry browser bundle did not expose Microsoft.OpenTelemetry"));return}Promise.resolve().then(function(){return sdk.useMicrosoftOpenTelemetry({azureMonitor:{connectionString:c.connectionString}})}).then(resolve,reject)};s.onerror=function(){reject(new Error("OpenTelemetry browser bundle failed to load: "+c.src))};d.head.appendChild(s)})})(window,document,{"src":"https://js.monitor.azure.com/scripts/otel/CHANNEL/opentelemetry-browser.VERSION.min.js","connectionString":"YOUR_CONNECTION_STRING","crossOrigin":"anonymous","integrity":"YOUR_INTEGRITY"});
+!(function(w,d,c){var s=d.createElement("script");w.microsoftOpenTelemetry=new Promise(function(resolve,reject){s.src=c.src;s.crossOrigin=c.crossOrigin;if(c.integrity)s.integrity=c.integrity;s.onload=function(){var sdk=w.Microsoft&&w.Microsoft.OpenTelemetry;if(!sdk||typeof sdk.useMicrosoftOpenTelemetry!=="function"){reject(new Error("OpenTelemetry browser bundle did not expose Microsoft.OpenTelemetry"));return}Promise.resolve().then(function(){return typeof sdk.getInstrumentations==="function"?sdk.getInstrumentations():[]}).then(function(instrumentations){return sdk.useMicrosoftOpenTelemetry({azureMonitor:{connectionString:c.connectionString},instrumentations:instrumentations})}).then(resolve,reject)};s.onerror=function(){reject(new Error("OpenTelemetry browser bundle failed to load: "+c.src))};d.head.appendChild(s)})})(window,document,{"src":"https://js.monitor.azure.com/scripts/otel/CHANNEL/opentelemetry-browser.VERSION.min.js","connectionString":"YOUR_CONNECTION_STRING","crossOrigin":"anonymous","integrity":"YOUR_INTEGRITY"});
 </script>
 ```
 
 For example, `0.1.0-alpha.3` uses channel `alpha`, and its `YOUR_INTEGRITY` is the
 `ext["@min.js"].integrity` value in
 [`opentelemetry-browser.0.1.0-alpha.3.integrity.json`](https://js.monitor.azure.com/scripts/otel/alpha/opentelemetry-browser.0.1.0-alpha.3.integrity.json).
-The snippet enables Azure Monitor export and page views; use the npm package for other options.
+The snippet enables Azure Monitor export, page views, and `fetch` and XHR dependency collection; use
+the npm package for other options.
 
 `window.microsoftOpenTelemetry` is a promise that resolves to the telemetry handle, or rejects when
 the bundle fails to load, fails its integrity check, or fails to initialize:
@@ -251,15 +252,17 @@ Choose the format that matches how the application loads JavaScript:
 | Direct `<script>` loading | `dist/browser/opentelemetry-browser.iife.min.js` |
 
 The IIFE bundle exposes `Microsoft.OpenTelemetry`. Use it instead of UMD when RequireJS might already
-be present but the SDK should load as a global. Optional instrumentations have matching
-`opentelemetry-browser-instrumentations.{umd,iife}.js` bundles, each with a `.min.js` variant, that
-expose `Microsoft.OpenTelemetryInstrumentations`.
+be present but the SDK should load as a global. The SDK bundles include every instrumentation and
+expose `Microsoft.OpenTelemetry.getInstrumentations`; pass its result as `instrumentations`.
 
 ```html
 <script src="/vendor/opentelemetry-browser.iife.min.js"></script>
 <script>
-  Microsoft.OpenTelemetry.useMicrosoftOpenTelemetry({
-    azureMonitor: { connectionString: "InstrumentationKey=...;IngestionEndpoint=..." },
+  Microsoft.OpenTelemetry.getInstrumentations().then(function (instrumentations) {
+    return Microsoft.OpenTelemetry.useMicrosoftOpenTelemetry({
+      azureMonitor: { connectionString: "InstrumentationKey=...;IngestionEndpoint=..." },
+      instrumentations: instrumentations,
+    });
   });
 </script>
 ```
