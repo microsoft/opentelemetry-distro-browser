@@ -233,12 +233,12 @@ describe("AzureMonitorLogRecordExporter", () => {
     vi.stubGlobal("fetch", fetch);
     const sendBeacon = vi.spyOn(navigator, "sendBeacon").mockReturnValue(true);
     const exporter = new AzureMonitorLogRecordExporter({ connectionString });
-    const payload = "x".repeat(60 * 1024);
+    const attributes = makePayloadAttributes(60 * 1024, "x");
     beginUnloading();
 
     try {
       await expect(
-        exportLogs(exporter, [createReadableLogRecord({ attributes: { payload } })]),
+        exportLogs(exporter, [createReadableLogRecord({ attributes })]),
       ).resolves.toEqual({ code: ExportResultCode.SUCCESS });
       expect(fetch).not.toHaveBeenCalled();
       expect(sendBeacon).toHaveBeenCalledOnce();
@@ -248,7 +248,7 @@ describe("AzureMonitorLogRecordExporter", () => {
       const envelopes = JSON.parse(await body.text()) as Array<{
         data: { baseData: { properties?: Record<string, string> } };
       }>;
-      expect(envelopes[0]?.data.baseData.properties?.payload).toBe(payload);
+      expect(envelopes[0]?.data.baseData.properties).toEqual(attributes);
     } finally {
       endUnloading();
     }
@@ -356,11 +356,14 @@ describe("AzureMonitorLogRecordExporter", () => {
         data: { baseData: { properties?: Record<string, string> } };
       }>;
       expect(envelopes).toHaveLength(2);
-      expect(totalPropertyLength(envelopes[0]?.data.baseData.properties)).toBe(40 * 1024);
-      expect(totalPropertyLength(envelopes[1]?.data.baseData.properties)).toBeLessThan(40 * 1024);
-      expect(
-        envelopes.map((envelope) => envelope.data.baseData.properties?.payload?.length ?? 0).sort(),
-      ).toEqual([0, 40 * 1024]);
+      const retainedLengths = envelopes
+        .map((envelope) => totalPropertyLength(envelope.data.baseData.properties))
+        .sort((left, right) => left - right);
+      expect(retainedLengths).toEqual([16 * 1024, 40 * 1024]);
+      const retainedProperties = envelopes.flatMap((envelope) =>
+        Object.values(envelope.data.baseData.properties ?? {}),
+      );
+      expect(retainedProperties.every((value) => value.length <= 8 * 1024)).toBe(true);
     } finally {
       endUnloading();
     }
