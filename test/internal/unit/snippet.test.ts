@@ -473,6 +473,25 @@ it("accepts CDN hosts in any case for cdnFallback", () => {
   ).toContain('"fallbackHosts":["js.cdn.applicationinsights.io",');
 });
 
+const cyclic: Record<string, unknown> = { enabled: true };
+cyclic.self = cyclic;
+
+it.each([
+  ["session", cyclic],
+  ["instrumentationOptions", { errors: { enabled: true, nested: [cyclic] } }],
+  ["pageView", { redactedQueryParams: new Array<string>(1) }],
+  ["instrumentationOptions", JSON.parse('{"__proto__":{"errors":{"enabled":true}}}') as object],
+  ["resourceAttributes", JSON.parse('{"__proto__":"shop"}') as object],
+])("rejects %s values JSON cannot represent as an own property %#", (name, value) => {
+  expect(() =>
+    getSdkLoaderScript({
+      src: "https://example.test/sdk.js",
+      connectionString: "connection",
+      [name]: value,
+    } as SdkLoaderConfig),
+  ).toThrow(new TypeError(`SdkLoaderConfig.${name} must be a JSON object when provided.`));
+});
+
 it("accepts JSON objects with a null prototype and undefined members", () => {
   const session = Object.assign(Object.create(null) as object, { enabled: true });
   expect(

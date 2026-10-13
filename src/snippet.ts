@@ -210,13 +210,28 @@ const isObject = (value: unknown): value is object => {
 const isPrimitive = (value: unknown): boolean =>
   typeof value === "string" || typeof value === "boolean" || Number.isFinite(value);
 
-/** Rejects values `JSON.stringify` would drop or alter, such as functions and regular expressions. */
-const isJson = (value: unknown): boolean =>
-  value === null ||
-  isPrimitive(value) ||
-  (Array.isArray(value)
-    ? value.every(isJson)
-    : isObject(value) && Object.values(value).every((item) => item === undefined || isJson(item)));
+/**
+ * Rejects values `JSON.stringify` would drop or alter, such as functions, regular expressions,
+ * array holes and cycles, and `__proto__` keys, which an inlined object literal would treat as
+ * a prototype instead of a property.
+ */
+const isJson = (value: unknown, ancestors: readonly unknown[] = []): boolean => {
+  if (value === null || isPrimitive(value)) return true;
+  if (ancestors.includes(value)) return false;
+  const path = [...ancestors, value];
+  if (Array.isArray(value)) {
+    for (let index = 0; index < value.length; index++) {
+      if (!isJson(value[index], path)) return false;
+    }
+    return true;
+  }
+  return (
+    isObject(value) &&
+    Object.entries(value).every(
+      ([key, item]) => key !== "__proto__" && (item === undefined || isJson(item, path)),
+    )
+  );
+};
 
 const check = (valid: unknown, name: string, expected: string): void => {
   if (!valid) throw new TypeError(`SdkLoaderConfig.${name} must be ${expected}.`);
