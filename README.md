@@ -4,7 +4,6 @@
 [![Build](https://github.com/microsoft/opentelemetry-distro-browser/actions/workflows/pr-validation.yml/badge.svg)](https://github.com/microsoft/opentelemetry-distro-browser/actions/workflows/pr-validation.yml)
 [![Status: alpha](https://img.shields.io/badge/status-alpha-orange)](CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![CDN bundle size](https://js.monitor.azure.com/scripts/otel/alpha/opentelemetry-browser.0.1.0-alpha.3.size.svg)](#bundle-size)
 
 Microsoft's OpenTelemetry distribution for browser applications. It provides one initialization
 path for traces and logs, built-in page-view collection, optional browser instrumentations, browser

@@ -111,7 +111,7 @@ test("the build prepares versioned CDN files with source maps and integrity", as
   }
 });
 
-test("publishes a size badge for each default CDN bundle and the README shows this version's", async () => {
+test("publishes a size badge for each default CDN bundle", async () => {
   for (const badge of getCdnBadges(version)) {
     const bytes = await readFile(resolve(cdnDirectory, badge.bundle));
     const message = getSizeBadgeMessage(bytes);
@@ -122,13 +122,6 @@ test("publishes a size badge for each default CDN bundle and the README shows th
     );
   }
   assert.match(renderBadge("a&b", "<1>"), /aria-label="a&#38;b: &#60;1&#62;"/);
-
-  const readme = await readFile(resolve(root, "README.md"), "utf8");
-  const [sdkBadge] = getCdnBadges(version);
-  assert.ok(
-    readme.includes(`(${getCdnUrl(version, sdkBadge.file)})`),
-    `README.md must show ${getCdnUrl(version, sdkBadge.file)}`,
-  );
 });
 
 /** Evaluates a CDN script in a worker-like realm: browser APIs a worker has, but no window or DOM. */
