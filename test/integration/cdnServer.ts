@@ -95,15 +95,21 @@ async function writeSnippetPage(
     integrity:
       scenario === "tampered" ? `sha384-${"A".repeat(64)}` : `sha384-${bundle.hashes.sha384}`,
   });
-  // An application request the snippet's default fetch instrumentation must report.
-  const dependencyUrl = `${new URL(ingestionEndpoint).origin}/captured?runId=snippet-dependency`;
+  // Application requests the snippet's default fetch and XHR instrumentations must report.
+  const dependencyUrl = (runId: string) =>
+    `${new URL(ingestionEndpoint).origin}/captured?runId=${runId}`;
   const application = `window.microsoftOpenTelemetry.then(function (handle) {
   window.Microsoft.OpenTelemetry.trace
     .getTracer("cdn-snippet-test")
     .startSpan("cdn-snippet-span", { attributes: { "test.run_id": ${JSON.stringify(runId)} } })
     .end();
-  return fetch(${JSON.stringify(dependencyUrl)}).then(function () {
-    return handle;
+  return fetch(${JSON.stringify(dependencyUrl("snippet-fetch"))}).then(function () {
+    return new Promise(function (resolve) {
+      var xhr = new XMLHttpRequest();
+      xhr.addEventListener("loadend", function () { resolve(handle); });
+      xhr.open("GET", ${JSON.stringify(dependencyUrl("snippet-xhr"))});
+      xhr.send();
+    });
   });
 }).then(function (handle) {
   // The page view ends in a macrotask after load, so flush only after that task has run.

@@ -34,7 +34,7 @@ async function waitForEnvelopes(
   return envelopes;
 }
 
-it("loads the CDN bundle into a plain HTML page under CSP and sends page view, span and fetch telemetry", async () => {
+it("loads the CDN bundle into a plain HTML page under CSP and sends page view, span, fetch and XHR telemetry", async () => {
   const { state, diagnostics, runId, captureUrl } = await openSnippetPage("valid");
 
   expect(state, diagnostics.join("\n")).toBe("ready");
@@ -44,8 +44,19 @@ it("loads the CDN bundle into a plain HTML page under CSP and sends page view, s
     (captured) =>
       captured.some(({ name }) => name === "Microsoft.ApplicationInsights.PageView") &&
       captured.filter(({ name }) => name === "Microsoft.ApplicationInsights.RemoteDependency")
-        .length >= 2,
+        .length >= 3,
   );
+  const httpDependency = (runIdQuery: string) =>
+    expect.objectContaining({
+      name: "Microsoft.ApplicationInsights.RemoteDependency",
+      data: expect.objectContaining({
+        baseData: expect.objectContaining({
+          name: "GET /captured",
+          type: "Http",
+          data: expect.stringContaining(`/captured?runId=${runIdQuery}`),
+        }),
+      }),
+    });
   expect(envelopes).toEqual(
     expect.arrayContaining([
       expect.objectContaining({
@@ -61,16 +72,8 @@ it("loads the CDN bundle into a plain HTML page under CSP and sends page view, s
           }),
         }),
       }),
-      expect.objectContaining({
-        name: "Microsoft.ApplicationInsights.RemoteDependency",
-        data: expect.objectContaining({
-          baseData: expect.objectContaining({
-            name: "GET /captured",
-            type: "Http",
-            data: expect.stringContaining("/captured?runId=snippet-dependency"),
-          }),
-        }),
-      }),
+      httpDependency("snippet-fetch"),
+      httpDependency("snippet-xhr"),
     ]),
   );
 });

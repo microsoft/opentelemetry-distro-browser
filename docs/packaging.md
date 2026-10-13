@@ -95,7 +95,9 @@ The channel is `b` for stable releases and the prerelease identifier (`alpha`, `
 otherwise. Each module (`opentelemetry-browser` and `opentelemetry-browser-instrumentations`) is
 published as `min.js` and `js` (IIFE), and `umd.min.js` and `umd.js` (UMD), each with its source
 map, plus `<module>.<version>.integrity.json`. The integrity file lists every file's CDN URL and
-its SHA-256, SHA-384 and SHA-512 Subresource Integrity values.
+its SHA-256, SHA-384 and SHA-512 Subresource Integrity values. `<module>.<version>.size.svg` is a
+badge showing the minified and gzip size of that module's `min.js` bundle; the README shows the
+current version's badge.
 
 `npm run build` prepares these files in `cdn/` from the same `dist/browser` bundles, renaming only
 the source map references. `npm run cdn:publish -- --account <storage-account>` uploads them with
