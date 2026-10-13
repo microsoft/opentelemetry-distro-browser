@@ -229,7 +229,7 @@ await useMicrosoftOpenTelemetry({
 
 ## Bundle size
 
-The size depends on how the package is loaded. Sizes in KiB for `0.1.0-alpha.3`:
+The size depends on how the package is loaded. Sizes in KiB, measured from the current source:
 
 | Loaded from | Includes                                          | Minified |  gzip | Brotli |
 | ----------- | ------------------------------------------------- | -------: | ----: | -----: |
