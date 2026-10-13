@@ -19,6 +19,9 @@ All notable changes to this package are documented in this file.
 
 ### Fixed
 
+- Set Azure Monitor browser device tags on all envelopes, omit default envelope version and
+  full-sampling fields, and exclude built-in page-view diagnostics and ordinals from custom
+  properties and measurements while retaining application custom fields and OpenTelemetry records.
 - Preserve application-provided resource `session.id` values during managed context enrichment
   and Azure Monitor export, while retaining precedence for valid record-level session IDs.
 - Share fetch, XHR, console and navigation patches across instances without nesting their
