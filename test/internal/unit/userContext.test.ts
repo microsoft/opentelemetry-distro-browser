@@ -521,6 +521,34 @@ it("reports a persistence failure when authenticated identity cannot be saved", 
   expect(localStorage.getItem(storageKey)).toBeNull();
 });
 
+it("keeps reporting disable failure while stale persisted identity remains", async () => {
+  const current = await initialize(true);
+  current.handle.userContext.setAuthenticatedUserContext("persisted-user");
+  vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+    throw new DOMException("denied", "SecurityError");
+  });
+  vi.spyOn(Storage.prototype, "removeItem")
+    .mockImplementationOnce(() => {
+      throw new DOMException("denied", "SecurityError");
+    })
+    .mockImplementationOnce(() => {
+      throw new DOMException("denied", "SecurityError");
+    });
+
+  expect(() => current.handle.userContext.setAuthenticatedUserContext("new-user")).toThrow(
+    "Unable to clear persisted user identity.",
+  );
+  expect(() => current.handle.userContext.setEnabled(false)).toThrow(
+    "Unable to clear persisted user identity.",
+  );
+  expect(JSON.parse(localStorage.getItem(storageKey)!)).toMatchObject({
+    authenticatedUserId: "persisted-user",
+  });
+
+  expect(() => current.handle.userContext.setEnabled(false)).not.toThrow();
+  expect(localStorage.getItem(storageKey)).toBeNull();
+});
+
 it("does not remove an absent persisted identity", async () => {
   const current = await initialize();
   const remove = vi.spyOn(Storage.prototype, "removeItem");

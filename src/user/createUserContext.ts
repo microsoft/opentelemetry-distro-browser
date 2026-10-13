@@ -91,6 +91,7 @@ export function createUserContext(
   let persistenceEnabled = initialEnabled !== false;
   let anonymousIdentityEnabled = persistenceEnabled;
   let authenticatedPersistenceEnabled = initialEnabled === true;
+  let persistedIdentityMayExist = false;
   let anonymousId = generateAnonymousId();
   let authenticatedUserId: string | undefined;
   let accountId: string | undefined;
@@ -107,7 +108,15 @@ export function createUserContext(
 
   function save(): boolean {
     if (!persistenceEnabled) return true;
-    return storage.setItem(USER_STORAGE_KEY, JSON.stringify(currentUser()));
+    const saved = storage.setItem(USER_STORAGE_KEY, JSON.stringify(currentUser()));
+    if (saved) persistedIdentityMayExist = true;
+    return saved;
+  }
+
+  function removePersistedIdentity(): boolean {
+    const removed = storage.removeItem(USER_STORAGE_KEY);
+    if (removed) persistedIdentityMayExist = false;
+    return removed;
   }
 
   /**
@@ -117,7 +126,7 @@ export function createUserContext(
    */
   function persist(): boolean {
     if (save()) return true;
-    requireIdentityCleared(storage.removeItem(USER_STORAGE_KEY));
+    requireIdentityCleared(removePersistedIdentity());
     return save();
   }
 
@@ -138,18 +147,21 @@ export function createUserContext(
   function clearPersistedAuthenticatedContext(): void {
     const result = storage.getItem(USER_STORAGE_KEY);
     if (!result.success) {
-      storage.removeItem(USER_STORAGE_KEY);
+      removePersistedIdentity();
       return;
     }
     if (result.value === null) return;
+    persistedIdentityMayExist = true;
     const stored = toStoredUser(tryParseJson(result.value));
     if (!stored) {
-      storage.removeItem(USER_STORAGE_KEY);
+      removePersistedIdentity();
       return;
     }
     const anonymousOnly = JSON.stringify({ anonymousId: stored.anonymousId });
-    if (!storage.setItem(USER_STORAGE_KEY, anonymousOnly)) {
-      storage.removeItem(USER_STORAGE_KEY);
+    if (storage.setItem(USER_STORAGE_KEY, anonymousOnly)) {
+      persistedIdentityMayExist = true;
+    } else {
+      removePersistedIdentity();
     }
   }
 
@@ -167,6 +179,7 @@ export function createUserContext(
           authenticatedPersistenceEnabled = false;
         }
       } else {
+        persistedIdentityMayExist = true;
         const stored = toStoredUser(tryParseJson(result.value));
         if (stored) {
           anonymousId = stored.anonymousId;
@@ -178,7 +191,7 @@ export function createUserContext(
           diag.warn("Invalid stored user identity; creating a new identity.");
           if (!save()) {
             // The storage adapter already reports failures; initialization continues in memory.
-            storage.removeItem(USER_STORAGE_KEY);
+            removePersistedIdentity();
             persistenceEnabled = false;
             anonymousIdentityEnabled = false;
             authenticatedPersistenceEnabled = false;
@@ -234,10 +247,11 @@ export function createUserContext(
           throw error;
         }
       } else {
-        const removed = storage.removeItem(USER_STORAGE_KEY);
+        const mustClearPersistedIdentity = persistedIdentityMayExist;
+        const removed = removePersistedIdentity();
         // Only an instance that persisted identity must guarantee removal; otherwise clear any
         // identity left by an earlier page load on a best-effort basis.
-        if (anonymousIdentityEnabled) requireIdentityCleared(removed);
+        if (mustClearPersistedIdentity) requireIdentityCleared(removed);
         persistenceEnabled = false;
         anonymousIdentityEnabled = false;
         authenticatedPersistenceEnabled = false;
