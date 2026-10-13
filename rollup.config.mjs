@@ -2,6 +2,7 @@ import commonjs from "@rollup/plugin-commonjs";
 import { nodeResolve } from "@rollup/plugin-node-resolve";
 import terser from "@rollup/plugin-terser";
 import typescript from "@rollup/plugin-typescript";
+import MagicString from "magic-string";
 import { dts } from "rollup-plugin-dts";
 import { visualizer } from "rollup-plugin-visualizer";
 
@@ -22,16 +23,12 @@ const workerSafeIdleCallback = {
     if (!/[\\/]@opentelemetry[\\/]browser-instrumentation[\\/].*idle-callback-shim\.js$/.test(id)) {
       return null;
     }
-    if (!code.includes(unsafeIdleCallbackCheck)) {
+    const index = code.indexOf(unsafeIdleCallbackCheck);
+    if (index === -1) {
       this.error(`${id} no longer contains the guarded requestIdleCallback check.`);
     }
-    return {
-      code: code.replace(
-        unsafeIdleCallbackCheck,
-        `typeof window !== "undefined" && ${unsafeIdleCallbackCheck}`,
-      ),
-      map: null,
-    };
+    const source = new MagicString(code).appendLeft(index, 'typeof window !== "undefined" && ');
+    return { code: source.toString(), map: source.generateMap({ hires: true }) };
   },
 };
 const bundleForBrowser = () => [

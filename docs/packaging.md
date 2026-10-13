@@ -127,8 +127,8 @@ the Azure Monitor ingestion origin in `connect-src`.
 
 `npm run test:integration` loads the prepared CDN bundle cross-origin into a plain HTML page
 through the built snippet, under such a policy, in Chromium, Firefox, and WebKit. It verifies that
-page-view, span and `fetch` dependency telemetry reaches an Azure Monitor ingestion endpoint, and that integrity
-mismatches and missing bundles reject initialization.
+page-view, span, `fetch` and XHR dependency telemetry reaches an Azure Monitor ingestion endpoint,
+and that integrity mismatches and missing bundles reject initialization.
 
 ## Performance measurements
 
