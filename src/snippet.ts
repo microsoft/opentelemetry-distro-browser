@@ -118,6 +118,22 @@ const cdnHosts = [
   "js2.cdn.monitor.azure.com",
 ];
 
+/** Accepts HTTPS, or HTTP only for loopback hosts, like the exporter's connection string parser. */
+const trustedEndpoint = (endpoint: string | undefined): string | undefined => {
+  try {
+    const { hostname, protocol, href } = new URL(endpoint ?? "");
+    if (
+      protocol === "https:" ||
+      (protocol === "http:" &&
+        /^(localhost\.?|\[::1\]|127\.\d{1,3}\.\d{1,3}\.\d{1,3})$/.test(hostname))
+    )
+      return href;
+  } catch {
+    // Use the fallback endpoint.
+  }
+  return undefined;
+};
+
 /** Resolves the ingestion endpoint the way the exporter's connection string parser does. */
 const getTrackUrl = (connectionString: string): { url: string; iKey?: string } => {
   const fields: Record<string, string> = {};
@@ -127,11 +143,41 @@ const getTrackUrl = (connectionString: string): { url: string; iKey?: string } =
   }
   const suffix = fields.endpointsuffix;
   const endpoint =
-    fields.ingestionendpoint ||
+    trustedEndpoint(fields.ingestionendpoint) ??
     (suffix
-      ? `https://${fields.location ? `${fields.location}.` : ""}dc.${suffix}`
-      : "https://dc.services.visualstudio.com");
+      ? trustedEndpoint(`https://${fields.location ? `${fields.location}.` : ""}dc.${suffix}`)
+      : undefined) ??
+    "https://dc.services.visualstudio.com";
   return { url: `${endpoint.replace(/\/+$/, "")}/v2/track`, iKey: fields.instrumentationkey };
+};
+
+type FieldKind = "boolean" | "number" | "strings";
+
+const fieldKinds: Record<FieldKind, [(value: unknown) => boolean, string]> = {
+  boolean: [(value) => typeof value === "boolean", "a boolean"],
+  number: [(value) => Number.isFinite(value) && (value as number) >= 0, "a nonnegative number"],
+  strings: [
+    (value) => Array.isArray(value) && value.every((item) => typeof item === "string"),
+    "an array of strings",
+  ],
+};
+
+/** Typed fields of the nested options, validated so mistakes fail at generation time. */
+const optionFields: Record<string, Record<string, FieldKind>> = {
+  azureMonitor: { disableBeacon: "boolean" },
+  session: {
+    enabled: "boolean",
+    persist: "boolean",
+    inactivityTimeout: "number",
+    maxDuration: "number",
+  },
+  userContext: { enabled: "boolean" },
+  pageView: {
+    enabled: "boolean",
+    redactedQueryParams: "strings",
+    softNavigationSettleTimeoutMs: "number",
+    useNavigationApiIfAvailable: "boolean",
+  },
 };
 
 const loadFailure = "OpenTelemetry browser bundle failed to load: ";
@@ -232,11 +278,26 @@ export function getSdkLoaderScript(config: SdkLoaderConfig): string {
       `a JSON object ${optional}`,
     );
   }
-  check(
-    [undefined, true, false].includes(azureMonitor?.disableBeacon),
-    "azureMonitor.disableBeacon",
-    `a boolean ${optional}`,
-  );
+  for (const [name, fields] of Object.entries(optionFields)) {
+    const value = config[name as keyof SdkLoaderConfig] as Record<string, unknown> | undefined;
+    for (const [field, kind] of Object.entries(fields)) {
+      const [valid, expected] = fieldKinds[kind];
+      check(
+        value?.[field] === undefined || valid(value[field]),
+        `${name}.${field}`,
+        `${expected} ${optional}`,
+      );
+    }
+  }
+  for (const [name, value] of Object.entries(instrumentationOptions ?? {})) {
+    check(isObject(value), `instrumentationOptions.${name}`, `a JSON object ${optional}`);
+    const { enabled } = value as { enabled?: boolean };
+    check(
+      [undefined, true, false].includes(enabled),
+      `instrumentationOptions.${name}.enabled`,
+      `a boolean ${optional}`,
+    );
+  }
   const { loadDelay, cdnFallback, reportLoadFailure } = config;
   check(
     loadDelay === undefined || (Number.isFinite(loadDelay) && loadDelay >= 0),
@@ -249,7 +310,13 @@ export function getSdkLoaderScript(config: SdkLoaderConfig): string {
     "reportLoadFailure",
     `a boolean ${optional}`,
   );
-  const host = /^https:\/\/([^/]+)\//.exec(src)?.[1] ?? "";
+  let host = "";
+  try {
+    const url = new URL(src);
+    if (url.protocol === "https:") host = url.hostname;
+  } catch {
+    // Not an absolute URL, so not a CDN host.
+  }
   check(
     !cdnFallback || cdnHosts.includes(host),
     "src",
@@ -299,7 +366,7 @@ export function getSdkLoaderScript(config: SdkLoaderConfig): string {
     ? 'var h=c.fallbackHosts.shift();if(h)return l(u.replace(/\\/\\/[^/]+/,"//"+h));'
     : "";
   const reportFailure = report
-    ? 'try{var r=c.loadFailureReport,e=r.envelope;e.time=new Date().toISOString();e.data.baseData.exceptions[0].message+=u;fetch(r.url,{method:"POST",keepalive:true,body:JSON.stringify([e])}).catch(function(){})}catch(x){}'
+    ? 'try{var r=c.loadFailureReport,e=r.envelope;e.time=new Date().toISOString();e.data.baseData.exceptions[0].message+=u;fetch(r.url,{method:"POST",keepalive:true,headers:{"Content-Type":"application/json"},body:JSON.stringify([e])}).catch(function(){})}catch(x){}'
     : "";
   const start =
     loadDelay === undefined ? "l(c.src)" : "setTimeout(function(){l(c.src)},c.loadDelay)";

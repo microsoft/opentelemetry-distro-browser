@@ -415,6 +415,64 @@ it.each([
   ).toThrow(new TypeError(message));
 });
 
+it.each([
+  ["session.enabled", { session: { enabled: "false" } }, "a boolean when provided"],
+  [
+    "session.inactivityTimeout",
+    { session: { inactivityTimeout: -1 } },
+    "a nonnegative number when provided",
+  ],
+  ["userContext.enabled", { userContext: { enabled: "false" } }, "a boolean when provided"],
+  [
+    "pageView.redactedQueryParams",
+    { pageView: { redactedQueryParams: "token" } },
+    "an array of strings when provided",
+  ],
+  [
+    "pageView.redactedQueryParams",
+    { pageView: { redactedQueryParams: [1] } },
+    "an array of strings when provided",
+  ],
+  [
+    "pageView.softNavigationSettleTimeoutMs",
+    { pageView: { softNavigationSettleTimeoutMs: "5" } },
+    "a nonnegative number when provided",
+  ],
+  [
+    "pageView.useNavigationApiIfAvailable",
+    { pageView: { useNavigationApiIfAvailable: 1 } },
+    "a boolean when provided",
+  ],
+  [
+    "instrumentationOptions.errors",
+    { instrumentationOptions: { errors: true } },
+    "a JSON object when provided",
+  ],
+  [
+    "instrumentationOptions.errors.enabled",
+    { instrumentationOptions: { errors: { enabled: "true" } } },
+    "a boolean when provided",
+  ],
+])("rejects invalid nested field %s %#", (field, options, expected) => {
+  expect(() =>
+    getSdkLoaderScript({
+      src: "https://example.test/sdk.js",
+      connectionString: "connection",
+      ...options,
+    } as SdkLoaderConfig),
+  ).toThrow(new TypeError(`SdkLoaderConfig.${field} must be ${expected}.`));
+});
+
+it("accepts CDN hosts in any case for cdnFallback", () => {
+  expect(
+    getSdkLoaderScript({
+      src: "https://JS.MONITOR.AZURE.COM/scripts/otel/b/sdk.js",
+      connectionString: "connection",
+      cdnFallback: true,
+    }),
+  ).toContain('"fallbackHosts":["js.cdn.applicationinsights.io",');
+});
+
 it("accepts JSON objects with a null prototype and undefined members", () => {
   const session = Object.assign(Object.create(null) as object, { enabled: true });
   expect(
@@ -533,7 +591,11 @@ it("reports a load failure to the ingestion endpoint after every fallback fails"
     expect(cdn.requested).toHaveLength(7);
     expect(sent).toHaveLength(1);
     expect(sent[0].url).toBe("https://westus.dc.example.test/v2/track");
-    expect(sent[0].init).toMatchObject({ method: "POST", keepalive: true });
+    expect(sent[0].init).toMatchObject({
+      method: "POST",
+      keepalive: true,
+      headers: { "Content-Type": "application/json" },
+    });
     const [envelope] = JSON.parse(String(sent[0].init.body)) as Record<string, unknown>[];
     expect(envelope).toMatchObject({
       name: "Microsoft.ApplicationInsights.Exception",
@@ -565,6 +627,26 @@ it.each([
   ["InstrumentationKey=key;IngestionEndpoint=https://ingest.test/", "https://ingest.test/v2/track"],
   ["InstrumentationKey=key", "https://dc.services.visualstudio.com/v2/track"],
   ["InstrumentationKey=key;EndpointSuffix=example.test", "https://dc.example.test/v2/track"],
+  [
+    "InstrumentationKey=key;IngestionEndpoint=http://collector.test;EndpointSuffix=example.test",
+    "https://dc.example.test/v2/track",
+  ],
+  [
+    "InstrumentationKey=key;IngestionEndpoint=http://collector.test",
+    "https://dc.services.visualstudio.com/v2/track",
+  ],
+  [
+    "InstrumentationKey=key;IngestionEndpoint=not a url",
+    "https://dc.services.visualstudio.com/v2/track",
+  ],
+  [
+    "InstrumentationKey=key;IngestionEndpoint=http://127.0.0.1:4318/",
+    "http://127.0.0.1:4318/v2/track",
+  ],
+  [
+    "InstrumentationKey=key;IngestionEndpoint=http://localhost:4318",
+    "http://localhost:4318/v2/track",
+  ],
 ])("resolves the failure report endpoint from %s", (connectionString, url) => {
   expect(
     getSdkLoaderScript({
