@@ -247,8 +247,9 @@ export interface MicrosoftOpenTelemetryBrowserUserContext {
   setAuthenticatedUserContext(userId: string, accountId?: string): void;
   /**
    * Clears authenticated identity and any persisted authenticated context. If persistence is
-   * enabled but the anonymous identity cannot be saved again, persistence is disabled and a
-   * diagnostic warning is logged.
+   * enabled but the anonymous identity cannot be saved again, managed anonymous enrichment is
+   * suppressed and a diagnostic warning is logged. Persistence remains enabled so a later
+   * identity update can retry the write; anonymous enrichment resumes after a successful write.
    *
    * @throws Error when persistence is enabled and stale authentication cannot be removed.
    */
