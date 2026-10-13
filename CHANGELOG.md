@@ -16,6 +16,10 @@ All notable changes to this package are documented in this file.
 
 - Include the browser runtime and upstream OpenTelemetry SDK version in the Azure Monitor
   `ai.internal.sdkVersion` tag.
+- Persist distribution-generated anonymous user IDs by default so Application Insights user
+  metrics remain stable across page loads and SDK instances. Authenticated user and account IDs
+  remain memory-only unless `userContext: { enabled: true }` is configured; set `enabled: false`
+  to disable managed identity persistence and user metrics.
 
 ### Fixed
 
@@ -50,6 +54,7 @@ All notable changes to this package are documented in this file.
 
 - Invoke Azure Monitor export callbacks only once when they throw, without reporting callback
   errors back to the same callback as export failures.
+- Fit unload telemetry with removable custom fields within one keepalive or Beacon request.
 
 ## 0.1.0-alpha.2 - 2026-10-08
 
