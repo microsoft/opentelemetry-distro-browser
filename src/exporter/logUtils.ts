@@ -60,6 +60,7 @@ import {
   ATTR_USER_ID,
 } from "../user/constants.js";
 import { AZURE_MONITOR_SAMPLE_RATE } from "../sampling.js";
+import { getManagedOperationName } from "../context/operationName.js";
 
 const promotedLogAttributes = /* @__PURE__ */ new Set([
   EXCEPTION_MESSAGE,
@@ -410,6 +411,7 @@ export function logToEnvelope(
     logRecord.resource.attributes["service.name"],
     logRecord.attributes as Attributes,
     logRecord.resource.attributes,
+    getManagedOperationName(logRecord),
   );
   const severityLevel = mapSeverity(logRecord.severityNumber);
   const time = hrTimeToDate(logRecord.hrTime);
@@ -454,17 +456,19 @@ export function logToEnvelope(
       referrer === undefined
         ? undefined
         : truncateToLength(serializeAttribute(referrer), MaxPropertyLengths.THIRTEEN_BIT);
+    const pageViewName = serializeAttribute(
+      logRecord.body ??
+        logRecord.attributes[ATTR_PAGE_VIEW_NAME] ??
+        logRecord.attributes[URL_FULL] ??
+        "Page View",
+    );
+    tags["ai.operation.name"] = pageViewName;
     name = "Microsoft.ApplicationInsights.PageView";
     baseType = "PageViewData";
     baseData = {
       ver: 2,
       id: pageViewId === undefined ? generatePageViewId() : serializeAttribute(pageViewId),
-      name: serializeAttribute(
-        logRecord.body ??
-          logRecord.attributes[ATTR_PAGE_VIEW_NAME] ??
-          logRecord.attributes[URL_FULL] ??
-          "Page View",
-      ),
+      name: pageViewName,
       url:
         logRecord.attributes[URL_FULL] === undefined
           ? undefined

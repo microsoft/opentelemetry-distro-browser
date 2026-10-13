@@ -3,7 +3,10 @@
 
 import type { Attributes, HrTime, SpanContext } from "@opentelemetry/api";
 import { SDK_INFO } from "@opentelemetry/core";
-import { ATTR_TELEMETRY_SDK_VERSION } from "@opentelemetry/semantic-conventions";
+import {
+  ATTR_SERVICE_VERSION,
+  ATTR_TELEMETRY_SDK_VERSION,
+} from "@opentelemetry/semantic-conventions";
 import {
   ATTR_USER_AGENT_OS_NAME,
   ATTR_USER_AGENT_OS_VERSION,
@@ -154,6 +157,7 @@ export function createTags(
   serviceName: unknown,
   attributes: Attributes,
   resourceAttributes: Attributes,
+  operationName?: string,
 ): Record<string, string> {
   const tags: Record<string, string> = {
     "ai.internal.sdkVersion": getSdkVersion(),
@@ -161,6 +165,7 @@ export function createTags(
     "ai.device.id": "browser",
   };
   if (traceId) tags["ai.operation.id"] = traceId;
+  if (operationName) tags["ai.operation.name"] = operationName;
   if (parentContext?.spanId && !isPageContext(parentContext)) {
     tags["ai.operation.parentId"] = parentContext.spanId;
   }
@@ -180,6 +185,10 @@ export function createTags(
     tags["ai.device.osVersion"] = `${attributeOsName}${attributeOsVersion}`;
   } else if (isNonEmptyString(resourceOsName) && isNonEmptyString(resourceOsVersion)) {
     tags["ai.device.osVersion"] = `${resourceOsName}${resourceOsVersion}`;
+  }
+  const applicationVersion = resourceAttributes[ATTR_SERVICE_VERSION];
+  if (isNonEmptyString(applicationVersion)) {
+    tags["ai.application.ver"] = applicationVersion;
   }
   const anonymousUserId = selectNonEmptyString(
     attributes[ATTR_ENDUSER_PSEUDO_ID],

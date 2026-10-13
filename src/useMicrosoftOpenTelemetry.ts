@@ -27,7 +27,11 @@ import {
 import { OPENTELEMETRY_BROWSER_VERSION } from "./shared/constants.js";
 import { getSharedRegistry, reportError } from "./shared/globalOwnership.js";
 import { runLifecycleTasks, subscribeToUnload } from "./shared/lifecycle.js";
-import { getPageOperation, isPageContextRegistered } from "./routing/pageContext.js";
+import {
+  getPageOperation,
+  getPageOperationName,
+  isPageContextRegistered,
+} from "./routing/pageContext.js";
 import { startTelemetryInstance, type TelemetryInstance } from "./routing/telemetryInstance.js";
 import { ApplicationInsightsSampler, isTraceSampled, PageOperationSampler } from "./sampling.js";
 import { AzureMonitorSamplingLogRecordProcessor } from "./samplingLogRecordProcessor.js";
@@ -119,7 +123,10 @@ export async function useMicrosoftOpenTelemetry(
   );
   const pageView = owned[0];
   const correlation = pageView
-    ? new PageViewCorrelation(() => pageView.getOperationContext())
+    ? new PageViewCorrelation(
+        () => pageView.getOperationContext(),
+        () => pageView.pageViews.getCurrentPageView()?.name,
+      )
     : undefined;
   correlationState.current = correlation;
   // Publish the initial page operation before caller instrumentations can emit.
@@ -135,6 +142,9 @@ export async function useMicrosoftOpenTelemetry(
   const contextProvider = {
     ...userContext.provider,
     ...sessionProvider,
+    getOperationName: () =>
+      pageView?.pageViews.getCurrentPageView()?.name ??
+      getPageOperationName(correlationState.current),
   };
   const contextSpanProcessor = new BrowserContextSpanProcessor(contextProvider);
   const contextLogRecordProcessor = new BrowserContextLogRecordProcessor(contextProvider);

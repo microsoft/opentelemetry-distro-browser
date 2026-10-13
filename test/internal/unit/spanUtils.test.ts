@@ -7,6 +7,7 @@ import { resourceFromAttributes } from "@opentelemetry/resources";
 import type { ReadableSpan } from "@opentelemetry/sdk-trace-base";
 import { ATTR_TELEMETRY_SDK_VERSION } from "@opentelemetry/semantic-conventions";
 import { describe, expect, it } from "vitest";
+import { setManagedOperationName } from "../../../src/context/operationName.js";
 import { spanToEnvelope, spanToEnvelopes } from "../../../src/exporter/spanUtils.js";
 import { OPENTELEMETRY_BROWSER_VERSION } from "../../../src/shared/constants.js";
 import { AZURE_MONITOR_SAMPLE_RATE } from "../../../src/sampling.js";
@@ -104,6 +105,28 @@ describe("Azure Monitor span envelope mapping", () => {
     );
 
     expect(envelope.tags["ai.application.ver"]).toBe("v".repeat(1_024));
+  });
+
+  it("maps service.version to application context", () => {
+    const envelope = spanToEnvelope(
+      makeSpan({
+        resource: resourceFromAttributes({
+          "service.name": "browser-store",
+          "service.version": "2.4.1",
+        }),
+      }),
+      instrumentationKey,
+    );
+
+    expect(envelope.tags["ai.application.ver"]).toBe("2.4.1");
+  });
+
+  it("maps the page name captured for an application span to operation context", () => {
+    const span = makeSpan();
+    setManagedOperationName(span, "Products");
+
+    expect(spanToEnvelope(span, instrumentationKey).tags["ai.operation.name"]).toBe("Products");
+    expect(span.attributes).not.toHaveProperty("ai.operation.name");
   });
 
   it.each([SpanKind.CLIENT, SpanKind.SERVER, SpanKind.CONSUMER, SpanKind.INTERNAL])(
