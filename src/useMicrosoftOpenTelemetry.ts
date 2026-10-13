@@ -143,8 +143,8 @@ export async function useMicrosoftOpenTelemetry(
     ...userContext.provider,
     ...sessionProvider,
     getOperationName: () =>
-      pageView?.pageViews.getCurrentPageView()?.name ??
-      getPageOperationName(correlationState.current),
+      getPageOperationName(correlationState.current) ??
+      pageView?.pageViews.getCurrentPageView()?.name,
   };
   const contextSpanProcessor = new BrowserContextSpanProcessor(contextProvider);
   const contextLogRecordProcessor = new BrowserContextLogRecordProcessor(contextProvider);
