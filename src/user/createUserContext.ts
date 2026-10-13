@@ -198,7 +198,9 @@ export function createUserContext(
       }
       authenticatedUserId = userId;
       accountId = newAccountId;
-      if (!authenticatedPersistenceEnabled) return;
+      if (!authenticatedPersistenceEnabled && (!persistenceEnabled || anonymousIdentityEnabled)) {
+        return;
+      }
       try {
         requireIdentityPersisted(persist());
         anonymousIdentityEnabled = true;

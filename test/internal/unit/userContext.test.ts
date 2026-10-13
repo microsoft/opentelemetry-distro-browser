@@ -478,6 +478,32 @@ it("retries authenticated identity persistence after storage recovers", async ()
   });
 });
 
+it("retries anonymous-only persistence after a default-mode clear failure", async () => {
+  const current = await initialize("default");
+  vi.spyOn(Storage.prototype, "setItem")
+    .mockImplementationOnce(() => {
+      throw new DOMException("full", "QuotaExceededError");
+    })
+    .mockImplementationOnce(() => {
+      throw new DOMException("full", "QuotaExceededError");
+    });
+
+  current.handle.userContext.clearAuthenticatedUserContext();
+  expect(localStorage.getItem(storageKey)).toBeNull();
+  expect(current.emit().span.attributes["enduser.pseudo.id"]).toBeUndefined();
+
+  expect(() =>
+    current.handle.userContext.setAuthenticatedUserContext("in-memory-user", "in-memory-account"),
+  ).not.toThrow();
+  const stored = JSON.parse(localStorage.getItem(storageKey)!);
+  expect(stored).toEqual({ anonymousId: expect.any(String) });
+  expect(current.emit().span.attributes).toMatchObject({
+    "enduser.pseudo.id": stored.anonymousId,
+    "user.id": "in-memory-user",
+    "user.account.id": "in-memory-account",
+  });
+});
+
 it("reports a persistence failure when authenticated identity cannot be saved", async () => {
   const current = await initialize(true);
   vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
