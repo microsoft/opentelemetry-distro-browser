@@ -229,16 +229,31 @@ await useMicrosoftOpenTelemetry({
 
 ## Bundle size
 
-The production bundle is built and measured in CI. For `0.1.0-alpha.3`:
+The size depends on how the package is loaded. Sizes in KiB for `0.1.0-alpha.3`:
 
-| Artifact                   | Size      |
-| -------------------------- | --------: |
-| Minified ESM               | 129.27 kB |
-| Minified ESM + gzip        |  39.40 kB |
-| Minified ESM + Brotli      |  33.96 kB |
+| Loaded from | Includes                                          | Minified |  gzip | Brotli |
+| ----------- | ------------------------------------------------- | -------: | ----: | -----: |
+| npm         | Distribution, page views and Azure Monitor export |    131.4 |  40.2 |   35.2 |
+| CDN         | Everything, including all nine instrumentations   |    176.7 |  53.0 |   46.0 |
 
-Run `npm run build && npm run size` to reproduce these measurements. Optional browser
-instrumentations are loaded through dynamic imports and remain outside the root bundle unless used.
+**npm.** The application's bundler removes code the application does not use. Instrumentations are
+loaded through dynamic imports only when enabled, so each one adds only its own code. Gzip added
+by each instrumentation, measured on its own:
+
+| Instrumentation | gzip | Instrumentation    | gzip |
+| --------------- | ---: | ------------------ | ---: |
+| `fetch`         |  2.3 | `navigationTiming` |  0.9 |
+| `xhr`           |  1.8 | `resourceTiming`   |  1.5 |
+| `console`       |  0.3 | `userAction`       |  0.8 |
+| `errors`        |  0.3 | `webVitals`        |  5.3 |
+| `navigation`    |  0.8 |                    |      |
+
+**CDN.** A page that loads a script file cannot remove unused code, and the file cannot know which
+features the page will enable, so `opentelemetry-browser.<version>.min.js` includes every
+instrumentation. The loader snippet enables `fetch` and `xhr`; the others are included but stay off
+unless enabled.
+
+Run `npm run build && npm run size` to reproduce these measurements.
 
 ## Package formats
 
