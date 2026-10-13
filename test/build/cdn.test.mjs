@@ -150,11 +150,14 @@ const runtimeKeys = async (entry) =>
 
 test("every CDN bundle loads without window and exposes the full npm API", async () => {
   const otelApi = ["context", "diag", "logs", "metrics", "propagation", "trace"];
+  // The loader snippet builds its resource with this; npm consumers import it themselves.
+  const loaderApi = ["resourceFromAttributes"];
   const sdkKeys = [
     ...new Set([
       ...(await runtimeKeys("index.js")),
       ...(await runtimeKeys("instrumentations.js")),
       ...otelApi,
+      ...loaderApi,
     ]),
   ].sort();
   const instrumentationKeys = (await runtimeKeys("instrumentations.js")).sort();
