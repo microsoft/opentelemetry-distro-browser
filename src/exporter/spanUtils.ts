@@ -59,6 +59,15 @@ const promotedExceptionEventAttributes = /* @__PURE__ */ new Set([
 ]);
 const promotedEventAttributes = /* @__PURE__ */ new Set(["session.id"]);
 
+function omitCustomFields(envelope: AzureMonitorEnvelope): AzureMonitorEnvelope {
+  const {
+    properties: _properties,
+    measurements: _measurements,
+    ...baseData
+  } = envelope.data.baseData;
+  return { ...envelope, data: { ...envelope.data, baseData } };
+}
+
 function spanSucceeded(span: ReadableSpan, statusCode: number): boolean {
   if (span.status.code !== SpanStatusCode.UNSET) {
     return span.status.code === SpanStatusCode.OK;
@@ -193,7 +202,9 @@ function spanEventToEnvelope(
     const budgetedEnvelopes =
       unloadPrecedingEnvelopes === undefined
         ? [envelopeWithoutException]
-        : [...unloadPrecedingEnvelopes, ...spanEnvelopes, envelopeWithoutException];
+        : [...unloadPrecedingEnvelopes, ...spanEnvelopes, envelopeWithoutException].map(
+            omitCustomFields,
+          );
     const maxExceptionSize = MAX_BEACON_BODY_SIZE - getUtf8Size(JSON.stringify(budgetedEnvelopes));
     const baseData: ExceptionData = {
       ...baseDataWithoutException,

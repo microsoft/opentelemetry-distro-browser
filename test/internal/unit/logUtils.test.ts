@@ -89,7 +89,10 @@ describe("Azure Monitor log envelope mapping", () => {
         properties: { "browser.page_view.custom": "kept" },
         measurements: { itemCount: 2 },
       });
-      expect(envelope.data.baseData.properties).toEqual({ "browser.page_view.custom": "kept" });
+      expect(envelope.data.baseData.properties).toEqual({
+        "browser.page_view.custom": "kept",
+        refUri: "https://example.test/previous",
+      });
       expect(envelope.data.baseData.measurements).toEqual({ itemCount: 2 });
       expect(record.attributes).toEqual(originalAttributes);
     },
@@ -744,7 +747,6 @@ describe("Azure Monitor log envelope mapping", () => {
           duration: "00:00:00.4252500",
           referredUri: "https://shop.example.test/products",
           properties: {
-            "browser.page_view.same_document": "true",
             refUri: "https://shop.example.test/products",
           },
           measurements: undefined,
