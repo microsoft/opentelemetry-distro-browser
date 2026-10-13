@@ -422,7 +422,7 @@ describe("AzureMonitorSpanExporter", () => {
     }
   });
 
-  it("fits a maximal span-event exception into the aggregate beacon limit", async () => {
+  it("fits a maximal span-event exception after preceding spans into the beacon limit", async () => {
     const fetch = vi.fn<typeof globalThis.fetch>();
     vi.stubGlobal("fetch", fetch);
     const sendBeacon = vi.spyOn(navigator, "sendBeacon").mockReturnValue(true);
@@ -444,7 +444,7 @@ describe("AzureMonitorSpanExporter", () => {
     beginUnloading();
 
     try {
-      await expect(exportSpans(exporter, [span])).resolves.toEqual({
+      await expect(exportSpans(exporter, [makeSpan("preceding"), span])).resolves.toEqual({
         code: ExportResultCode.SUCCESS,
       });
       expect(fetch).not.toHaveBeenCalled();
@@ -452,7 +452,7 @@ describe("AzureMonitorSpanExporter", () => {
       const body = sendBeacon.mock.calls[0][1] as Blob;
       expect(body.size).toBeGreaterThan(MAX_PENDING_KEEPALIVE_BODY_SIZE);
       expect(body.size).toBeLessThanOrEqual(MAX_BEACON_BODY_SIZE);
-      expect(JSON.parse(await body.text())).toHaveLength(2);
+      expect(JSON.parse(await body.text())).toHaveLength(3);
     } finally {
       endUnloading();
     }
