@@ -150,6 +150,53 @@ describe("AzureMonitorSpanExporter", () => {
     }
   });
 
+  it("preserves each maximal span-event exception during normal exports", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => new Response("", { status: 200 }));
+    vi.stubGlobal("fetch", fetch);
+    const exporter = new AzureMonitorSpanExporter({ connectionString });
+    const maximalAttributes = {
+      "exception.message": "m".repeat(32 * 1024),
+      "exception.stacktrace": "s".repeat(32 * 1024),
+    };
+    const span = {
+      ...makeSpan(),
+      events: [1, 2].map((second) => ({
+        name: "exception",
+        time: [1_735_689_600 + second, 0],
+        attributes: maximalAttributes,
+        droppedAttributesCount: 0,
+      })),
+    } as ReadableSpan;
+
+    try {
+      await expect(exportSpans(exporter, [span])).resolves.toEqual({
+        code: ExportResultCode.SUCCESS,
+      });
+      const envelopes = (
+        await Promise.all(fetch.mock.calls.map((_, call) => requestEnvelopes(fetch, call)))
+      ).flat() as Array<{
+        data: {
+          baseType: string;
+          baseData: { exceptions?: Array<{ message: string; stack?: string }> };
+        };
+      }>;
+      const exceptions = envelopes
+        .filter((envelope) => envelope.data.baseType === "ExceptionData")
+        .map((envelope) => envelope.data.baseData.exceptions?.[0]);
+      expect(exceptions).toHaveLength(2);
+      expect(exceptions).toEqual([
+        expect.objectContaining({ message: expect.any(String), stack: expect.any(String) }),
+        expect.objectContaining({ message: expect.any(String), stack: expect.any(String) }),
+      ]);
+      expect(exceptions[0]!.message.length).toBeGreaterThan(0);
+      expect(exceptions[0]!.stack!.length).toBeGreaterThan(0);
+      expect(exceptions[1]!.message.length).toBe(exceptions[0]!.message.length);
+      expect(exceptions[1]!.stack!.length).toBe(exceptions[0]!.stack!.length);
+    } finally {
+      await exporter.shutdown();
+    }
+  });
+
   it("falls back to HTTPS instead of exporting spans to a non-loopback HTTP endpoint", async () => {
     const fetch = vi.fn<typeof globalThis.fetch>(async () => new Response("", { status: 200 }));
     vi.stubGlobal("fetch", fetch);

@@ -153,7 +153,7 @@ function spanEventToEnvelope(
   span: ReadableSpan,
   event: ReadableSpan["events"][number],
   instrumentationKey: string,
-  precedingEnvelopes: readonly AzureMonitorEnvelope[],
+  unloadPrecedingEnvelopes: readonly AzureMonitorEnvelope[] | undefined,
   spanEnvelopes: readonly AzureMonitorEnvelope[],
 ): AzureMonitorEnvelope<MessageData | ExceptionData> {
   const spanContext = span.spanContext();
@@ -190,11 +190,11 @@ function spanEventToEnvelope(
       baseDataWithoutException,
       sampleRate,
     );
-    const maxExceptionSize =
-      MAX_BEACON_BODY_SIZE -
-      getUtf8Size(
-        JSON.stringify([...precedingEnvelopes, ...spanEnvelopes, envelopeWithoutException]),
-      );
+    const budgetedEnvelopes =
+      unloadPrecedingEnvelopes === undefined
+        ? [envelopeWithoutException]
+        : [...unloadPrecedingEnvelopes, ...spanEnvelopes, envelopeWithoutException];
+    const maxExceptionSize = MAX_BEACON_BODY_SIZE - getUtf8Size(JSON.stringify(budgetedEnvelopes));
     const baseData: ExceptionData = {
       ...baseDataWithoutException,
       exceptions: [createExceptionDetails(attributes, undefined, maxExceptionSize)],
@@ -230,12 +230,12 @@ function spanEventToEnvelope(
 export function spanToEnvelopes(
   span: ReadableSpan,
   instrumentationKey: string,
-  precedingEnvelopes: readonly AzureMonitorEnvelope[] = [],
+  unloadPrecedingEnvelopes?: readonly AzureMonitorEnvelope[],
 ): readonly AzureMonitorEnvelope[] {
   const envelopes: AzureMonitorEnvelope[] = [spanToEnvelope(span, instrumentationKey)];
   for (const event of span.events) {
     envelopes.push(
-      spanEventToEnvelope(span, event, instrumentationKey, precedingEnvelopes, envelopes),
+      spanEventToEnvelope(span, event, instrumentationKey, unloadPrecedingEnvelopes, envelopes),
     );
   }
   return envelopes;
