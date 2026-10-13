@@ -4,7 +4,7 @@ Deliver advanced parity with capabilities that already exist in
 `microsoft/ApplicationInsights-JS`, implemented through standard OpenTelemetry APIs and contracts
 where applicable.
 
-Status: started. The M2 CDN and snippet path has shipped; the advanced loader is the first M3 item
+Status: started. The M2 CDN and snippet path have shipped; the advanced loader is the first M3 item
 in progress.
 
 ## Work items
