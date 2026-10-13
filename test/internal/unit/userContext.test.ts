@@ -35,11 +35,14 @@ afterEach(async () => {
   else localStorage.setItem(storageKey, previousUser);
 });
 
-async function initialize(enabled = false, resourceAttributes?: Record<string, string>) {
+async function initialize(
+  persistence: boolean | "default" = false,
+  resourceAttributes?: Record<string, string>,
+) {
   const spans: Span[] = [];
   const records: ReadWriteLogRecord[] = [];
   const handle = await useMicrosoftOpenTelemetry({
-    userContext: { enabled },
+    ...(persistence === "default" ? {} : { userContext: { enabled: persistence } }),
     pageView: { enabled: false },
     ...(resourceAttributes && { resource: resourceFromAttributes(resourceAttributes) }),
     spanProcessors: [
@@ -76,6 +79,33 @@ it("does not apply anonymous identity or access storage before persistence is en
     expect(record.attributes["enduser.pseudo.id"]).toBeUndefined();
   }
   expect(access).not.toHaveBeenCalled();
+});
+
+it("persists anonymous identity by default without persisting authenticated identity", async () => {
+  const first = await initialize("default");
+  const anonymousId = first.emit().span.attributes["enduser.pseudo.id"];
+  expect(anonymousId).toMatch(/^[0-9a-f]{32}$/);
+  expect(JSON.parse(localStorage.getItem(storageKey)!)).toEqual({ anonymousId });
+
+  first.handle.userContext.setAuthenticatedUserContext("signed-in-user", "tenant-42");
+  expect(first.emit().span.attributes).toMatchObject({
+    "enduser.pseudo.id": anonymousId,
+    "user.id": "signed-in-user",
+    "user.account.id": "tenant-42",
+  });
+  expect(JSON.parse(localStorage.getItem(storageKey)!)).toEqual({ anonymousId });
+
+  await first.handle.shutdown();
+  handles.delete(first.handle);
+  trace.disable();
+  logs.disable();
+
+  const restored = await initialize("default");
+  expect(restored.emit().span.attributes).toMatchObject({
+    "enduser.pseudo.id": anonymousId,
+  });
+  expect(restored.emit().span.attributes["user.id"]).toBeUndefined();
+  expect(restored.emit().span.attributes["user.account.id"]).toBeUndefined();
 });
 
 it("persists, restores, and removes identity when persistence is enabled or disabled", async () => {

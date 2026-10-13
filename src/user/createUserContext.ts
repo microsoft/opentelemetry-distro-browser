@@ -80,7 +80,7 @@ export interface UserContextProvider {
 }
 
 export function createUserContext(
-  initialEnabled: boolean,
+  initialEnabled: boolean | undefined,
   storage: KeyValueStorage = createLocalStorageKeyValueStorage(
     "User storage unavailable; using in-memory identity.",
   ),
@@ -88,7 +88,8 @@ export function createUserContext(
   context: MicrosoftOpenTelemetryBrowserUserContext;
   provider: UserContextProvider;
 } {
-  let enabled = initialEnabled;
+  let anonymousPersistenceEnabled = initialEnabled !== false;
+  let authenticatedPersistenceEnabled = initialEnabled === true;
   let anonymousId = generateAnonymousId();
   let authenticatedUserId: string | undefined;
   let accountId: string | undefined;
@@ -96,13 +97,15 @@ export function createUserContext(
   function currentUser(): StoredUser {
     return {
       anonymousId,
-      ...(authenticatedUserId === undefined ? {} : { authenticatedUserId }),
-      ...(accountId === undefined ? {} : { accountId }),
+      ...(authenticatedPersistenceEnabled && authenticatedUserId !== undefined
+        ? { authenticatedUserId }
+        : {}),
+      ...(authenticatedPersistenceEnabled && accountId !== undefined ? { accountId } : {}),
     };
   }
 
   function save(): boolean {
-    if (!enabled) return true;
+    if (!anonymousPersistenceEnabled) return true;
     return storage.setItem(USER_STORAGE_KEY, JSON.stringify(currentUser()));
   }
 
@@ -149,25 +152,35 @@ export function createUserContext(
     }
   }
 
-  if (enabled) {
+  if (anonymousPersistenceEnabled) {
     const result = storage.getItem(USER_STORAGE_KEY);
     if (!result.success) {
-      enabled = false;
+      anonymousPersistenceEnabled = false;
+      authenticatedPersistenceEnabled = false;
     } else {
       if (result.value === null) {
-        if (!save()) enabled = false;
+        if (!save()) {
+          anonymousPersistenceEnabled = false;
+          authenticatedPersistenceEnabled = false;
+        }
       } else {
         const stored = toStoredUser(tryParseJson(result.value));
         if (stored) {
           anonymousId = stored.anonymousId;
-          authenticatedUserId = stored.authenticatedUserId;
-          accountId = stored.accountId;
+          if (authenticatedPersistenceEnabled) {
+            authenticatedUserId = stored.authenticatedUserId;
+            accountId = stored.accountId;
+          } else if (!save()) {
+            storage.removeItem(USER_STORAGE_KEY);
+            anonymousPersistenceEnabled = false;
+          }
         } else {
           diag.warn("Invalid stored user identity; creating a new identity.");
           if (!save()) {
             // The storage adapter already reports failures; initialization continues in memory.
             storage.removeItem(USER_STORAGE_KEY);
-            enabled = false;
+            anonymousPersistenceEnabled = false;
+            authenticatedPersistenceEnabled = false;
           }
         }
       }
@@ -184,39 +197,45 @@ export function createUserContext(
       }
       authenticatedUserId = userId;
       accountId = newAccountId;
+      if (!authenticatedPersistenceEnabled) return;
       try {
         requireIdentityPersisted(persist());
       } catch (error) {
-        enabled = false;
+        anonymousPersistenceEnabled = false;
+        authenticatedPersistenceEnabled = false;
         throw error;
       }
     },
     clearAuthenticatedUserContext() {
       authenticatedUserId = undefined;
       accountId = undefined;
-      if (!enabled) {
+      if (!anonymousPersistenceEnabled) {
         clearPersistedAuthenticatedContext();
       } else if (!persist()) {
         // Stale authentication is already removed; keep the anonymous identity in memory.
-        enabled = false;
+        anonymousPersistenceEnabled = false;
+        authenticatedPersistenceEnabled = false;
         diag.warn("User identity persistence disabled; storage writes failed.");
       }
     },
     setEnabled(newEnabled) {
       if (newEnabled) {
-        enabled = true;
+        anonymousPersistenceEnabled = true;
+        authenticatedPersistenceEnabled = true;
         try {
           requireIdentityPersisted(persist());
         } catch (error) {
-          enabled = false;
+          anonymousPersistenceEnabled = false;
+          authenticatedPersistenceEnabled = false;
           throw error;
         }
       } else {
         const removed = storage.removeItem(USER_STORAGE_KEY);
         // Only an instance that persisted identity must guarantee removal; otherwise clear any
         // identity left by an earlier page load on a best-effort basis.
-        if (enabled) requireIdentityCleared(removed);
-        enabled = false;
+        if (anonymousPersistenceEnabled) requireIdentityCleared(removed);
+        anonymousPersistenceEnabled = false;
+        authenticatedPersistenceEnabled = false;
       }
     },
   };
@@ -224,7 +243,7 @@ export function createUserContext(
   return {
     context,
     provider: {
-      getAnonymousUserId: () => (enabled ? anonymousId : undefined),
+      getAnonymousUserId: () => (anonymousPersistenceEnabled ? anonymousId : undefined),
       getAuthenticatedUserId: () => authenticatedUserId,
       getAccountId: () => accountId,
     },

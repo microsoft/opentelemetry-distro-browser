@@ -202,13 +202,15 @@ it("allows concurrent initialization without replacing routers or mixing instrum
   await Promise.all(handles.map((handle) => handle.forceFlush()));
   expect(first.spanExporter.getFinishedSpans().map((span) => span.name)).toEqual(["a"]);
   expect(second.spanExporter.getFinishedSpans().map((span) => span.name)).toEqual(["b"]);
+  const anonymousId = first.spanExporter.getFinishedSpans()[0].attributes["enduser.pseudo.id"];
+  expect(anonymousId).toMatch(/^[0-9a-f]{32}$/);
   for (const pipeline of [first, second]) {
-    expect(
-      pipeline.spanExporter.getFinishedSpans()[0].attributes["enduser.pseudo.id"],
-    ).toBeUndefined();
-    expect(
-      pipeline.logExporter.getFinishedLogRecords()[0].attributes["enduser.pseudo.id"],
-    ).toBeUndefined();
+    expect(pipeline.spanExporter.getFinishedSpans()[0].attributes["enduser.pseudo.id"]).toBe(
+      anonymousId,
+    );
+    expect(pipeline.logExporter.getFinishedLogRecords()[0].attributes["enduser.pseudo.id"]).toBe(
+      anonymousId,
+    );
   }
   const router = trace.getTracerProvider();
   await handles[0].shutdown();
@@ -486,6 +488,7 @@ it("cleans up partially created owned processors before handing them to a pipeli
   await expect(
     useMicrosoftOpenTelemetry({
       session: { enabled: true },
+      userContext: { enabled: false },
       pageView: { enabled: false },
     }),
   ).rejects.toBe(failure);

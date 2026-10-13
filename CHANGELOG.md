@@ -16,6 +16,10 @@ All notable changes to this package are documented in this file.
 
 - Include the browser runtime and upstream OpenTelemetry SDK version in the Azure Monitor
   `ai.internal.sdkVersion` tag.
+- Persist distribution-generated anonymous user IDs by default so Application Insights user
+  metrics remain stable across page loads and SDK instances. Authenticated user and account IDs
+  remain memory-only unless `userContext: { enabled: true }` is configured; set `enabled: false`
+  to disable managed identity persistence and user metrics.
 
 ### Fixed
 
@@ -30,8 +34,6 @@ All notable changes to this package are documented in this file.
   export and cleanup failures.
 - Prevent pending page views from being lost during unload by settling them before pagehide or
   hidden-visibility flushes, including tab switches.
-- Suppress distribution-generated anonymous user IDs when identity persistence is disabled or
-  unavailable, preventing page loads and SDK instances from inflating Application Insights Users.
 
 ## 0.1.0-alpha.3 - 2026-10-09
 
