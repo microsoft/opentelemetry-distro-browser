@@ -880,6 +880,7 @@ describe("Azure Monitor log envelope mapping", () => {
         eventName: "browser.page_view",
         attributes: {
           ...pageViewDiagnostics,
+          "browser.page_view.name": "Cart",
           "browser.page_view.performance.total": 170,
           "browser.page_view.performance.network_connect": 20,
           "browser.page_view.performance.sent_request": 50,
