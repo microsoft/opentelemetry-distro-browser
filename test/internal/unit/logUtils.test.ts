@@ -5,8 +5,8 @@ import { SDK_INFO } from "@opentelemetry/core";
 import { resourceFromAttributes } from "@opentelemetry/resources";
 import { ATTR_TELEMETRY_SDK_VERSION } from "@opentelemetry/semantic-conventions";
 import { describe, expect, it } from "vitest";
-import { MAX_BEACON_BODY_SIZE } from "../../../src/exporter/constants.js";
-import type { ExceptionData } from "../../../src/exporter/telemetryModels.js";
+import { MaxPropertyLengths, MAX_BEACON_BODY_SIZE } from "../../../src/exporter/constants.js";
+import type { ExceptionData, PageViewData } from "../../../src/exporter/telemetryModels.js";
 import {
   createExceptionDetails,
   logToEnvelope,
@@ -277,6 +277,25 @@ describe("Azure Monitor log envelope mapping", () => {
       properties: { refUri: "https://example.test/products" },
       measurements: undefined,
     });
+  });
+
+  it("applies the custom-dimension byte limit to page-view refUri", () => {
+    const referrer = "€".repeat(3_000);
+    const envelope = logToEnvelope(
+      makeLog({
+        eventName: "browser.page_view",
+        attributes: { "browser.page_view.referrer": referrer },
+      }),
+      instrumentationKey,
+    );
+    const baseData = envelope.data.baseData as PageViewData;
+    const refUri = baseData.properties?.refUri;
+
+    expect(baseData.referredUri).toBe(referrer);
+    expect(refUri).not.toContain("�");
+    expect(new TextEncoder().encode(refUri).byteLength).toBeLessThanOrEqual(
+      MaxPropertyLengths.THIRTEEN_BIT,
+    );
   });
 
   it("maps exception semantic attributes and severity", () => {

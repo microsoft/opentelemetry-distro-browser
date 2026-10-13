@@ -29,6 +29,7 @@ import {
   mapAttributes,
   millisecondsToTimeSpan,
   serializeAttribute,
+  truncateCustomDimensions,
   truncateToLength,
 } from "./common.js";
 import {
@@ -473,7 +474,7 @@ export function logToEnvelope(
       properties:
         referrerValue === undefined
           ? customFields.properties
-          : { ...customFields.properties, refUri: referrerValue },
+          : truncateCustomDimensions({ ...customFields.properties, refUri: referrerValue }),
     };
   } else if (logRecord.eventName && logRecord.eventName !== "browser.console") {
     name = "Microsoft.ApplicationInsights.Event";
