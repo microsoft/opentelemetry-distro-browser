@@ -233,8 +233,8 @@ The size depends on how the package is loaded. Sizes in KiB, measured from the c
 
 | Loaded from | Includes                                          | Minified |  gzip | Brotli |
 | ----------- | ------------------------------------------------- | -------: | ----: | -----: |
-| npm         | Distribution, page views and Azure Monitor export |    131.4 |  40.2 |   35.2 |
-| CDN         | Everything, including all nine instrumentations   |    176.7 |  53.0 |   46.0 |
+| npm         | Distribution, page views and Azure Monitor export |    131.6 |  40.3 |   35.3 |
+| CDN         | Everything, including all nine instrumentations   |    176.9 |  53.0 |   46.1 |
 
 **npm.** The application's bundler removes code the application does not use. Instrumentations are
 loaded through dynamic imports only when enabled, so each one adds only its own code. Gzip added
