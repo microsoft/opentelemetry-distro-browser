@@ -88,7 +88,8 @@ export function createUserContext(
   context: MicrosoftOpenTelemetryBrowserUserContext;
   provider: UserContextProvider;
 } {
-  let anonymousPersistenceEnabled = initialEnabled !== false;
+  let persistenceEnabled = initialEnabled !== false;
+  let anonymousIdentityEnabled = persistenceEnabled;
   let authenticatedPersistenceEnabled = initialEnabled === true;
   let anonymousId = generateAnonymousId();
   let authenticatedUserId: string | undefined;
@@ -105,7 +106,7 @@ export function createUserContext(
   }
 
   function save(): boolean {
-    if (!anonymousPersistenceEnabled) return true;
+    if (!persistenceEnabled) return true;
     return storage.setItem(USER_STORAGE_KEY, JSON.stringify(currentUser()));
   }
 
@@ -152,15 +153,17 @@ export function createUserContext(
     }
   }
 
-  if (anonymousPersistenceEnabled) {
+  if (persistenceEnabled) {
     const result = storage.getItem(USER_STORAGE_KEY);
     if (!result.success) {
-      anonymousPersistenceEnabled = false;
+      persistenceEnabled = false;
+      anonymousIdentityEnabled = false;
       authenticatedPersistenceEnabled = false;
     } else {
       if (result.value === null) {
         if (!save()) {
-          anonymousPersistenceEnabled = false;
+          persistenceEnabled = false;
+          anonymousIdentityEnabled = false;
           authenticatedPersistenceEnabled = false;
         }
       } else {
@@ -172,14 +175,16 @@ export function createUserContext(
             accountId = stored.accountId;
           } else if (!save()) {
             storage.removeItem(USER_STORAGE_KEY);
-            anonymousPersistenceEnabled = false;
+            persistenceEnabled = false;
+            anonymousIdentityEnabled = false;
           }
         } else {
           diag.warn("Invalid stored user identity; creating a new identity.");
           if (!save()) {
             // The storage adapter already reports failures; initialization continues in memory.
             storage.removeItem(USER_STORAGE_KEY);
-            anonymousPersistenceEnabled = false;
+            persistenceEnabled = false;
+            anonymousIdentityEnabled = false;
             authenticatedPersistenceEnabled = false;
           }
         }
@@ -200,41 +205,43 @@ export function createUserContext(
       if (!authenticatedPersistenceEnabled) return;
       try {
         requireIdentityPersisted(persist());
+        anonymousIdentityEnabled = true;
       } catch (error) {
-        anonymousPersistenceEnabled = false;
-        authenticatedPersistenceEnabled = false;
+        anonymousIdentityEnabled = false;
         throw error;
       }
     },
     clearAuthenticatedUserContext() {
       authenticatedUserId = undefined;
       accountId = undefined;
-      if (!anonymousPersistenceEnabled) {
+      if (!persistenceEnabled) {
         clearPersistedAuthenticatedContext();
       } else if (!persist()) {
         // Stale authentication is already removed; keep the anonymous identity in memory.
-        anonymousPersistenceEnabled = false;
-        authenticatedPersistenceEnabled = false;
-        diag.warn("User identity persistence disabled; storage writes failed.");
+        anonymousIdentityEnabled = false;
+        diag.warn("User identity persistence failed; storage writes will be retried.");
+      } else {
+        anonymousIdentityEnabled = true;
       }
     },
     setEnabled(newEnabled) {
       if (newEnabled) {
-        anonymousPersistenceEnabled = true;
+        persistenceEnabled = true;
         authenticatedPersistenceEnabled = true;
         try {
           requireIdentityPersisted(persist());
+          anonymousIdentityEnabled = true;
         } catch (error) {
-          anonymousPersistenceEnabled = false;
-          authenticatedPersistenceEnabled = false;
+          anonymousIdentityEnabled = false;
           throw error;
         }
       } else {
         const removed = storage.removeItem(USER_STORAGE_KEY);
         // Only an instance that persisted identity must guarantee removal; otherwise clear any
         // identity left by an earlier page load on a best-effort basis.
-        if (anonymousPersistenceEnabled) requireIdentityCleared(removed);
-        anonymousPersistenceEnabled = false;
+        if (anonymousIdentityEnabled) requireIdentityCleared(removed);
+        persistenceEnabled = false;
+        anonymousIdentityEnabled = false;
         authenticatedPersistenceEnabled = false;
       }
     },
@@ -243,7 +250,7 @@ export function createUserContext(
   return {
     context,
     provider: {
-      getAnonymousUserId: () => (anonymousPersistenceEnabled ? anonymousId : undefined),
+      getAnonymousUserId: () => (anonymousIdentityEnabled ? anonymousId : undefined),
       getAuthenticatedUserId: () => authenticatedUserId,
       getAccountId: () => accountId,
     },
