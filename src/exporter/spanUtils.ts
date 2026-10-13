@@ -16,12 +16,13 @@ import {
 import {
   HTTP_METHOD,
   HTTP_STATUS_CODE,
+  MAX_BEACON_BODY_SIZE,
   MaxPropertyLengths,
   SERVER_ADDRESS,
   SERVER_PORT,
   URL_FULL,
 } from "./constants.js";
-import { createExceptionDetails } from "./logUtils.js";
+import { createExceptionDetails, getUtf8Size } from "./logUtils.js";
 import type {
   AzureMonitorEnvelope,
   ExceptionData,
@@ -152,6 +153,7 @@ function spanEventToEnvelope(
   span: ReadableSpan,
   event: ReadableSpan["events"][number],
   instrumentationKey: string,
+  precedingEnvelopes: readonly AzureMonitorEnvelope[],
 ): AzureMonitorEnvelope<MessageData | ExceptionData> {
   const spanContext = span.spanContext();
   const attributes = event.attributes ?? {};
@@ -174,9 +176,25 @@ function spanEventToEnvelope(
   const sampleRate = getSampleRate(span.attributes);
 
   if (isException) {
-    const baseData: ExceptionData = {
+    const baseDataWithoutException: ExceptionData = {
       ver: 2,
-      exceptions: [createExceptionDetails(attributes, undefined, MaxPropertyLengths.SIXTEEN_BIT)],
+      exceptions: [],
+    };
+    const envelopeWithoutException = createEnvelope(
+      instrumentationKey,
+      "Microsoft.ApplicationInsights.Exception",
+      time,
+      tags,
+      "ExceptionData",
+      baseDataWithoutException,
+      sampleRate,
+    );
+    const maxExceptionSize =
+      MAX_BEACON_BODY_SIZE -
+      getUtf8Size(JSON.stringify([...precedingEnvelopes, envelopeWithoutException]));
+    const baseData: ExceptionData = {
+      ...baseDataWithoutException,
+      exceptions: [createExceptionDetails(attributes, undefined, maxExceptionSize)],
       ...customFields,
     };
     return createEnvelope(
@@ -210,8 +228,9 @@ export function spanToEnvelopes(
   span: ReadableSpan,
   instrumentationKey: string,
 ): readonly AzureMonitorEnvelope[] {
-  return [
-    spanToEnvelope(span, instrumentationKey),
-    ...span.events.map((event) => spanEventToEnvelope(span, event, instrumentationKey)),
-  ];
+  const envelopes: AzureMonitorEnvelope[] = [spanToEnvelope(span, instrumentationKey)];
+  for (const event of span.events) {
+    envelopes.push(spanEventToEnvelope(span, event, instrumentationKey, envelopes));
+  }
+  return envelopes;
 }

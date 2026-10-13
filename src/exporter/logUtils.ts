@@ -133,7 +133,7 @@ function mapSeverity(severityNumber: number | undefined): SeverityLevel | undefi
   return 4;
 }
 
-function getUtf8Size(value: string): number {
+export function getUtf8Size(value: string): number {
   textEncoder ??= new TextEncoder();
   return textEncoder.encode(value).byteLength;
 }
