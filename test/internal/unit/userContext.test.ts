@@ -282,7 +282,7 @@ it("suppresses anonymous identity when localStorage is unavailable", async () =>
   expect(emit().span.attributes["enduser.pseudo.id"]).toBeUndefined();
   expect(() => handle.userContext.setAuthenticatedUserContext("signed-in-user")).not.toThrow();
   expect(warn).toHaveBeenCalledExactlyOnceWith(
-    "User storage unavailable; using in-memory identity.",
+    "User storage unavailable; managed anonymous identity is suppressed.",
   );
 });
 
@@ -309,7 +309,7 @@ it("reports a persistence failure when disabling cannot remove stored identity",
     "Unable to clear persisted user identity.",
   );
   expect(warn).toHaveBeenCalledExactlyOnceWith(
-    "User storage unavailable; using in-memory identity.",
+    "User storage unavailable; managed anonymous identity is suppressed.",
   );
 });
 
@@ -590,7 +590,7 @@ it("can remove persisted identity after quota-limited writes", async () => {
   expect(remove).toHaveBeenCalledWith(storageKey);
   expect(localStorage.getItem(storageKey)).toBeNull();
   expect(warn).toHaveBeenCalledExactlyOnceWith(
-    "User storage unavailable; using in-memory identity.",
+    "User storage unavailable; managed anonymous identity is suppressed.",
   );
 });
 

@@ -82,7 +82,7 @@ export interface UserContextProvider {
 export function createUserContext(
   initialEnabled: boolean | undefined,
   storage: KeyValueStorage = createLocalStorageKeyValueStorage(
-    "User storage unavailable; using in-memory identity.",
+    "User storage unavailable; managed anonymous identity is suppressed.",
   ),
 ): {
   context: MicrosoftOpenTelemetryBrowserUserContext;
