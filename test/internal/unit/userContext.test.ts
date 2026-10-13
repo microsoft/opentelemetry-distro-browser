@@ -108,6 +108,35 @@ it("persists anonymous identity by default without persisting authenticated iden
   expect(restored.emit().span.attributes["user.account.id"]).toBeUndefined();
 });
 
+it("does not erase persisted authentication when a default handle restores anonymous identity", async () => {
+  const optedIn = await initialize(true);
+  optedIn.handle.userContext.setAuthenticatedUserContext("signed-in-user", "tenant-42");
+  const stored = JSON.parse(localStorage.getItem(storageKey)!);
+  await optedIn.handle.shutdown();
+  handles.delete(optedIn.handle);
+  trace.disable();
+  logs.disable();
+
+  const defaultHandle = await initialize("default");
+  expect(defaultHandle.emit().span.attributes).toMatchObject({
+    "enduser.pseudo.id": stored.anonymousId,
+  });
+  expect(defaultHandle.emit().span.attributes["user.id"]).toBeUndefined();
+  expect(defaultHandle.emit().span.attributes["user.account.id"]).toBeUndefined();
+  expect(JSON.parse(localStorage.getItem(storageKey)!)).toEqual(stored);
+  await defaultHandle.handle.shutdown();
+  handles.delete(defaultHandle.handle);
+  trace.disable();
+  logs.disable();
+
+  const restored = await initialize(true);
+  expect(restored.emit().span.attributes).toMatchObject({
+    "enduser.pseudo.id": stored.anonymousId,
+    "user.id": "signed-in-user",
+    "user.account.id": "tenant-42",
+  });
+});
+
 it("persists, restores, and removes identity when persistence is enabled or disabled", async () => {
   const first = await initialize();
   first.handle.userContext.setAuthenticatedUserContext("signed-in-user", "tenant-42");

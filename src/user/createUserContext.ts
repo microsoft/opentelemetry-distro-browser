@@ -173,10 +173,6 @@ export function createUserContext(
           if (authenticatedPersistenceEnabled) {
             authenticatedUserId = stored.authenticatedUserId;
             accountId = stored.accountId;
-          } else if (!save()) {
-            storage.removeItem(USER_STORAGE_KEY);
-            persistenceEnabled = false;
-            anonymousIdentityEnabled = false;
           }
         } else {
           diag.warn("Invalid stored user identity; creating a new identity.");
