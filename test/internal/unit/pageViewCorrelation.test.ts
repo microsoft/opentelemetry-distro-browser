@@ -23,6 +23,7 @@ import type {
 import { logToEnvelope } from "../../../src/exporter/logUtils.js";
 import { spanToEnvelope } from "../../../src/exporter/spanUtils.js";
 import { PageViewCorrelation } from "../../../src/instrumentation/pageView/pageViewCorrelation.js";
+import { createPageViewContext } from "../../../src/instrumentation/pageView/pageViewContext.js";
 import { createInMemoryPipeline } from "../../fixtures/telemetry.js";
 
 const originalUrl = location.href;
@@ -251,6 +252,37 @@ it("keeps a delayed page callback's operation name aligned with its operation ID
     expect(envelope.tags["ai.operation.id"]).toBe(firstOperation.traceId);
     expect(envelope.tags["ai.operation.name"]).toBe(firstName);
   }
+});
+
+it("bounds retained operation names while keeping recently used delayed operations", async () => {
+  const pageViews = createPageViewContext();
+  const correlation = new PageViewCorrelation(undefined, pageViews);
+  const publish = (index: number): string => {
+    const id = (index + 1).toString(16).padStart(32, "0");
+    pageViews.setCurrentPageView({
+      id,
+      index,
+      name: `/route/${index}`,
+      nameSource: "route",
+      url: `https://example.test/route/${index}`,
+      referrer: "",
+      navigationType: "push",
+      sameDocument: true,
+      startTimeUnixMs: index,
+    });
+    return id;
+  };
+
+  const first = publish(0);
+  const second = publish(1);
+  for (let index = 2; index < 32; index++) publish(index);
+  expect(correlation.operationName(first)).toBe("/route/0");
+
+  const newest = publish(32);
+  expect(correlation.operationName(first)).toBe("/route/0");
+  expect(correlation.operationName(second)).toBeUndefined();
+  expect(correlation.operationName(newest)).toBe("/route/32");
+  await correlation.shutdown();
 });
 
 it("refreshes the operation ID and name together inside an earlier History wrapper", async () => {
