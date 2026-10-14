@@ -411,6 +411,7 @@ it.each([
   ["cdnFallback", "yes", "a boolean when provided"],
   ["cdnFallback", true, undefined],
   ["reportLoadFailure", 1, "a boolean when provided"],
+  ["crossOrigin", 1, "a string when provided"],
 ])("rejects invalid %s %#", (name, value, expected) => {
   const message =
     expected !== undefined
@@ -473,6 +474,30 @@ it.each([
       ...options,
     } as SdkLoaderConfig),
   ).toThrow(new TypeError(`SdkLoaderConfig.${field} must be ${expected}.`));
+});
+
+it("accepts an empty crossOrigin value", () => {
+  expect(
+    getSdkLoaderScript({
+      src: "https://example.test/sdk.js",
+      connectionString: "connection",
+      crossOrigin: "",
+    }),
+  ).toContain('"crossOrigin":""');
+});
+
+it("falls back from the canonical CDN URL the browser requests", () => {
+  const generated = getSdkLoaderScript({
+    src: "https://user:pass@JS.monitor.azure.com\\scripts\\otel\\b\\sdk.js",
+    connectionString: "connection",
+    cdnFallback: true,
+  });
+  const src = /"src":"([^"]+)"/.exec(generated)?.[1] ?? "";
+
+  expect(src).toBe("https://user:pass@js.monitor.azure.com/scripts/otel/b/sdk.js");
+  expect(src.replace(/\/\/[^/]+/, "//js.cdn.applicationinsights.io")).toBe(
+    "https://js.cdn.applicationinsights.io/scripts/otel/b/sdk.js",
+  );
 });
 
 it("accepts fully qualified CDN host names for cdnFallback", () => {

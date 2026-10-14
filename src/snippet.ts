@@ -296,6 +296,11 @@ export function getSdkLoaderScript(config: SdkLoaderConfig): string {
   const { samplingPercentage, azureMonitor, instrumentationOptions, resourceAttributes } = config;
   checkField(config.integrity, "integrity", "string");
   check(
+    config.crossOrigin === undefined || typeof config.crossOrigin === "string",
+    "crossOrigin",
+    `a string ${optional}`,
+  );
+  check(
     samplingPercentage === undefined ||
       (typeof samplingPercentage === "number" &&
         samplingPercentage >= 0 &&
@@ -332,9 +337,11 @@ export function getSdkLoaderScript(config: SdkLoaderConfig): string {
   checkField(cdnFallback, "cdnFallback", "boolean");
   checkField(reportLoadFailure, "reportLoadFailure", "boolean");
   let host = "";
+  let href = src;
   try {
     const url = new URL(src);
     if (url.protocol === "https:") host = url.hostname.replace(/\.$/, "");
+    href = url.href;
   } catch {
     // Not an absolute URL, so not a CDN host.
   }
@@ -352,7 +359,8 @@ export function getSdkLoaderScript(config: SdkLoaderConfig): string {
 
   // `cfg` is passed to `useMicrosoftOpenTelemetry` as is; undefined options are dropped.
   const serialized = inlineJson({
-    src,
+    // Fallback rewrites the authority of the canonical URL the browser would request.
+    src: cdnFallback ? href : src,
     crossOrigin: config.crossOrigin ?? "anonymous",
     integrity: config.integrity,
     cfg: {
