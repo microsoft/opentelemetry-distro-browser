@@ -4,6 +4,8 @@
 import { isSpanContextValid, trace, type Context, type SpanContext } from "@opentelemetry/api";
 import type { LogRecordProcessor, ReadWriteLogRecord } from "@opentelemetry/sdk-logs";
 import { isPageContext } from "../../shared/pageOperationContext.js";
+import { NAME_SOURCE_EXPLICIT, NAME_SOURCE_ROUTE } from "./semconv.js";
+import type { PageView, PageViewSource } from "./types.js";
 
 /** Removes a synthetic page operation while preserving application contexts and values. */
 export function withoutPageOperation(active: Context): Context {
@@ -16,10 +18,27 @@ export function withoutPageOperation(active: Context): Context {
  * Stops exposing synthetic page contexts at shutdown while preserving application contexts.
  */
 export class PageViewCorrelation implements LogRecordProcessor {
+  private readonly operationNames = new Map<string, string>();
+  private readonly releasePageViews: (() => void) | undefined;
+
   constructor(
     private getOperation: (() => SpanContext | undefined) | undefined,
-    private getOperationName?: () => string | undefined,
-  ) {}
+    pageViews?: PageViewSource,
+  ) {
+    const track = (pageView: PageView): void => {
+      if (
+        pageView.nameSource === NAME_SOURCE_EXPLICIT ||
+        pageView.nameSource === NAME_SOURCE_ROUTE
+      ) {
+        this.operationNames.set(pageView.id, pageView.name);
+      } else {
+        this.operationNames.delete(pageView.id);
+      }
+    };
+    const current = pageViews?.getCurrentPageView();
+    if (current) track(current);
+    this.releasePageViews = pageViews?.onPageViewChanged(track);
+  }
 
   /** Applies page correlation to the active context supplied by the page context manager. */
   decorate(active: Context): Context {
@@ -36,9 +55,9 @@ export class PageViewCorrelation implements LogRecordProcessor {
     return this.getOperation?.();
   }
 
-  /** The current page operation name, until shutdown. */
-  operationName(): string | undefined {
-    return this.getOperationName?.();
+  /** The safe page name for an operation, until shutdown. */
+  operationName(traceId?: string): string | undefined {
+    return this.operationNames.get(traceId ?? this.getOperation?.()?.traceId ?? "");
   }
 
   // Correlation must not enable records rejected by the application's log processors.
@@ -56,7 +75,8 @@ export class PageViewCorrelation implements LogRecordProcessor {
 
   shutdown(): Promise<void> {
     this.getOperation = undefined;
-    this.getOperationName = undefined;
+    this.releasePageViews?.();
+    this.operationNames.clear();
     return Promise.resolve();
   }
 }

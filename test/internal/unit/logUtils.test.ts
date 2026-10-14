@@ -790,6 +790,7 @@ describe("Azure Monitor log envelope mapping", () => {
           attributes: {
             "browser.page_view.id": pageViewId,
             "browser.page_view.name": "Cart",
+            "browser.page_view.name_source": "explicit",
             [durationAttribute]: 425.25,
             "browser.page_view.referrer": "https://shop.example.test/products",
             "url.full": "https://shop.example.test/cart",
@@ -825,6 +826,7 @@ describe("Azure Monitor log envelope mapping", () => {
         attributes: {
           ...pageViewDiagnostics,
           "browser.page_view.name": "Cart",
+          "browser.page_view.name_source": "explicit",
           "browser.page_view.duration": 425.25,
           "browser.page_view.performance.total": 425.25,
           "browser.page_view.performance.network_connect": 25,
@@ -904,7 +906,7 @@ describe("Azure Monitor log envelope mapping", () => {
         "ai.device.id": "browser",
       });
     }
-    expect(envelopes[1]?.tags["ai.operation.name"]).toBe("Cart");
+    expect(envelopes[1]?.tags).not.toHaveProperty("ai.operation.name");
   });
 
   it("does not emit page-view performance when any phase is missing", () => {
