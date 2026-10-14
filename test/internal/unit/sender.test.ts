@@ -76,6 +76,7 @@ describe("Sender", () => {
     "https://eastus-8.in.applicationinsights.azure.com/v2/track",
     "https://WestUS.Monitor.Azure.com./v2/track",
     "https://usgovvirginia.in.applicationinsights.azure.us/v2/track",
+    "https://dc.applicationinsights.us/v2/track",
     "https://chinaeast2.in.applicationinsights.azure.cn/v2/track",
     "https://dc.services.visualstudio.com:443/v2/track",
   ])("compresses payloads for Azure Monitor ingestion endpoint %s", async (endpoint) => {
@@ -147,6 +148,14 @@ describe("Sender", () => {
     [
       "https://usgovvirginia.monitor.azure.us/v2.1/track",
       "https://usgovvirginia.dc.applicationinsights.azure.us/v2.1/track",
+    ],
+    [
+      "https://dc.applicationinsights.us/v2.1/track",
+      "https://usgovvirginia.in.applicationinsights.azure.us/v2.1/track",
+    ],
+    [
+      "https://usgovvirginia.in.applicationinsights.azure.us/v2.1/track",
+      "https://dc.applicationinsights.us/v2.1/track",
     ],
     [
       "https://chinaeast2.monitor.azure.cn/v2.1/track",
