@@ -123,7 +123,11 @@ export async function useMicrosoftOpenTelemetry(
   );
   const pageView = owned[0];
   const correlation = pageView
-    ? new PageViewCorrelation(() => pageView.getOperationContext(), pageView.pageViews)
+    ? new PageViewCorrelation(
+        () => pageView.getOperationContext(),
+        pageView.pageViews,
+        (traceId) => pageView.getOperationName(traceId),
+      )
     : undefined;
   correlationState.current = correlation;
   // Publish the initial page operation before caller instrumentations can emit.

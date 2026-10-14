@@ -253,6 +253,33 @@ it("keeps a delayed page callback's operation name aligned with its operation ID
   }
 });
 
+it("refreshes the operation ID and name together inside an earlier History wrapper", async () => {
+  const state: { pipeline?: Awaited<ReturnType<typeof start>> } = {};
+  const previousPushState = history.pushState;
+  history.pushState = function (...args): void {
+    previousPushState.apply(this, args);
+    state.pipeline!.logger.emit({ body: "earlier wrapper log" });
+    state.pipeline!.tracer.startSpan("earlier wrapper span").end();
+  };
+  const pipeline = await start({ pageView: { routeResolver: () => location.pathname } });
+  state.pipeline = pipeline;
+  const previousOperation = trace.getSpanContext(context.active())!.traceId;
+
+  history.pushState(null, "", "/inside-earlier-wrapper");
+  await pipeline.forceFlush();
+
+  const log = pipeline.onLog.mock.calls.find(
+    ([record]) => record.body === "earlier wrapper log",
+  )![0];
+  const span = pipeline.spanExporter
+    .getFinishedSpans()
+    .find((candidate) => candidate.name === "earlier wrapper span")!;
+  for (const envelope of [logToEnvelope(log, "key"), spanToEnvelope(span, "key")]) {
+    expect(envelope.tags["ai.operation.id"]).not.toBe(previousOperation);
+    expect(envelope.tags["ai.operation.name"]).toBe("/inside-earlier-wrapper");
+  }
+});
+
 it.each([
   ["document title", "Personalized order 8472", "/"],
   ["URL path", "", "/orders/8472"],
