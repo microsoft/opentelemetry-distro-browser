@@ -42,6 +42,7 @@ export interface SdkLoaderConfig {
   /**
    * Sends an `SDKLoadFailed` exception to the connection string's ingestion endpoint when the
    * bundle fails to load, after any CDN fallback, so missing telemetry is visible in Azure Monitor.
+   * The reported URL omits credentials, query and fragment.
    */
   readonly reportLoadFailure?: boolean;
   /**
@@ -396,7 +397,7 @@ export function getSdkLoaderScript(config: SdkLoaderConfig): string {
     ? 'var h=c.fallbackHosts.shift();if(h)return l(u.replace(/\\/\\/[^/]+/,"//"+h));'
     : "";
   const reportFailure = report
-    ? 'try{var r=c.loadFailureReport,e=r.envelope;e.time=new Date().toISOString();e.data.baseData.exceptions[0].message+=u.split(/[?#]/)[0].replace(/\\/\\/[^/]*@/,"//");fetch(r.url,{method:"POST",keepalive:true,headers:{"Content-Type":"application/json"},body:JSON.stringify([e])}).catch(function(){})}catch(x){}'
+    ? 'try{var r=c.loadFailureReport,e=r.envelope;e.time=new Date().toISOString();try{var p=new URL(u,d.baseURI);p.username=p.password=p.search=p.hash="";e.data.baseData.exceptions[0].message+=p.href}catch(x){}fetch(r.url,{method:"POST",keepalive:true,headers:{"Content-Type":"application/json"},body:JSON.stringify([e])}).catch(function(){})}catch(x){}'
     : "";
   const start =
     loadDelay === undefined
