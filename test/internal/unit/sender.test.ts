@@ -74,6 +74,7 @@ describe("Sender", () => {
   it.each([
     "https://dc.services.visualstudio.com/v2/track",
     "https://eastus-8.in.applicationinsights.azure.com/v2/track",
+    "https://dc.applicationinsights.microsoft.com/v2/track",
     "https://WestUS.Monitor.Azure.com./v2/track",
     "https://usgovvirginia.in.applicationinsights.azure.us/v2/track",
     "https://dc.applicationinsights.us/v2/track",
@@ -148,6 +149,10 @@ describe("Sender", () => {
     [
       "https://usgovvirginia.monitor.azure.us/v2.1/track",
       "https://usgovvirginia.dc.applicationinsights.azure.us/v2.1/track",
+    ],
+    [
+      "https://dc.applicationinsights.microsoft.com/v2.1/track",
+      "https://eastus-8.in.applicationinsights.azure.com/v2.1/track",
     ],
     [
       "https://dc.applicationinsights.us/v2.1/track",

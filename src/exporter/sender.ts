@@ -30,6 +30,7 @@ const trustedIngestionHostSuffixGroups = [
     ".monitor.azure.com",
     ".services.visualstudio.com",
     ".applicationinsights.azure.com",
+    ".applicationinsights.microsoft.com",
   ],
   [".monitor.azure.us", ".applicationinsights.azure.us", ".applicationinsights.us"],
   [".monitor.azure.cn", ".applicationinsights.azure.cn"],
