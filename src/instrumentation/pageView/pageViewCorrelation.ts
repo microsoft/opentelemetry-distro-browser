@@ -7,6 +7,8 @@ import { isPageContext } from "../../shared/pageOperationContext.js";
 import { NAME_SOURCE_EXPLICIT, NAME_SOURCE_ROUTE } from "./semconv.js";
 import type { PageView, PageViewSource } from "./types.js";
 
+const MAX_OPERATION_NAMES = 32;
+
 /** Removes a synthetic page operation while preserving application contexts and values. */
 export function withoutPageOperation(active: Context): Context {
   const spanContext = trace.getSpanContext(active);
@@ -31,7 +33,12 @@ export class PageViewCorrelation implements LogRecordProcessor {
         pageView.nameSource === NAME_SOURCE_EXPLICIT ||
         pageView.nameSource === NAME_SOURCE_ROUTE
       ) {
+        this.operationNames.delete(pageView.id);
         this.operationNames.set(pageView.id, pageView.name);
+        if (this.operationNames.size > MAX_OPERATION_NAMES) {
+          const oldest = this.operationNames.keys().next().value;
+          if (oldest !== undefined) this.operationNames.delete(oldest);
+        }
       } else {
         this.operationNames.delete(pageView.id);
       }
@@ -59,9 +66,14 @@ export class PageViewCorrelation implements LogRecordProcessor {
   /** The safe page name for an operation, until shutdown. */
   operationName(traceId?: string): string | undefined {
     const operationId = traceId ?? this.getOperation?.()?.traceId;
-    return operationId
-      ? (this.operationNames.get(operationId) ?? this.getUnpublishedOperationName?.(operationId))
-      : undefined;
+    if (!operationId) return undefined;
+    const name = this.operationNames.get(operationId);
+    if (name !== undefined) {
+      this.operationNames.delete(operationId);
+      this.operationNames.set(operationId, name);
+      return name;
+    }
+    return this.getUnpublishedOperationName?.(operationId);
   }
 
   // Correlation must not enable records rejected by the application's log processors.
