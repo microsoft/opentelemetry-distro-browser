@@ -16,7 +16,7 @@ export interface SdkLoaderConfig {
     readonly connectionString: string;
     readonly crossOrigin?: string;
     readonly instrumentationOptions?: {
-        readonly [name: string]: SdkLoaderJsonObject & {
+        readonly [name in SdkLoaderInstrumentationName]?: SdkLoaderJsonObject & {
             readonly enabled?: boolean;
         };
     };
@@ -44,6 +44,9 @@ export interface SdkLoaderConfig {
         readonly enabled?: boolean;
     };
 }
+
+// @public
+export type SdkLoaderInstrumentationName = "console" | "errors" | "fetch" | "navigation" | "navigationTiming" | "resourceTiming" | "userAction" | "webVitals" | "xhr";
 
 // @public
 export interface SdkLoaderJsonObject {

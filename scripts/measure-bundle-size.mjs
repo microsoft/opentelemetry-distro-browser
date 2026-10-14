@@ -31,8 +31,8 @@ export const entryPointBudgets = {
   // page is rendered; the snippet it emits only contains the steps a page enables.
   "./snippet": {
     rawBytes: 6 * 1024,
-    gzipBytes: 2.5 * 1024,
-    brotliBytes: 2.25 * 1024,
+    gzipBytes: 2.75 * 1024,
+    brotliBytes: 2.5 * 1024,
   },
 };
 

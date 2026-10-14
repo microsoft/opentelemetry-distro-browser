@@ -96,9 +96,18 @@ export interface SdkLoaderConfig {
  *
  * @public
  */
-export type SdkLoaderInstrumentationName = (typeof instrumentationNames)[number];
+export type SdkLoaderInstrumentationName =
+  | "console"
+  | "errors"
+  | "fetch"
+  | "navigation"
+  | "navigationTiming"
+  | "resourceTiming"
+  | "userAction"
+  | "webVitals"
+  | "xhr";
 
-const instrumentationNames = [
+const instrumentationNames: readonly string[] = [
   "console",
   "errors",
   "fetch",
@@ -108,7 +117,7 @@ const instrumentationNames = [
   "userAction",
   "webVitals",
   "xhr",
-] as const;
+] satisfies readonly SdkLoaderInstrumentationName[];
 
 /**
  * A JSON value the loader inlines into its configuration.
@@ -172,10 +181,11 @@ const getTrackUrl = (connectionString: string): { url: string; iKey?: string } =
   return { url: `${endpoint.replace(/\/+$/, "")}/v2/track`, iKey: fields.instrumentationkey };
 };
 
-type FieldKind = "boolean" | "number" | "strings";
+type FieldKind = "boolean" | "number" | "string" | "strings";
 
 const fieldKinds: Record<FieldKind, [(value: unknown) => boolean, string]> = {
   boolean: [(value) => typeof value === "boolean", "a boolean"],
+  string: [(value) => isNonEmptyString(value), "a non-empty string"],
   number: [(value) => Number.isFinite(value) && (value as number) >= 0, "a nonnegative number"],
   strings: [
     (value) => Array.isArray(value) && value.every((item) => typeof item === "string"),
@@ -209,18 +219,10 @@ const defaultSrc = (): string =>
   }/opentelemetry-browser.${OPENTELEMETRY_BROWSER_VERSION}.min.js`;
 
 const inlineJson = (value: unknown): string =>
-  JSON.stringify(value).replace(/[<>\u2028\u2029]/g, (character) => {
-    switch (character) {
-      case "<":
-        return "\\u003c";
-      case ">":
-        return "\\u003e";
-      case "\u2028":
-        return "\\u2028";
-      default:
-        return "\\u2029";
-    }
-  });
+  JSON.stringify(value).replace(
+    /[<>\u2028\u2029]/g,
+    (character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`,
+  );
 
 const isObject = (value: unknown): value is object => {
   const prototype: unknown =
@@ -258,6 +260,12 @@ const check = (valid: unknown, name: string, expected: string): void => {
   if (!valid) throw new TypeError(`SdkLoaderConfig.${name} must be ${expected}.`);
 };
 
+/** Checks an optional value against a field kind. */
+const checkField = (value: unknown, name: string, kind: FieldKind): void => {
+  const [valid, expected] = fieldKinds[kind];
+  check(value === undefined || valid(value), name, `${expected} when provided`);
+};
+
 const isNonEmptyString = (value: unknown): boolean =>
   typeof value === "string" && value.trim() !== "";
 
@@ -283,14 +291,10 @@ const isNonEmptyString = (value: unknown): boolean =>
 export function getSdkLoaderScript(config: SdkLoaderConfig): string {
   const src = config?.src === undefined ? defaultSrc() : config.src;
   const optional = "when provided";
-  check(isNonEmptyString(src), "src", `a non-empty string ${optional}`);
+  checkField(src, "src", "string");
   check(isNonEmptyString(config?.connectionString), "connectionString", "a non-empty string");
   const { samplingPercentage, azureMonitor, instrumentationOptions, resourceAttributes } = config;
-  check(
-    config.integrity === undefined || isNonEmptyString(config.integrity),
-    "integrity",
-    `a non-empty string ${optional}`,
-  );
+  checkField(config.integrity, "integrity", "string");
   check(
     samplingPercentage === undefined ||
       (typeof samplingPercentage === "number" &&
@@ -300,14 +304,11 @@ export function getSdkLoaderScript(config: SdkLoaderConfig): string {
     `a number from 0 through 100 ${optional}`,
   );
   for (const name of [
-    "azureMonitor",
-    "session",
-    "userContext",
-    "pageView",
+    ...Object.keys(optionFields),
     "instrumentationOptions",
     "resourceAttributes",
-  ] as const) {
-    const value = config[name];
+  ]) {
+    const value = config[name as keyof SdkLoaderConfig];
     check(
       value === undefined || (isObject(value) && isJson(value)),
       name,
@@ -317,40 +318,19 @@ export function getSdkLoaderScript(config: SdkLoaderConfig): string {
   for (const [name, fields] of Object.entries(optionFields)) {
     const value = config[name as keyof SdkLoaderConfig] as Record<string, unknown> | undefined;
     for (const [field, kind] of Object.entries(fields)) {
-      const [valid, expected] = fieldKinds[kind];
-      check(
-        value?.[field] === undefined || valid(value[field]),
-        `${name}.${field}`,
-        `${expected} ${optional}`,
-      );
+      checkField(value?.[field], `${name}.${field}`, kind);
     }
   }
   for (const [name, value] of Object.entries(instrumentationOptions ?? {})) {
-    check(
-      (instrumentationNames as readonly string[]).includes(name),
-      `instrumentationOptions.${name}`,
-      `a supported instrumentation (${instrumentationNames.join(", ")})`,
-    );
-    check(isObject(value), `instrumentationOptions.${name}`, `a JSON object ${optional}`);
-    const { enabled } = value as { enabled?: boolean };
-    check(
-      [undefined, true, false].includes(enabled),
-      `instrumentationOptions.${name}.enabled`,
-      `a boolean ${optional}`,
-    );
+    const path = `instrumentationOptions.${name}`;
+    check(instrumentationNames.includes(name), path, "a supported instrumentation");
+    check(isObject(value), path, `a JSON object ${optional}`);
+    checkField((value as { enabled?: boolean }).enabled, `${path}.enabled`, "boolean");
   }
   const { loadDelay, cdnFallback, reportLoadFailure } = config;
-  check(
-    loadDelay === undefined || (Number.isFinite(loadDelay) && loadDelay >= 0),
-    "loadDelay",
-    `a nonnegative number ${optional}`,
-  );
-  check([undefined, true, false].includes(cdnFallback), "cdnFallback", `a boolean ${optional}`);
-  check(
-    [undefined, true, false].includes(reportLoadFailure),
-    "reportLoadFailure",
-    `a boolean ${optional}`,
-  );
+  checkField(loadDelay, "loadDelay", "number");
+  checkField(cdnFallback, "cdnFallback", "boolean");
+  checkField(reportLoadFailure, "reportLoadFailure", "boolean");
   let host = "";
   try {
     const url = new URL(src);

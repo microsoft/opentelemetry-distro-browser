@@ -496,7 +496,7 @@ it("rejects unsupported instrumentation names", () => {
     }),
   ).toThrow(
     new TypeError(
-      "SdkLoaderConfig.instrumentationOptions.erros must be a supported instrumentation (console, errors, fetch, navigation, navigationTiming, resourceTiming, userAction, webVitals, xhr).",
+      "SdkLoaderConfig.instrumentationOptions.erros must be a supported instrumentation.",
     ),
   );
 });
