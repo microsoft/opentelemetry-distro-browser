@@ -279,6 +279,59 @@ it.each([undefined, {}, { contextManager: undefined, propagators: undefined }])(
   },
 );
 
+it("warns when another initialization claims page context during resource detection", async () => {
+  const pendingPipeline = createInMemoryPipeline();
+  let resolveAttribute!: (value: string) => void;
+  const resource = detectResources({
+    detectors: [
+      {
+        detect: () => ({
+          attributes: {
+            "service.name": new Promise<string>((resolve) => {
+              resolveAttribute = resolve;
+            }),
+          },
+        }),
+      },
+    ],
+  });
+  let markWaiting!: () => void;
+  const waiting = new Promise<void>((resolve) => {
+    markWaiting = resolve;
+  });
+  const waitForAttributes = resource.waitForAsyncAttributes!.bind(resource);
+  vi.spyOn(resource, "waitForAsyncAttributes").mockImplementation(() => {
+    markWaiting();
+    return waitForAttributes();
+  });
+  const createPropagator = (field: string) => ({
+    fields: () => [field],
+    inject: vi.fn(),
+    extract: vi.fn((ctx) => ctx),
+  });
+  const warn = vi.spyOn(diag, "warn");
+  const pending = useMicrosoftOpenTelemetry({
+    ...pendingPipeline.options,
+    resource,
+    traces: { propagators: [createPropagator("x-pending")] },
+  });
+  await waiting;
+  const ownerPipeline = createInMemoryPipeline();
+  handles.add(
+    await useMicrosoftOpenTelemetry({
+      ...ownerPipeline.options,
+      traces: { propagators: [createPropagator("x-owner")] },
+    }),
+  );
+  resolveAttribute("checkout-web");
+  handles.add(await pending);
+
+  expect(propagation.fields()).toEqual(["x-owner"]);
+  expect(warn).toHaveBeenCalledWith(
+    "Trace context options are unused because an earlier instance registered the page context",
+  );
+});
+
 it("identifies the distribution without displacing the upstream SDK defaults", async () => {
   const pipeline = createInMemoryPipeline();
   const spanExport = vi.spyOn(pipeline.spanExporter, "export");

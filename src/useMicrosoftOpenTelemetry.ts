@@ -276,6 +276,7 @@ export async function useMicrosoftOpenTelemetry(
     await session?.start();
     spanProcessors ??= [];
     logRecordProcessors ??= [];
+    await options.resource?.waitForAsyncAttributes?.();
     if (
       (traceOptions?.contextManager || traceOptions?.propagators) &&
       spanProcessors.length !== 0 &&
@@ -285,7 +286,6 @@ export async function useMicrosoftOpenTelemetry(
         "Trace context options are unused because an earlier instance registered the page context",
       );
     }
-    await options.resource?.waitForAsyncAttributes?.();
     const instanceOptions = {
       // Spread last: the caller's attributes win.
       resourceAttributes: {
