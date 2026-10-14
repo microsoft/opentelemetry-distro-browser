@@ -195,7 +195,11 @@ function mapPlatformVersion(
     return fallback;
   }
 
-  return Number(majorVersion) >= WINDOWS_11_PLATFORM_VERSION ? "11" : "10";
+  const major = Number(majorVersion);
+  if (major === 0) {
+     return fallback;
+  }
+  return major >= WINDOWS_11_PLATFORM_VERSION ? "11" : "10";
 }
 
 /**

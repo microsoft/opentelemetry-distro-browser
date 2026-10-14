@@ -59,6 +59,16 @@ describe("Azure Monitor log envelope mapping", () => {
     expect(envelope.tags["ai.device.osVersion"]).toBe("Windows11");
   });
 
+  it("preserves an incomplete log OS pair as a custom property", () => {
+    const envelope = logToEnvelope(
+      makeLog({ attributes: { "user_agent.os.name": "Linux" } }),
+      instrumentationKey,
+    );
+
+    expect(envelope.tags).not.toHaveProperty("ai.device.osVersion");
+    expect(envelope.data.baseData.properties).toEqual({ "user_agent.os.name": "Linux" });
+  });
+
   it.each([0.000001, 25, 99.5])(
     "maps the reserved sample rate %s without exporting it as a custom measurement",
     (sampleRate) => {

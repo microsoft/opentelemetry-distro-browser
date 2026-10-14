@@ -77,6 +77,7 @@ describe("Azure Monitor span envelope mapping", () => {
     );
 
     expect(envelope.tags).not.toHaveProperty("ai.device.osVersion");
+    expect(envelope.data.baseData.properties).toEqual({ "user_agent.os.name": "Linux" });
   });
 
   it.each([SpanKind.CLIENT, SpanKind.SERVER, SpanKind.CONSUMER, SpanKind.INTERNAL])(
@@ -300,6 +301,31 @@ describe("Azure Monitor span envelope mapping", () => {
           measurements: { attempt: 2 },
         },
       },
+    });
+  });
+
+  it("preserves span event OS attributes that are not promoted to tags", () => {
+    const envelopes = spanToEnvelopes(
+      makeSpan({
+        events: [
+          {
+            name: "checkout.step",
+            time: [1_735_689_602, 0],
+            attributes: {
+              "user_agent.os.name": "Linux",
+              "user_agent.os.version": "6.8",
+            },
+            droppedAttributesCount: 0,
+          },
+        ],
+      }),
+      instrumentationKey,
+    );
+
+    expect(envelopes[1].tags).not.toHaveProperty("ai.device.osVersion");
+    expect(envelopes[1].data.baseData.properties).toEqual({
+      "user_agent.os.name": "Linux",
+      "user_agent.os.version": "6.8",
     });
   });
 

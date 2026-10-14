@@ -116,16 +116,20 @@ export function truncateCustomDimensions(
 export function mapAttributes(
   attributes: Attributes,
   promotedAttributes: ReadonlySet<string>,
+  omitPromotedOsAttributes = false,
 ): Pick<AzureMonitorBaseData, "properties" | "measurements"> {
   const properties: Record<string, string> = {};
   const measurements: Record<string, number> = {};
+  const hasPromotedOs =
+    omitPromotedOsAttributes &&
+    isNonEmptyString(attributes[ATTR_USER_AGENT_OS_NAME]) &&
+    isNonEmptyString(attributes[ATTR_USER_AGENT_OS_VERSION]);
 
   for (const [key, value] of Object.entries(attributes)) {
     if (
       value === undefined ||
       promotedAttributes.has(key) ||
-      key === ATTR_USER_AGENT_OS_NAME ||
-      key === ATTR_USER_AGENT_OS_VERSION ||
+      (hasPromotedOs && (key === ATTR_USER_AGENT_OS_NAME || key === ATTR_USER_AGENT_OS_VERSION)) ||
       (key === "session.id" && isNonEmptyString(value))
     ) {
       continue;
