@@ -20,6 +20,8 @@ import {
   ATTR_PAGE_VIEW_SAME_DOCUMENT,
   ATTR_PAGE_VIEW_TYPE,
   EVENT_BROWSER_PAGE_VIEW,
+  NAME_SOURCE_EXPLICIT,
+  NAME_SOURCE_ROUTE,
 } from "../instrumentation/pageView/semconv.js";
 import {
   createEnvelope,
@@ -462,7 +464,12 @@ export function logToEnvelope(
         logRecord.attributes[URL_FULL] ??
         "Page View",
     );
-    tags["ai.operation.name"] = pageViewName;
+    const pageViewNameSource = logRecord.attributes[ATTR_PAGE_VIEW_NAME_SOURCE];
+    if (pageViewNameSource === NAME_SOURCE_EXPLICIT || pageViewNameSource === NAME_SOURCE_ROUTE) {
+      tags["ai.operation.name"] = pageViewName;
+    } else {
+      delete tags["ai.operation.name"];
+    }
     name = "Microsoft.ApplicationInsights.PageView";
     baseType = "PageViewData";
     baseData = {

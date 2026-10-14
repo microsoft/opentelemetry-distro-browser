@@ -44,7 +44,10 @@ it("sends telemetry from a browser interaction to Azure Monitor ingestion", asyn
     resource: resourceFromAttributes({
       "service.version": "synthetic-release-42",
     }),
-    pageView: { applyCustomLogRecordData: () => pageReady() },
+    pageView: {
+      routeResolver: () => "Browser integration",
+      applyCustomLogRecordData: () => pageReady(),
+    },
     session: { enabled: true, persist: false, inactivityTimeout: 60, maxDuration: 3600 },
   });
   const button = document.createElement("button");

@@ -15,7 +15,7 @@ import type { UserContextProvider } from "../user/createUserContext.js";
 
 export interface BrowserContextProvider extends UserContextProvider {
   getSessionId(): string | null;
-  getOperationName(): string | undefined;
+  getOperationName(traceId: string | undefined): string | undefined;
 }
 
 type AttributeBag = Readonly<Record<string, unknown>>;
@@ -26,8 +26,9 @@ function enrich(
   resourceAttributes: AttributeBag,
   setAttribute: (name: string, value: string) => void,
   provider: BrowserContextProvider,
+  traceId?: string,
 ): void {
-  setManagedOperationName(record, provider.getOperationName());
+  setManagedOperationName(record, provider.getOperationName(traceId));
   // Context configured on the record or its resource belongs to the application.
   const hasAttribute = (name: string): boolean =>
     isNonEmptyString(attributes[name]) || isNonEmptyString(resourceAttributes[name]);
@@ -62,6 +63,7 @@ export class BrowserContextSpanProcessor implements SpanProcessor {
       span.resource.attributes,
       (name, value) => span.setAttribute(name, value),
       this.provider,
+      span.spanContext().traceId,
     );
   }
 
@@ -91,6 +93,7 @@ export class BrowserContextLogRecordProcessor implements LogRecordProcessor {
       record.resource.attributes,
       (name, value) => record.setAttribute(name, value),
       this.provider,
+      record.spanContext?.traceId,
     );
   }
 

@@ -123,10 +123,7 @@ export async function useMicrosoftOpenTelemetry(
   );
   const pageView = owned[0];
   const correlation = pageView
-    ? new PageViewCorrelation(
-        () => pageView.getOperationContext(),
-        () => pageView.pageViews.getCurrentPageView()?.name,
-      )
+    ? new PageViewCorrelation(() => pageView.getOperationContext(), pageView.pageViews)
     : undefined;
   correlationState.current = correlation;
   // Publish the initial page operation before caller instrumentations can emit.
@@ -142,9 +139,10 @@ export async function useMicrosoftOpenTelemetry(
   const contextProvider = {
     ...userContext.provider,
     ...sessionProvider,
-    getOperationName: () =>
-      getPageOperationName(correlationState.current) ??
-      pageView?.pageViews.getCurrentPageView()?.name,
+    getOperationName: (traceId: string | undefined) =>
+      getPageOperation(correlationState.current)
+        ? getPageOperationName(correlationState.current, traceId)
+        : correlation?.operationName(traceId),
   };
   const contextSpanProcessor = new BrowserContextSpanProcessor(contextProvider);
   const contextLogRecordProcessor = new BrowserContextLogRecordProcessor(contextProvider);

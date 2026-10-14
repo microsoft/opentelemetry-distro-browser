@@ -24,7 +24,7 @@ import {
 export interface PageCorrelation {
   decorate(active: Context): Context;
   operation(): SpanContext | undefined;
-  operationName(): string | undefined;
+  operationName(traceId?: string): string | undefined;
 }
 
 export interface PageContextState {
@@ -214,9 +214,12 @@ export function getPageOperation(self: PageCorrelation | undefined): SpanContext
 }
 
 /** Returns another instance's current page operation name, if any. */
-export function getPageOperationName(self: PageCorrelation | undefined): string | undefined {
+export function getPageOperationName(
+  self: PageCorrelation | undefined,
+  traceId?: string,
+): string | undefined {
   const { correlation } = getPageContext();
-  return correlation === self ? undefined : correlation?.operationName();
+  return correlation === self ? undefined : correlation?.operationName(traceId);
 }
 
 /** Whether a distribution instance has registered the page context and propagation. */
