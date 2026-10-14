@@ -81,6 +81,18 @@ describe("Azure Monitor span envelope mapping", () => {
   });
 
   it("preserves resource metadata with record attributes taking precedence", () => {
+    const resource = resourceFromAttributes({
+      "service.name": "browser-distro-resource-repro",
+      "service.version": "synthetic-release-42",
+      "deployment.environment.name": "synthetic-environment-42",
+      "browser.language": "en-US",
+      "custom.resource.marker": "synthetic-resource-value-42",
+      "server.address": "resource.example.test",
+    });
+    Object.defineProperty(resource.attributes, "constructor", {
+      value: "release-42",
+      enumerable: true,
+    });
     const span = makeSpan({
       attributes: {
         "test.run_id": "run-42",
@@ -88,13 +100,7 @@ describe("Azure Monitor span envelope mapping", () => {
         "custom.resource.marker": "record-value",
         "service.version": "record-version",
       },
-      resource: resourceFromAttributes({
-        "service.name": "browser-distro-resource-repro",
-        "service.version": "synthetic-release-42",
-        "deployment.environment.name": "synthetic-environment-42",
-        "browser.language": "en-US",
-        "custom.resource.marker": "synthetic-resource-value-42",
-      }),
+      resource,
     });
 
     const envelope = spanToEnvelope(span, instrumentationKey);
@@ -110,6 +116,8 @@ describe("Azure Monitor span envelope mapping", () => {
       "browser.language": "en-US",
       "custom.resource.marker": "record-value",
       "service.version": "record-version",
+      "server.address": "resource.example.test",
+      constructor: "release-42",
     });
     expect(envelope.data.baseData.properties).not.toHaveProperty("service.name");
   });
@@ -145,6 +153,34 @@ describe("Azure Monitor span envelope mapping", () => {
       "event.control": "event-value",
     });
   });
+
+  it.each(["checkout.step", "exception"])(
+    "prefers %s event identity over span and resource identity",
+    (eventName) => {
+      const envelopes = spanToEnvelopes(
+        makeSpan({
+          attributes: { "user.id": "span-user" },
+          events: [
+            {
+              name: eventName,
+              time: [1_735_689_601, 0],
+              attributes: {
+                "user.id": "event-user",
+                ...(eventName === "exception"
+                  ? { "exception.type": "Error", "exception.message": "boom" }
+                  : {}),
+              },
+              droppedAttributesCount: 0,
+            },
+          ],
+          resource: resourceFromAttributes({ "user.id": "resource-user" }),
+        }),
+        instrumentationKey,
+      );
+
+      expect(envelopes[1].tags["ai.user.authUserId"]).toBe("event-user");
+    },
+  );
 
   it.each([SpanKind.CLIENT, SpanKind.SERVER, SpanKind.CONSUMER, SpanKind.INTERNAL])(
     "promotes standard session IDs to tags without changing the source span (kind=%i)",

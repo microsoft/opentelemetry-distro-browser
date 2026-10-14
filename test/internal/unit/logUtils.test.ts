@@ -692,6 +692,18 @@ describe("Azure Monitor log envelope mapping", () => {
   });
 
   it("preserves resource metadata with record attributes taking precedence", () => {
+    const resource = resourceFromAttributes({
+      "service.name": "browser-distro-resource-repro",
+      "service.version": "synthetic-release-42",
+      "deployment.environment.name": "synthetic-environment-42",
+      "browser.language": "en-US",
+      "custom.resource.marker": "synthetic-resource-value-42",
+      "exception.type": "ResourceError",
+    });
+    Object.defineProperty(resource.attributes, "constructor", {
+      value: "release-42",
+      enumerable: true,
+    });
     const envelope = logToEnvelope(
       makeLog({
         eventName: "resource-event",
@@ -701,13 +713,7 @@ describe("Azure Monitor log envelope mapping", () => {
           "custom.resource.marker": "record-value",
           "service.version": "record-version",
         },
-        resource: resourceFromAttributes({
-          "service.name": "browser-distro-resource-repro",
-          "service.version": "synthetic-release-42",
-          "deployment.environment.name": "synthetic-environment-42",
-          "browser.language": "en-US",
-          "custom.resource.marker": "synthetic-resource-value-42",
-        }),
+        resource,
       }),
       instrumentationKey,
     );
@@ -723,6 +729,8 @@ describe("Azure Monitor log envelope mapping", () => {
       "browser.language": "en-US",
       "custom.resource.marker": "record-value",
       "service.version": "record-version",
+      "exception.type": "ResourceError",
+      constructor: "release-42",
     });
     expect(envelope.data.baseData.properties).not.toHaveProperty("service.name");
   });
