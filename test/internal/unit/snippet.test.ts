@@ -2,7 +2,11 @@
 // Licensed under the MIT License.
 
 import { afterEach, expect, it } from "vitest";
-import { getSdkLoaderScript, type SdkLoaderConfig } from "../../../src/snippet.js";
+import {
+  getSdkLoaderScript,
+  type SdkLoaderConfig,
+  type SdkLoaderInstrumentationName,
+} from "../../../src/snippet.js";
 import { OPENTELEMETRY_BROWSER_VERSION } from "../../../src/shared/constants.js";
 import type { AzureMonitorOptions } from "../../../src/exporter/base.js";
 import type { PageViewInstrumentationConfig } from "../../../src/instrumentation/pageView/types.js";
@@ -273,6 +277,14 @@ const pageViewDataFields = (
 ): Required<NonNullable<SdkLoaderConfig["pageView"]>> => config;
 void snippetOptionsMatchTheDistribution;
 void pageViewDataFields;
+const instrumentationNamesMatch = (
+  name: keyof InstrumentationOptions,
+): SdkLoaderInstrumentationName => name;
+const instrumentationNamesExist = (
+  name: SdkLoaderInstrumentationName,
+): keyof InstrumentationOptions => name;
+void instrumentationNamesMatch;
+void instrumentationNamesExist;
 
 const configuredOptions = {
   samplingPercentage: 25,
@@ -461,6 +473,32 @@ it.each([
       ...options,
     } as SdkLoaderConfig),
   ).toThrow(new TypeError(`SdkLoaderConfig.${field} must be ${expected}.`));
+});
+
+it("accepts fully qualified CDN host names for cdnFallback", () => {
+  expect(
+    getSdkLoaderScript({
+      src: "https://js.monitor.azure.com./scripts/otel/b/sdk.js",
+      connectionString: "connection",
+      cdnFallback: true,
+    }),
+  ).toContain('"fallbackHosts":["js.cdn.applicationinsights.io",');
+});
+
+it("rejects unsupported instrumentation names", () => {
+  expect(() =>
+    getSdkLoaderScript({
+      src: "https://example.test/sdk.js",
+      connectionString: "connection",
+      instrumentationOptions: {
+        erros: { enabled: true },
+      } as SdkLoaderConfig["instrumentationOptions"],
+    }),
+  ).toThrow(
+    new TypeError(
+      "SdkLoaderConfig.instrumentationOptions.erros must be a supported instrumentation (console, errors, fetch, navigation, navigationTiming, resourceTiming, userAction, webVitals, xhr).",
+    ),
+  );
 });
 
 it("accepts CDN hosts in any case for cdnFallback", () => {

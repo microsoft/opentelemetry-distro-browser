@@ -80,7 +80,9 @@ export interface SdkLoaderConfig {
    * JSON-serializable settings are accepted, so hooks and regular expressions are unavailable.
    */
   readonly instrumentationOptions?: {
-    readonly [name: string]: SdkLoaderJsonObject & { readonly enabled?: boolean };
+    readonly [name in SdkLoaderInstrumentationName]?: SdkLoaderJsonObject & {
+      readonly enabled?: boolean;
+    };
   };
   /**
    * Resource attributes, such as `service.name`, merged over the SDK defaults. The bundle builds
@@ -88,6 +90,25 @@ export interface SdkLoaderConfig {
    */
   readonly resourceAttributes?: { readonly [key: string]: string | number | boolean };
 }
+
+/**
+ * Instrumentations the bundle's `getInstrumentations` can configure.
+ *
+ * @public
+ */
+export type SdkLoaderInstrumentationName = (typeof instrumentationNames)[number];
+
+const instrumentationNames = [
+  "console",
+  "errors",
+  "fetch",
+  "navigation",
+  "navigationTiming",
+  "resourceTiming",
+  "userAction",
+  "webVitals",
+  "xhr",
+] as const;
 
 /**
  * A JSON value the loader inlines into its configuration.
@@ -305,6 +326,11 @@ export function getSdkLoaderScript(config: SdkLoaderConfig): string {
     }
   }
   for (const [name, value] of Object.entries(instrumentationOptions ?? {})) {
+    check(
+      (instrumentationNames as readonly string[]).includes(name),
+      `instrumentationOptions.${name}`,
+      `a supported instrumentation (${instrumentationNames.join(", ")})`,
+    );
     check(isObject(value), `instrumentationOptions.${name}`, `a JSON object ${optional}`);
     const { enabled } = value as { enabled?: boolean };
     check(
@@ -328,7 +354,7 @@ export function getSdkLoaderScript(config: SdkLoaderConfig): string {
   let host = "";
   try {
     const url = new URL(src);
-    if (url.protocol === "https:") host = url.hostname;
+    if (url.protocol === "https:") host = url.hostname.replace(/\.$/, "");
   } catch {
     // Not an absolute URL, so not a CDN host.
   }
