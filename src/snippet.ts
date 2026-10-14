@@ -327,6 +327,7 @@ export function getSdkLoaderScript(config: SdkLoaderConfig): string {
     }
   }
   for (const [name, value] of Object.entries(instrumentationOptions ?? {})) {
+    if (value === undefined) continue;
     const path = `instrumentationOptions.${name}`;
     check(instrumentationNames.includes(name), path, "a supported instrumentation");
     check(isObject(value), path, `a JSON object ${optional}`);
@@ -395,9 +396,11 @@ export function getSdkLoaderScript(config: SdkLoaderConfig): string {
     ? 'var h=c.fallbackHosts.shift();if(h)return l(u.replace(/\\/\\/[^/]+/,"//"+h));'
     : "";
   const reportFailure = report
-    ? 'try{var r=c.loadFailureReport,e=r.envelope;e.time=new Date().toISOString();e.data.baseData.exceptions[0].message+=u;fetch(r.url,{method:"POST",keepalive:true,headers:{"Content-Type":"application/json"},body:JSON.stringify([e])}).catch(function(){})}catch(x){}'
+    ? 'try{var r=c.loadFailureReport,e=r.envelope;e.time=new Date().toISOString();e.data.baseData.exceptions[0].message+=u.split(/[?#]/)[0].replace(/\\/\\/[^/]*@/,"//");fetch(r.url,{method:"POST",keepalive:true,headers:{"Content-Type":"application/json"},body:JSON.stringify([e])}).catch(function(){})}catch(x){}'
     : "";
   const start =
-    loadDelay === undefined ? "l(c.src)" : "setTimeout(function(){l(c.src)},c.loadDelay)";
+    loadDelay === undefined
+      ? "l(c.src)"
+      : "setTimeout(function(){try{l(c.src)}catch(e){reject(e)}},c.loadDelay)";
   return `!(function(w,d,c){w.microsoftOpenTelemetry=new Promise(function(resolve,reject){function l(u){var s=d.createElement("script");s.src=u;s.crossOrigin=c.crossOrigin;if(c.integrity)s.integrity=c.integrity;s.onload=function(){var sdk=w.Microsoft&&w.Microsoft.OpenTelemetry;if(!sdk||typeof sdk.useMicrosoftOpenTelemetry!=="function"){reject(new Error("OpenTelemetry browser bundle did not expose Microsoft.OpenTelemetry"));return}Promise.resolve().then(function(){return typeof sdk.getInstrumentations==="function"?sdk.getInstrumentations(c.instrumentationOptions):[]}).then(function(i){var o=c.cfg;o.instrumentations=i;if(c.resourceAttributes)o.resource=sdk.resourceFromAttributes(c.resourceAttributes);return sdk.useMicrosoftOpenTelemetry(o)}).then(resolve,reject)};s.onerror=function(){${fallback}${reportFailure}reject(new Error("${loadFailure}"+u))};d.head.appendChild(s)}${start}})})(window,document,${serialized});`;
 }

@@ -563,8 +563,9 @@ it("accepts JSON objects with a null prototype and undefined members", () => {
       connectionString: "connection",
       session,
       pageView: { enabled: undefined },
+      instrumentationOptions: { errors: undefined, fetch: { enabled: true } },
     }),
-  ).toContain('"session":{"enabled":true},"pageView":{}');
+  ).toContain('"session":{"enabled":true},"pageView":{}},"instrumentationOptions":{"fetch"');
 });
 
 it("leaves loader extras out of the default loader", () => {
@@ -592,6 +593,25 @@ it("delays adding the bundle by loadDelay milliseconds", async () => {
   }
 });
 
+it("rejects when adding the delayed bundle throws", async () => {
+  const { inlineScript, initialization } = executeLoader({
+    src: "https://example.test/sdk.js",
+    connectionString: "InstrumentationKey=test",
+    loadDelay: 0,
+  });
+  const appendChild = document.head.appendChild.bind(document.head);
+  const failure = new TypeError("script insertion blocked");
+  document.head.appendChild = () => {
+    throw failure;
+  };
+  try {
+    await expect(initialization).rejects.toBe(failure);
+  } finally {
+    document.head.appendChild = appendChild;
+    inlineScript.remove();
+  }
+});
+
 /** Intercepts CDN script elements so fallback runs without network access. */
 const interceptCdnScripts = (
   succeedOn: string | undefined,
@@ -599,7 +619,7 @@ const interceptCdnScripts = (
   const requested: string[] = [];
   const appendChild = document.head.appendChild.bind(document.head);
   document.head.appendChild = <T extends Node>(node: T): T => {
-    if (!(node instanceof HTMLScriptElement) || !node.src.startsWith("https://js")) {
+    if (!(node instanceof HTMLScriptElement) || !new URL(node.src).hostname.startsWith("js")) {
       return appendChild(node);
     }
     requested.push(node.src);
@@ -698,6 +718,38 @@ it("reports a load failure to the ingestion endpoint after every fallback fails"
         },
       },
     });
+    inlineScript.remove();
+  } finally {
+    window.fetch = originalFetch;
+    cdn.restore();
+  }
+});
+
+it.each([
+  `https://user:secret@js.monitor.azure.com${cdnPath}`,
+  `https://js.monitor.azure.com${cdnPath}?access_token=secret`,
+  `https://js.monitor.azure.com${cdnPath}#secret`,
+])("leaves credentials, query and fragment out of the failure report for %s", async (src) => {
+  const cdn = interceptCdnScripts(undefined);
+  const bodies: string[] = [];
+  const originalFetch = window.fetch;
+  window.fetch = (_input, init) => {
+    bodies.push(String(init?.body));
+    return Promise.resolve(new Response(null, { status: 200 }));
+  };
+  try {
+    const { inlineScript, initialization } = executeLoader({
+      src,
+      connectionString: "InstrumentationKey=test",
+      reportLoadFailure: true,
+    });
+    await expect(initialization).rejects.toThrow("OpenTelemetry browser bundle failed to load");
+    expect(cdn.requested).toEqual([src]);
+    expect(bodies).toHaveLength(1);
+    expect(bodies[0]).not.toContain("secret");
+    expect(bodies[0]).toContain(
+      `"message":"OpenTelemetry browser bundle failed to load: https://js.monitor.azure.com${cdnPath}"`,
+    );
     inlineScript.remove();
   } finally {
     window.fetch = originalFetch;
