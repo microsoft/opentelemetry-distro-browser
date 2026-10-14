@@ -394,7 +394,7 @@ export function getSdkLoaderScript(config: SdkLoaderConfig): string {
   });
   // Optional loader steps are emitted only when configured, keeping the default snippet small.
   const fallback = cdnFallback
-    ? 'var h=c.fallbackHosts.shift();if(h)return l(u.replace(/\\/\\/[^/]+/,"//"+h));'
+    ? 'var h=c.fallbackHosts.shift();if(h){try{l(u.replace(/\\/\\/[^/]+/,"//"+h))}catch(x){reject(x)}return}'
     : "";
   const reportFailure = report
     ? 'try{var r=c.loadFailureReport,e=r.envelope;e.time=new Date().toISOString();try{var p=new URL(u,d.baseURI);p.username=p.password=p.search=p.hash="";e.data.baseData.exceptions[0].message+=p.href}catch(x){}fetch(r.url,{method:"POST",keepalive:true,headers:{"Content-Type":"application/json"},body:JSON.stringify([e])}).catch(function(){})}catch(x){}'

@@ -670,6 +670,36 @@ it("retries the bundle from backup CDN hosts", async () => {
   }
 });
 
+it("rejects when adding a backup CDN bundle throws", async () => {
+  const appendChild = document.head.appendChild.bind(document.head);
+  const failure = new TypeError("script insertion blocked");
+  const requested: string[] = [];
+  document.head.appendChild = <T extends Node>(node: T): T => {
+    if (!(node instanceof HTMLScriptElement) || !node.src.endsWith(cdnPath)) {
+      return appendChild(node);
+    }
+    requested.push(node.src);
+    if (requested.length > 1) throw failure;
+    setTimeout(() => node.onerror?.(new Event("error")));
+    return node;
+  };
+  try {
+    const { inlineScript, initialization } = executeLoader({
+      src: `https://js.monitor.azure.com${cdnPath}`,
+      connectionString: "InstrumentationKey=test",
+      cdnFallback: true,
+    });
+    await expect(initialization).rejects.toBe(failure);
+    expect(requested.map((url) => new URL(url).host)).toEqual([
+      "js.monitor.azure.com",
+      "js.cdn.applicationinsights.io",
+    ]);
+    inlineScript.remove();
+  } finally {
+    document.head.appendChild = appendChild;
+  }
+});
+
 it("reports a load failure to the ingestion endpoint after every fallback fails", async () => {
   const cdn = interceptCdnScripts(undefined);
   const sent: { url: string; init: RequestInit }[] = [];
