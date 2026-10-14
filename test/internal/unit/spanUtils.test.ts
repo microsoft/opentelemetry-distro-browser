@@ -34,6 +34,51 @@ describe("Azure Monitor span envelope mapping", () => {
     expect(envelope.data.baseData.ver).toBe(2);
   });
 
+  it("maps resource OS attributes to the Application Insights client OS tag", () => {
+    const envelope = spanToEnvelope(
+      makeSpan({
+        resource: resourceFromAttributes({
+          "user_agent.os.name": "Windows",
+          "user_agent.os.version": "11",
+        }),
+      }),
+      instrumentationKey,
+    );
+
+    expect(envelope.tags["ai.device.osVersion"]).toBe("Windows11");
+  });
+
+  it("prefers a complete record OS over the resource OS", () => {
+    const envelope = spanToEnvelope(
+      makeSpan({
+        attributes: {
+          "user_agent.os.name": "Linux",
+          "user_agent.os.version": "6.8",
+        },
+        resource: resourceFromAttributes({
+          "user_agent.os.name": "Windows",
+          "user_agent.os.version": "11",
+        }),
+      }),
+      instrumentationKey,
+    );
+
+    expect(envelope.tags["ai.device.osVersion"]).toBe("Linux6.8");
+    expect(envelope.data.baseData.properties).toBeUndefined();
+  });
+
+  it("does not combine incomplete record and resource OS values", () => {
+    const envelope = spanToEnvelope(
+      makeSpan({
+        attributes: { "user_agent.os.name": "Linux" },
+        resource: resourceFromAttributes({ "user_agent.os.version": "11" }),
+      }),
+      instrumentationKey,
+    );
+
+    expect(envelope.tags).not.toHaveProperty("ai.device.osVersion");
+  });
+
   it.each([SpanKind.CLIENT, SpanKind.SERVER, SpanKind.CONSUMER, SpanKind.INTERNAL])(
     "promotes standard session IDs to tags without changing the source span (kind=%i)",
     (kind) => {
