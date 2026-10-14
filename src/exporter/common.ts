@@ -181,7 +181,12 @@ export function createTags(
   }
   if (serviceName) tags["ai.cloud.role"] = serializeAttribute(serviceName);
   const serviceVersion = resourceAttributes["service.version"];
-  if (serviceVersion) tags["ai.application.ver"] = serializeAttribute(serviceVersion);
+  if (serviceVersion) {
+    tags["ai.application.ver"] = truncateToLength(
+      serializeAttribute(serviceVersion),
+      MaxPropertyLengths.TEN_BIT,
+    );
+  }
   const attributeOsName = attributes[ATTR_USER_AGENT_OS_NAME];
   const attributeOsVersion = attributes[ATTR_USER_AGENT_OS_VERSION];
   const resourceOsName = resourceAttributes[ATTR_USER_AGENT_OS_NAME];

@@ -148,3 +148,31 @@ it("delivers an unsettled page view after the source document navigates away", a
     ]),
   );
 });
+
+it("delivers telemetry with an oversized resource service.version during unload", async () => {
+  const runId = crypto.randomUUID();
+  const ingestionEndpoint = `${inject("ingestionEndpoint")}${encodeURIComponent(runId)}`;
+  const fixtureUrl = new URL("./unloadFixture.html", import.meta.url);
+  fixtureUrl.searchParams.set("ingestionEndpoint", ingestionEndpoint);
+  fixtureUrl.searchParams.set("runId", runId);
+  fixtureUrl.searchParams.set("oversizedVersion", "true");
+  const captureUrl = `${new URL(ingestionEndpoint).origin}/captured?runId=${encodeURIComponent(runId)}`;
+
+  const envelopes = (await commands.verifyUnloadDelivery(
+    fixtureUrl.href,
+    captureUrl,
+  )) as AzureMonitorEnvelope[];
+  expect(envelopes).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        tags: expect.objectContaining({
+          "ai.application.ver": "v".repeat(1_024),
+        }),
+        data: expect.objectContaining({
+          baseType: "RemoteDependencyData",
+          baseData: expect.objectContaining({ name: "navigation-away" }),
+        }),
+      }),
+    ]),
+  );
+});

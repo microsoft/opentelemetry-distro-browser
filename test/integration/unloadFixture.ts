@@ -6,6 +6,7 @@ import { SDK_STATS_ENDPOINT, withoutSdkStats } from "../fixtures/sdkStats.js";
 import { trace as sourceTrace } from "@opentelemetry/api";
 import { logs } from "@opentelemetry/api-logs";
 import { ConsoleInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/console";
+import { resourceFromAttributes } from "@opentelemetry/resources";
 import { useMicrosoftOpenTelemetry as initializeSource } from "../../src/index.js";
 import { useMicrosoftOpenTelemetry as initializeEsm } from "../../dist/esm/index.js";
 import { useMicrosoftOpenTelemetry as initializeMinifiedEsm } from "../../dist/esm/index.min.js";
@@ -18,6 +19,7 @@ const statsIngestionEndpoint = parameters.get("statsIngestionEndpoint");
 const inFlight = parameters.get("inFlight") === "true";
 const artifact = parameters.get("artifact");
 const largeBatch = parameters.get("largeBatch") === "true";
+const oversizedVersion = parameters.get("oversizedVersion") === "true";
 if (!ingestionEndpoint || !runId) {
   throw new Error("Unload fixture requires ingestionEndpoint and runId parameters.");
 }
@@ -64,6 +66,9 @@ await useMicrosoftOpenTelemetry({
       `InstrumentationKey=00000000-0000-0000-0000-000000000000;` +
       `IngestionEndpoint=${ingestionEndpoint}`,
   },
+  resource: oversizedVersion
+    ? resourceFromAttributes({ "service.version": "v".repeat(70_000) })
+    : undefined,
   pageView: {
     enabled: pageView,
     softNavigationSettleTimeoutMs: 60_000,
