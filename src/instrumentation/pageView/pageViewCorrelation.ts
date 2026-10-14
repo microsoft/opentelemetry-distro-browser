@@ -24,6 +24,7 @@ export class PageViewCorrelation implements LogRecordProcessor {
   constructor(
     private getOperation: (() => SpanContext | undefined) | undefined,
     pageViews?: PageViewSource,
+    private getUnpublishedOperationName?: (traceId: string) => string | undefined,
   ) {
     const track = (pageView: PageView): void => {
       if (
@@ -57,7 +58,10 @@ export class PageViewCorrelation implements LogRecordProcessor {
 
   /** The safe page name for an operation, until shutdown. */
   operationName(traceId?: string): string | undefined {
-    return this.operationNames.get(traceId ?? this.getOperation?.()?.traceId ?? "");
+    const operationId = traceId ?? this.getOperation?.()?.traceId;
+    return operationId
+      ? (this.operationNames.get(operationId) ?? this.getUnpublishedOperationName?.(operationId))
+      : undefined;
   }
 
   // Correlation must not enable records rejected by the application's log processors.
@@ -75,6 +79,7 @@ export class PageViewCorrelation implements LogRecordProcessor {
 
   shutdown(): Promise<void> {
     this.getOperation = undefined;
+    this.getUnpublishedOperationName = undefined;
     this.releasePageViews?.();
     this.operationNames.clear();
     return Promise.resolve();
