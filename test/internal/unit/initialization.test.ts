@@ -13,7 +13,7 @@ import { logs, SeverityNumber } from "@opentelemetry/api-logs";
 import type { LogRecordProcessor } from "@opentelemetry/sdk-logs";
 import { OTLPLogExporter } from "@opentelemetry/exporter-logs-otlp-http";
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
-import { resourceFromAttributes } from "@opentelemetry/resources";
+import { detectResources, resourceFromAttributes } from "@opentelemetry/resources";
 import { BrowserBatchLogRecordProcessor } from "../../../src/browserBatchLogRecordProcessor.js";
 import { BatchSpanProcessor } from "@opentelemetry/sdk-trace-base";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -318,6 +318,39 @@ it("lets a service.name attribute replace the unknown_service placeholder", asyn
     "service.version": "4.2.1",
     "deployment.environment.name": "production",
   });
+});
+
+it("preserves asynchronously detected resource attributes in spans and logs", async () => {
+  const pipeline = createInMemoryPipeline();
+  const resource = detectResources({
+    detectors: [
+      {
+        detect: () => ({
+          attributes: {
+            "service.name": new Promise<string>((resolve) => {
+              setTimeout(() => resolve("checkout-web"), 0);
+            }),
+            "service.version": "4.2.1",
+          },
+        }),
+      },
+    ],
+  });
+  const handle = await useMicrosoftOpenTelemetry({ ...pipeline.options, resource });
+  handles.add(handle);
+  await resource.waitForAsyncAttributes?.();
+
+  trace.getTracer("manual").startSpan("checkout").end();
+  logs.getLogger("manual").emit({ body: "checkout completed" });
+  await handle.forceFlush();
+
+  const expected = { "service.name": "checkout-web", "service.version": "4.2.1" };
+  expect(pipeline.spanExporter.getFinishedSpans()).toHaveLength(1);
+  expect(pipeline.logExporter.getFinishedLogRecords()).toHaveLength(1);
+  expect(pipeline.spanExporter.getFinishedSpans()[0].resource.attributes).toMatchObject(expected);
+  expect(pipeline.logExporter.getFinishedLogRecords()[0].resource.attributes).toMatchObject(
+    expected,
+  );
 });
 
 it("does not share one attributes object across initializations", async () => {

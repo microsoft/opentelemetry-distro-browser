@@ -285,6 +285,7 @@ export async function useMicrosoftOpenTelemetry(
         "Trace context options are unused because an earlier instance registered the page context",
       );
     }
+    await options.resource?.waitForAsyncAttributes?.();
     const instanceOptions = {
       // Spread last: the caller's attributes win.
       resourceAttributes: {
