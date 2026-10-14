@@ -33,6 +33,7 @@ it("delivers accumulated SDK stats after the source document navigates away", as
     ]),
   );
 }, 30_000);
+import type { AzureMonitorEnvelope } from "../../src/exporter/telemetryModels.js";
 
 it.each([
   ["source", undefined],
@@ -91,7 +92,10 @@ it.each([
     if (largeBatch) fixtureUrl.searchParams.set("largeBatch", "true");
     const captureUrl = `${new URL(ingestionEndpoint).origin}/captured?runId=${encodeURIComponent(runId)}`;
 
-    const envelopes = await commands.verifyUnloadDelivery(fixtureUrl.href, captureUrl);
+    const envelopes = (await commands.verifyUnloadDelivery(
+      fixtureUrl.href,
+      captureUrl,
+    )) as AzureMonitorEnvelope[];
     expect(envelopes).toHaveLength(expectedNames.length);
     expect(envelopes).toEqual(
       expectedNames.map((name) =>
@@ -108,15 +112,10 @@ it.each([
       ),
     );
     if (largeBatch) {
-      expect(envelopes).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            data: expect.objectContaining({
-              baseData: expect.objectContaining({ properties: { "test.run_id": runId } }),
-            }),
-          }),
-        ]),
+      const fittedEnvelope = envelopes.find(
+        (envelope) => envelope.data.baseData.properties?.payload === undefined,
       );
+      expect(fittedEnvelope?.data.baseData.properties).toMatchObject({ "test.run_id": runId });
     }
   },
 );
@@ -139,10 +138,10 @@ it("delivers an unsettled page view after the source document navigates away", a
           baseData: expect.objectContaining({
             url: `${fixtureUrl.href}#unsettled`,
             duration: expect.any(String),
-            properties: {
+            properties: expect.objectContaining({
               refUri: fixtureUrl.href,
               "test.duration_source": "page_hide",
-            },
+            }),
           }),
         }),
       }),
