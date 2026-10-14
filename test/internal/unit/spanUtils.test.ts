@@ -295,32 +295,31 @@ describe("Azure Monitor span envelope mapping", () => {
   });
 
   it("maps span events to envelopes parented to the span", () => {
-    const envelopes = spanToEnvelopes(
-      makeSpan({
-        spanContext: () => spanContext,
-        attributes: { "session.id": "session-1" },
-        events: [
-          {
-            name: "exception",
-            time: [1_735_689_601, 0],
-            attributes: {
-              "exception.type": "Error",
-              "exception.message": "boom",
-              "exception.stacktrace":
-                "Error: boom\n    at checkout (https://example.test/app.js:1:2)",
-            },
-            droppedAttributesCount: 0,
+    const span = makeSpan({
+      spanContext: () => spanContext,
+      attributes: { "session.id": "session-1" },
+      events: [
+        {
+          name: "exception",
+          time: [1_735_689_601, 0],
+          attributes: {
+            "exception.type": "Error",
+            "exception.message": "boom",
+            "exception.stacktrace":
+              "Error: boom\n    at checkout (https://example.test/app.js:1:2)",
           },
-          {
-            name: "checkout.step",
-            time: [1_735_689_602, 0],
-            attributes: { phase: "validate", attempt: 2 },
-            droppedAttributesCount: 0,
-          },
-        ],
-      }),
-      instrumentationKey,
-    );
+          droppedAttributesCount: 0,
+        },
+        {
+          name: "checkout.step",
+          time: [1_735_689_602, 0],
+          attributes: { phase: "validate", attempt: 2 },
+          droppedAttributesCount: 0,
+        },
+      ],
+    });
+    setManagedOperationName(span, "Checkout");
+    const envelopes = spanToEnvelopes(span, instrumentationKey);
 
     expect(envelopes).toHaveLength(3);
     expect(envelopes[1]).toMatchObject({
@@ -328,6 +327,7 @@ describe("Azure Monitor span envelope mapping", () => {
       tags: {
         "ai.operation.id": spanContext.traceId,
         "ai.operation.parentId": spanContext.spanId,
+        "ai.operation.name": "Checkout",
         "ai.session.id": "session-1",
       },
       data: {
@@ -340,6 +340,7 @@ describe("Azure Monitor span envelope mapping", () => {
       tags: {
         "ai.operation.id": spanContext.traceId,
         "ai.operation.parentId": spanContext.spanId,
+        "ai.operation.name": "Checkout",
         "ai.session.id": "session-1",
       },
       data: {

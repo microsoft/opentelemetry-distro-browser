@@ -467,7 +467,7 @@ export function logToEnvelope(
     const pageViewNameSource = logRecord.attributes[ATTR_PAGE_VIEW_NAME_SOURCE];
     if (pageViewNameSource === NAME_SOURCE_EXPLICIT || pageViewNameSource === NAME_SOURCE_ROUTE) {
       tags["ai.operation.name"] = pageViewName;
-    } else {
+    } else if (logRecord.eventName !== NAVIGATION_EVENT_NAME) {
       delete tags["ai.operation.name"];
     }
     name = "Microsoft.ApplicationInsights.PageView";

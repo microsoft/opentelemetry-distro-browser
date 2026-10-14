@@ -131,7 +131,10 @@ it.each([false, true])(
     });
     const pipeline = await start({
       instrumentations: [navigation],
-      pageView: { sanitizeUrl: (url) => new URL(url).pathname },
+      pageView: {
+        routeResolver: () => location.pathname,
+        sanitizeUrl: (url) => new URL(url).pathname,
+      },
     });
     const ids: string[] = [];
     for (const path of ["/checkout", "/confirmation"]) {
@@ -181,6 +184,7 @@ it.each([false, true])(
       expect(logToEnvelope(log, "key").tags["ai.operation.id"]).toBe(id);
       expect(logToEnvelope(log, "key").tags).not.toHaveProperty("ai.operation.parentId");
       expect(logToEnvelope(routeLog, "key").tags).not.toHaveProperty("ai.operation.parentId");
+      expect(logToEnvelope(routeLog, "key").tags["ai.operation.name"]).toBe(path);
       expect(logToEnvelope(routeLog, "key").data).toMatchObject({
         baseType: "PageViewData",
         baseData: { id },

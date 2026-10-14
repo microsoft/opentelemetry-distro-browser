@@ -948,18 +948,17 @@ describe("Azure Monitor log envelope mapping", () => {
   });
 
   it("maps legacy browser.navigation to PageViewData", () => {
-    const envelope = logToEnvelope(
-      makeLog({
-        eventName: "browser.navigation",
-        spanContext,
-        attributes: {
-          "url.full": "https://shop.example.test/cart",
-          "browser.navigation.duration": 425.25,
-          "browser.navigation.same_document": true,
-        },
-      }),
-      instrumentationKey,
-    );
+    const record = makeLog({
+      eventName: "browser.navigation",
+      spanContext,
+      attributes: {
+        "url.full": "https://shop.example.test/cart",
+        "browser.navigation.duration": 425.25,
+        "browser.navigation.same_document": true,
+      },
+    });
+    setManagedOperationName(record, "Cart");
+    const envelope = logToEnvelope(record, instrumentationKey);
 
     expect(envelope.data).toEqual({
       baseType: "PageViewData",
@@ -973,6 +972,7 @@ describe("Azure Monitor log envelope mapping", () => {
         measurements: undefined,
       },
     });
+    expect(envelope.tags["ai.operation.name"]).toBe("Cart");
   });
 
   it.each([
