@@ -225,7 +225,12 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
   /** Safe name resolved with the current operation before its page view is published. */
   public getOperationName(traceId: string): string | undefined {
     const operation = this.getOperationContext();
-    const resolved = operation?.traceId === traceId ? this.#operationName : undefined;
+    if (operation?.traceId !== traceId) return undefined;
+    const published = this.#context.getCurrentPageView();
+    const resolved =
+      published?.id === traceId
+        ? { name: published.name, source: published.nameSource }
+        : this.#operationName;
     return resolved?.source === NAME_SOURCE_EXPLICIT || resolved?.source === NAME_SOURCE_ROUTE
       ? resolved.name
       : undefined;

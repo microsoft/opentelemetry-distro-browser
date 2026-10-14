@@ -180,6 +180,7 @@ function spanEventToEnvelope(
     span.resource.attributes["service.name"],
     span.attributes,
     span.resource.attributes,
+    getManagedOperationName(span),
   );
   const eventSessionId = attributes["session.id"];
   const sessionId = selectNonEmptyString(eventSessionId, span.attributes["session.id"]);
