@@ -55,9 +55,19 @@ const promotedExceptionEventAttributes = /* @__PURE__ */ new Set([
   "exception.message",
   "exception.stacktrace",
   "exception.type",
+  ATTR_ENDUSER_ID,
+  ATTR_ENDUSER_PSEUDO_ID,
+  ATTR_USER_ACCOUNT_ID,
+  ATTR_USER_ID,
   "session.id",
 ]);
-const promotedEventAttributes = /* @__PURE__ */ new Set(["session.id"]);
+const promotedEventAttributes = /* @__PURE__ */ new Set([
+  ATTR_ENDUSER_ID,
+  ATTR_ENDUSER_PSEUDO_ID,
+  ATTR_USER_ACCOUNT_ID,
+  ATTR_USER_ID,
+  "session.id",
+]);
 
 function omitCustomFields(envelope: AzureMonitorEnvelope): AzureMonitorEnvelope {
   const {
@@ -84,7 +94,12 @@ export function spanToEnvelope(
   const method = span.attributes[HTTP_METHOD];
   const url = span.attributes[URL_FULL];
   const duration = millisecondsToTimeSpan(hrTimeToMilliseconds(span.duration));
-  const customFields = mapAttributes(span.attributes, promotedSpanAttributes, true);
+  const customFields = mapAttributes(
+    span.attributes,
+    promotedSpanAttributes,
+    true,
+    span.resource.attributes,
+  );
   const sampleRate = getSampleRate(span.attributes);
   const tags = createTags(
     spanContext.traceId,
@@ -171,6 +186,7 @@ function spanEventToEnvelope(
   const customFields = mapAttributes(
     attributes,
     isException ? promotedExceptionEventAttributes : promotedEventAttributes,
+    span.resource.attributes,
   );
   const tags = createTags(
     spanContext.traceId,

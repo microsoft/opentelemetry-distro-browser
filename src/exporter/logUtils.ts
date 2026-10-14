@@ -402,6 +402,7 @@ export function logToEnvelope(
     logRecord.attributes as Attributes,
     isPageView(logRecord.eventName) ? promotedPageViewAttributes : promotedLogAttributes,
     true,
+    logRecord.resource.attributes,
   );
   const sampleRate = getSampleRate(logRecord.attributes as Attributes);
   const tags = createTags(

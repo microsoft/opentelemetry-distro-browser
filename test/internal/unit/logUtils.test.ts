@@ -691,6 +691,42 @@ describe("Azure Monitor log envelope mapping", () => {
     });
   });
 
+  it("preserves resource metadata with record attributes taking precedence", () => {
+    const envelope = logToEnvelope(
+      makeLog({
+        eventName: "resource-event",
+        attributes: {
+          "test.run_id": "run-42",
+          "record.control": "synthetic-record-value-42",
+          "custom.resource.marker": "record-value",
+          "service.version": "record-version",
+        },
+        resource: resourceFromAttributes({
+          "service.name": "browser-distro-resource-repro",
+          "service.version": "synthetic-release-42",
+          "deployment.environment.name": "synthetic-environment-42",
+          "browser.language": "en-US",
+          "custom.resource.marker": "synthetic-resource-value-42",
+        }),
+      }),
+      instrumentationKey,
+    );
+
+    expect(envelope.tags).toMatchObject({
+      "ai.cloud.role": "browser-distro-resource-repro",
+      "ai.application.ver": "synthetic-release-42",
+    });
+    expect(envelope.data.baseData.properties).toMatchObject({
+      "test.run_id": "run-42",
+      "record.control": "synthetic-record-value-42",
+      "deployment.environment.name": "synthetic-environment-42",
+      "browser.language": "en-US",
+      "custom.resource.marker": "record-value",
+      "service.version": "record-version",
+    });
+    expect(envelope.data.baseData.properties).not.toHaveProperty("service.name");
+  });
+
   it.each([undefined, "browser.page_view"])(
     "maps log user attributes to tags instead of properties for event %s",
     (eventName) => {

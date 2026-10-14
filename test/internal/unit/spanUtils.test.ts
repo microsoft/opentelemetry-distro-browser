@@ -80,6 +80,72 @@ describe("Azure Monitor span envelope mapping", () => {
     expect(envelope.data.baseData.properties).toEqual({ "user_agent.os.name": "Linux" });
   });
 
+  it("preserves resource metadata with record attributes taking precedence", () => {
+    const span = makeSpan({
+      attributes: {
+        "test.run_id": "run-42",
+        "record.control": "synthetic-record-value-42",
+        "custom.resource.marker": "record-value",
+        "service.version": "record-version",
+      },
+      resource: resourceFromAttributes({
+        "service.name": "browser-distro-resource-repro",
+        "service.version": "synthetic-release-42",
+        "deployment.environment.name": "synthetic-environment-42",
+        "browser.language": "en-US",
+        "custom.resource.marker": "synthetic-resource-value-42",
+      }),
+    });
+
+    const envelope = spanToEnvelope(span, instrumentationKey);
+
+    expect(envelope.tags).toMatchObject({
+      "ai.cloud.role": "browser-distro-resource-repro",
+      "ai.application.ver": "synthetic-release-42",
+    });
+    expect(envelope.data.baseData.properties).toMatchObject({
+      "test.run_id": "run-42",
+      "record.control": "synthetic-record-value-42",
+      "deployment.environment.name": "synthetic-environment-42",
+      "browser.language": "en-US",
+      "custom.resource.marker": "record-value",
+      "service.version": "record-version",
+    });
+    expect(envelope.data.baseData.properties).not.toHaveProperty("service.name");
+  });
+
+  it("preserves resource metadata on span event envelopes without duplicating tags", () => {
+    const envelopes = spanToEnvelopes(
+      makeSpan({
+        events: [
+          {
+            name: "resource-event",
+            time: [1_735_689_601, 0],
+            attributes: { "event.control": "event-value" },
+            droppedAttributesCount: 0,
+          },
+        ],
+        resource: resourceFromAttributes({
+          "service.name": "browser-distro-resource-repro",
+          "service.version": "synthetic-release-42",
+          "deployment.environment.name": "synthetic-environment-42",
+          "enduser.pseudo.id": "anonymous-user",
+        }),
+      }),
+      instrumentationKey,
+    );
+
+    expect(envelopes[1].tags).toMatchObject({
+      "ai.cloud.role": "browser-distro-resource-repro",
+      "ai.application.ver": "synthetic-release-42",
+      "ai.user.id": "anonymous-user",
+    });
+    expect(envelopes[1].data.baseData.properties).toEqual({
+      "deployment.environment.name": "synthetic-environment-42",
+      "event.control": "event-value",
+    });
+  });
+
   it.each([SpanKind.CLIENT, SpanKind.SERVER, SpanKind.CONSUMER, SpanKind.INTERNAL])(
     "promotes standard session IDs to tags without changing the source span (kind=%i)",
     (kind) => {

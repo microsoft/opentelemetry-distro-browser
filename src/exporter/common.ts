@@ -24,6 +24,7 @@ import { MaxPropertyLengths } from "./constants.js";
 let unloadingCount = 0;
 let textDecoder: TextDecoder | undefined;
 let textEncoder: TextEncoder | undefined;
+const promotedResourceAttributes = /* @__PURE__ */ new Set(["service.name", "service.version"]);
 
 export function isUnloading(): boolean {
   return unloadingCount > 0;
@@ -116,6 +117,7 @@ export function truncateCustomDimensions(
 export function mapAttributes(
   attributes: Attributes,
   promotedAttributes: ReadonlySet<string>,
+  resourceAttributes?: Attributes,
   omitPromotedOsAttributes = false,
 ): Pick<AzureMonitorBaseData, "properties" | "measurements"> {
   const properties: Record<string, string> = {};
@@ -125,10 +127,13 @@ export function mapAttributes(
     isNonEmptyString(attributes[ATTR_USER_AGENT_OS_NAME]) &&
     isNonEmptyString(attributes[ATTR_USER_AGENT_OS_VERSION]);
 
-  for (const [key, value] of Object.entries(attributes)) {
+  for (const key of Object.keys({ ...resourceAttributes, ...attributes })) {
+    const recordValue = attributes[key];
+    const value = recordValue === undefined ? resourceAttributes?.[key] : recordValue;
     if (
       value === undefined ||
       promotedAttributes.has(key) ||
+      (recordValue === undefined && promotedResourceAttributes.has(key)) ||
       (hasPromotedOs && (key === ATTR_USER_AGENT_OS_NAME || key === ATTR_USER_AGENT_OS_VERSION)) ||
       (key === "session.id" && isNonEmptyString(value))
     ) {
@@ -165,6 +170,8 @@ export function createTags(
     tags["ai.operation.parentId"] = parentContext.spanId;
   }
   if (serviceName) tags["ai.cloud.role"] = serializeAttribute(serviceName);
+  const serviceVersion = resourceAttributes["service.version"];
+  if (serviceVersion) tags["ai.application.ver"] = serializeAttribute(serviceVersion);
   const attributeOsName = attributes[ATTR_USER_AGENT_OS_NAME];
   const attributeOsVersion = attributes[ATTR_USER_AGENT_OS_VERSION];
   const resourceOsName = resourceAttributes[ATTR_USER_AGENT_OS_NAME];
