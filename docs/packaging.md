@@ -76,7 +76,7 @@ including alpha:
 
 | Artifact                                                   | Minified |  Gzip | Brotli |
 | ---------------------------------------------------------- | -------: | ----: | -----: |
-| `opentelemetry-browser.{iife,umd}.min.js`                  |   159 kB | 49 kB |  43 kB |
+| `opentelemetry-browser.{iife,umd}.min.js`                  |   164 kB | 50 kB |  44 kB |
 | `opentelemetry-browser-instrumentations.{iife,umd}.min.js` |    63 kB | 19 kB |  17 kB |
 
 The browser bundles contain only ES2022 syntax. `npm run test:build` parses every emitted UMD and
