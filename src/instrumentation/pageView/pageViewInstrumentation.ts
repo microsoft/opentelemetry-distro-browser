@@ -730,7 +730,7 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
   }): PendingPageView {
     const rawUrl = input.url ?? location.href;
     const operation = this.#currentOperation();
-    const resolved = this.#operationName ?? this.#resolveName();
+    const resolved = this.#resolveName();
     this.#operationName = resolved;
 
     const pageView: PageView = {
