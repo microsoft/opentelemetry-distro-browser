@@ -3,7 +3,7 @@
 
 import { context, diag, propagation, trace } from "@opentelemetry/api";
 import { logs } from "@opentelemetry/api-logs";
-import { SimpleLogRecordProcessor } from "@opentelemetry/sdk-logs";
+import { BatchLogRecordProcessor } from "@opentelemetry/sdk-logs";
 import { SimpleSpanProcessor } from "@opentelemetry/sdk-trace-base";
 import { afterEach, beforeEach, expect, inject, it, vi } from "vitest";
 import type { AzureMonitorEnvelope } from "../../src/exporter/telemetryModels.js";
@@ -288,7 +288,7 @@ it("shares managed operation names with exporters from another distribution copy
   const handle = await host.useMicrosoftOpenTelemetry({
     spanProcessors: [new SimpleSpanProcessor(new remote.AzureMonitorSpanExporter(azureMonitor))],
     logRecordProcessors: [
-      new SimpleLogRecordProcessor({
+      new BatchLogRecordProcessor({
         exporter: new remote.AzureMonitorLogRecordExporter(azureMonitor),
       }),
     ],
