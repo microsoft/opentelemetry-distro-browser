@@ -125,7 +125,7 @@ export interface MicrosoftOpenTelemetryBrowserTraceOptions {
  * @public
  */
 export interface MicrosoftOpenTelemetryBrowserSessionOptions {
-  /** Enables session tracking. Defaults to false. */
+  /** Enables session tracking. Defaults to true. False disables it without accessing storage. */
   enabled?: boolean;
   /**
    * Persist in localStorage (default true). False uses memory without accessing or clearing storage.
@@ -135,7 +135,9 @@ export interface MicrosoftOpenTelemetryBrowserSessionOptions {
    * Seconds without managed-session telemetry. Defaults to 1800. Zero disables inactivity expiry.
    */
   inactivityTimeout?: number;
-  /** Maximum lifetime in seconds, including across reloads. Defaults to 0 (unlimited). */
+  /**
+   * Maximum lifetime in seconds, including across reloads. Defaults to 86400 (24 hours). Zero means unlimited.
+   */
   maxDuration?: number;
 }
 
@@ -162,7 +164,7 @@ export interface MicrosoftOpenTelemetryBrowserOptions {
    * page belong here. Only its attributes are used; the schema URL is not carried through.
    */
   resource?: Resource;
-  /** Opt-in session tracking. Disabled sessions do not access storage. */
+  /** Session tracking, enabled by default. Disabled sessions do not access storage. */
   session?: MicrosoftOpenTelemetryBrowserSessionOptions;
   /**
    * User identity persistence configuration.

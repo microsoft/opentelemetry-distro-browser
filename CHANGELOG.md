@@ -30,6 +30,13 @@ All notable changes to this package are documented in this file.
 
 ### Changed
 
+- **Behavior change:** enable session tracking by default with a 24-hour maximum lifetime and
+  the existing 30-minute inactivity timeout. Apps that previously omitted `session` now write
+  session state to `localStorage` and add `session.id` to telemetry. Set `session.enabled: false`
+  to opt out without accessing session storage, `session.persist: false` for memory-only sessions,
+  or `session.maxDuration: 0` for unlimited lifetime. User-context defaults are unchanged:
+  anonymous IDs persist by default; authenticated user and account IDs remain memory-only unless
+  `userContext.enabled: true` is configured.
 - Remove the npm-only browser and user-agent resource detectors from the `opentelemetry-browser` CDN
   and global bundles, saving 4.1 KiB minified (1.2 KiB gzip). The npm package is unchanged.
 - **Breaking:** stop creating default OTLP span and log exporters when neither `azureMonitor` nor

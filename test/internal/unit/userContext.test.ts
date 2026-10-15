@@ -43,6 +43,7 @@ async function initialize(
   const records: ReadWriteLogRecord[] = [];
   const handle = await useMicrosoftOpenTelemetry({
     ...(persistence === "default" ? {} : { userContext: { enabled: persistence } }),
+    session: { enabled: false },
     pageView: { enabled: false },
     ...(resourceAttributes && { resource: resourceFromAttributes(resourceAttributes) }),
     spanProcessors: [
@@ -101,11 +102,12 @@ it("persists anonymous identity by default without persisting authenticated iden
   logs.disable();
 
   const restored = await initialize("default");
-  expect(restored.emit().span.attributes).toMatchObject({
-    "enduser.pseudo.id": anonymousId,
-  });
-  expect(restored.emit().span.attributes["user.id"]).toBeUndefined();
-  expect(restored.emit().span.attributes["user.account.id"]).toBeUndefined();
+  const emitted = restored.emit();
+  for (const record of [emitted.span, emitted.log]) {
+    expect(record.attributes["enduser.pseudo.id"]).toBe(anonymousId);
+    expect(record.attributes["user.id"]).toBeUndefined();
+    expect(record.attributes["user.account.id"]).toBeUndefined();
+  }
 });
 
 it("does not erase persisted authentication when a default handle restores anonymous identity", async () => {
