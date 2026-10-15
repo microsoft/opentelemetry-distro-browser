@@ -60,7 +60,7 @@ if (statsIngestionEndpoint) {
   trace = bundle.trace;
 }
 
-await useMicrosoftOpenTelemetry({
+const handle = await useMicrosoftOpenTelemetry({
   azureMonitor: {
     connectionString:
       `InstrumentationKey=00000000-0000-0000-0000-000000000000;` +
@@ -86,6 +86,7 @@ await useMicrosoftOpenTelemetry({
 });
 if (inFlight) {
   logs.getLogger("browser-unload-test").emit({ body: "pending-before-navigation" });
+  void handle.forceFlush().catch(() => undefined);
   const captureUrl = `${new URL(ingestionEndpoint).origin}/captured?runId=${encodeURIComponent(runId)}`;
   const deadline = Date.now() + 5_000;
   let exporting = false;

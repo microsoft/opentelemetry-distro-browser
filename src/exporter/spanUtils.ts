@@ -96,8 +96,8 @@ export function spanToEnvelope(
   const customFields = mapAttributes(
     span.attributes,
     promotedSpanAttributes,
-    true,
     span.resource.attributes,
+    true,
   );
   const sampleRate = getSampleRate(span.attributes);
   const tags = createTags(

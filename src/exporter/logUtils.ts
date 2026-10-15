@@ -401,8 +401,8 @@ export function logToEnvelope(
   const customFields = mapAttributes(
     logRecord.attributes as Attributes,
     isPageView(logRecord.eventName) ? promotedPageViewAttributes : promotedLogAttributes,
-    true,
     logRecord.resource.attributes,
+    true,
   );
   const sampleRate = getSampleRate(logRecord.attributes as Attributes);
   const tags = createTags(
