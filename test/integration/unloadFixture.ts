@@ -6,7 +6,7 @@ import { SDK_STATS_ENDPOINT, withoutSdkStats } from "../fixtures/sdkStats.js";
 import { trace as sourceTrace } from "@opentelemetry/api";
 import { logs } from "@opentelemetry/api-logs";
 import { ConsoleInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/console";
-import { resourceFromAttributes } from "@opentelemetry/resources";
+import type { Resource } from "@opentelemetry/resources";
 import { useMicrosoftOpenTelemetry as initializeSource } from "../../src/index.js";
 import { useMicrosoftOpenTelemetry as initializeEsm } from "../../dist/esm/index.js";
 import { useMicrosoftOpenTelemetry as initializeMinifiedEsm } from "../../dist/esm/index.min.js";
@@ -67,7 +67,15 @@ const handle = await useMicrosoftOpenTelemetry({
       `IngestionEndpoint=${ingestionEndpoint}`,
   },
   resource: oversizedVersion
-    ? resourceFromAttributes({ "service.version": "v".repeat(70_000) })
+    ? ({
+        attributes: { "service.version": "v".repeat(70_000) },
+        merge: () => {
+          throw new Error("Unload fixture resource does not support merging.");
+        },
+        getRawAttributes: () => {
+          throw new Error("Unload fixture resource does not expose raw attributes.");
+        },
+      } satisfies Resource)
     : undefined,
   pageView: {
     enabled: pageView,

@@ -77,7 +77,10 @@ describe("Azure Monitor span envelope mapping", () => {
     );
 
     expect(envelope.tags).not.toHaveProperty("ai.device.osVersion");
-    expect(envelope.data.baseData.properties).toEqual({ "user_agent.os.name": "Linux" });
+    expect(envelope.data.baseData.properties).toEqual({
+      "user_agent.os.name": "Linux",
+      "user_agent.os.version": "11",
+    });
   });
 
   it("preserves resource metadata with record attributes taking precedence", () => {

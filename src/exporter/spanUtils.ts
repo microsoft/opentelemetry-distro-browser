@@ -191,7 +191,11 @@ function spanEventToEnvelope(
     spanContext.traceId,
     spanContext,
     span.resource.attributes["service.name"],
-    attributes,
+    {
+      ...attributes,
+      "user_agent.os.name": span.attributes["user_agent.os.name"],
+      "user_agent.os.version": span.attributes["user_agent.os.version"],
+    },
     span.resource.attributes,
     span.attributes,
   );
