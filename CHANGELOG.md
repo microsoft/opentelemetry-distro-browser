@@ -25,7 +25,7 @@ All notable changes to this package are documented in this file.
 - Publish the minimum supported Chrome, Edge, Firefox, and Safari versions and gate the built
   browser bundle against those releases with real-browser acceptance tests.
 - Publish a `<module>.<version>.size.svg` size badge with each CDN release, generated at build time.
-- Add Azure Monitor operation and application context tags
+- Add Azure Monitor operation and application context tags.
 
 ### Changed
 

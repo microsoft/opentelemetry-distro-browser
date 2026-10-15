@@ -9,6 +9,7 @@ import { BrowserBatchLogRecordProcessor } from "../../../src/browserBatchLogReco
 import { BasicTracerProvider, BatchSpanProcessor } from "@opentelemetry/sdk-trace-base";
 import { StackContextManager } from "@opentelemetry/sdk-trace-web";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { getManagedOperationName } from "../../../src/context/operationName.js";
 import { useMicrosoftOpenTelemetry, type BrowserInstrumentation } from "../../../src/index.js";
 import { addPageCorrelation } from "../../../src/routing/pageContext.js";
 import { getRegisteredGlobal, getSharedRegistry } from "../../../src/shared/globalOwnership.js";
@@ -68,6 +69,13 @@ function probe() {
     },
   } satisfies BrowserInstrumentation & { emit(name: string): void };
 }
+
+it("does not initialize the shared registry for exporter-only operation-name reads", () => {
+  delete realm[distroKey];
+
+  expect(getManagedOperationName({})).toBeUndefined();
+  expect(realm[distroKey]).toBeUndefined();
+});
 
 it.each(["trace", "logs", "context", "propagation"] as const)(
   "preserves a pre-existing %s registration while collecting into its own pipelines",
