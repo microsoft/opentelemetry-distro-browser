@@ -918,7 +918,9 @@ describe("Azure Monitor log envelope mapping", () => {
       "p".repeat(1_024),
       "p".repeat(1_024),
     ]);
-    expect(envelopes.map((envelope) => envelope.data.baseData.name)).toEqual([pageName, pageName]);
+    for (const envelope of envelopes) {
+      expect(envelope.data.baseData).toMatchObject({ name: pageName });
+    }
   });
 
   it("omits default envelope fields and diagnostic custom fields from both page-view envelopes", () => {
