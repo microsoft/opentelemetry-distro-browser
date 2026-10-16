@@ -5,6 +5,7 @@ import { SpanKind, context, diag, propagation, trace } from "@opentelemetry/api"
 import { SeverityNumber, logs } from "@opentelemetry/api-logs";
 import { FetchInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/fetch";
 import { NavigationInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/navigation";
+import { XhrInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/xhr";
 import { afterEach, expect, it, vi } from "vitest";
 import type { MicrosoftOpenTelemetryBrowser } from "../../src/index.js";
 import { createInMemoryPipeline } from "../fixtures/telemetry.js";
@@ -114,6 +115,75 @@ for (const file of ["index.js", "index.min.js"]) {
     await handle.shutdown();
     expect(navigationDisable).toHaveBeenCalledOnce();
     expect(httpDisable).toHaveBeenCalledOnce();
+  });
+
+  it(`redacts concurrent fetch/XHR URLs per instance without changing requests through ${file}`, async () => {
+    const distro = await loadDistro();
+    const pipelines = [createInMemoryPipeline(), createInMemoryPipeline()];
+    for (const [index, pipeline] of pipelines.entries()) {
+      const handle = await distro.useMicrosoftOpenTelemetry({
+        ...pipeline.options,
+        session: { enabled: false },
+        userContext: { enabled: false },
+        pageView: { enabled: false },
+        redactQueryParams: [index === 0 ? "alpha" : "beta"],
+        // Independently constructed upstream instances must receive the same protection.
+        instrumentations: [
+          new FetchInstrumentation({ enabled: false }),
+          new XhrInstrumentation({ enabled: false }),
+        ],
+      });
+      handles.add(handle);
+    }
+    const urls = ["fetch-one", "fetch-two", "xhr-one", "xhr-two"].map(
+      (request) =>
+        new URL(`/?request=${request}&token=private&alpha=one&beta=two`, location.origin).href,
+    );
+    const responses = await Promise.all([
+      ...urls.slice(0, 2).map(async (url) => {
+        const response = await fetch(url);
+        await response.text();
+        return response.url;
+      }),
+      ...urls.slice(2).map(
+        (url) =>
+          new Promise<string>((resolve, reject) => {
+            const xhr = new XMLHttpRequest();
+            xhr.open("GET", url);
+            xhr.onload = () => resolve(xhr.responseURL);
+            xhr.onerror = () => reject(new Error("XHR failed"));
+            xhr.send();
+          }),
+      ),
+    ]);
+    expect(responses).toEqual(urls);
+    for (const [index, pipeline] of pipelines.entries()) {
+      // Fetch instrumentation finishes after its response-body reader settles.
+      await vi.waitFor(async () => {
+        await pipeline.forceFlush();
+        expect(pipeline.spanExporter.getFinishedSpans()).toHaveLength(4);
+      });
+      const spans = pipeline.spanExporter.getFinishedSpans();
+      expect(spans).toHaveLength(4);
+      expect(spans.map((span) => span.attributes["url.full"]).sort()).toEqual(
+        urls
+          .map((url) =>
+            url
+              .replace("token=private", "token=REDACTED")
+              .replace(
+                index === 0 ? "alpha=one" : "beta=two",
+                index === 0 ? "alpha=REDACTED" : "beta=REDACTED",
+              ),
+          )
+          .sort(),
+      );
+      expect(new Set(spans.map((span) => span.instrumentationScope.name))).toEqual(
+        new Set([
+          "@opentelemetry/browser-instrumentation/fetch",
+          "@opentelemetry/browser-instrumentation/xhr",
+        ]),
+      );
+    }
   });
 
   it(`rejects already-enabled navigation before binding providers through ${file}`, async () => {
