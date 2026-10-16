@@ -60,7 +60,7 @@ Every executable published entry point has absolute minified, gzip and Brotli bu
 
 | Entry point          | Minified |    Gzip | Brotli |
 | -------------------- | -------: | ------: | -----: |
-| `.`                  |   121 kB |   38 kB |  34 kB |
+| `.`                  |   123 kB | 38.75 kB | 34.25 kB |
 | `./instrumentations` |    64 kB |   24 kB |  22 kB |
 | `./snippet`          |     6 kB | 2.75 kB | 2.5 kB |
 
@@ -76,7 +76,7 @@ including alpha:
 
 | Artifact                                                   | Minified |  Gzip | Brotli |
 | ---------------------------------------------------------- | -------: | ----: | -----: |
-| `opentelemetry-browser.{iife,umd}.min.js`                  |   164 kB | 50 kB |  44 kB |
+| `opentelemetry-browser.{iife,umd}.min.js`                  |   164 kB | 50.25 kB |  44 kB |
 | `opentelemetry-browser-instrumentations.{iife,umd}.min.js` |    63 kB | 19 kB |  17 kB |
 
 The browser bundles contain only ES2022 syntax. `npm run test:build` parses every emitted UMD and
