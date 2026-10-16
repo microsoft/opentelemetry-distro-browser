@@ -129,6 +129,15 @@ describe("Azure Monitor span envelope mapping", () => {
     expect(span.attributes).not.toHaveProperty("ai.operation.name");
   });
 
+  it("bounds the managed operation name for an application span", () => {
+    const span = makeSpan();
+    setManagedOperationName(span, "n".repeat(70_000));
+
+    expect(spanToEnvelope(span, instrumentationKey).tags["ai.operation.name"]).toBe(
+      "n".repeat(1_024),
+    );
+  });
+
   it.each([SpanKind.CLIENT, SpanKind.SERVER, SpanKind.CONSUMER, SpanKind.INTERNAL])(
     "promotes standard session IDs to tags without changing the source span (kind=%i)",
     (kind) => {

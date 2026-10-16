@@ -50,6 +50,15 @@ describe("Azure Monitor log envelope mapping", () => {
     expect(record.attributes).not.toHaveProperty("ai.operation.name");
   });
 
+  it("bounds the managed operation name for an application log", () => {
+    const record = makeLog();
+    setManagedOperationName(record, "n".repeat(70_000));
+
+    expect(logToEnvelope(record, instrumentationKey).tags["ai.operation.name"]).toBe(
+      "n".repeat(1_024),
+    );
+  });
+
   it.each([
     undefined,
     "browser.console",
@@ -885,6 +894,31 @@ describe("Azure Monitor log envelope mapping", () => {
     });
     expect(envelopes[0]?.data.baseData.properties).toEqual({ tenant: "north" });
     expect(envelopes[0]?.data.baseData.measurements).toEqual({ itemCount: 2 });
+  });
+
+  it("bounds page operation tags without truncating page-view display names", () => {
+    const pageName = "p".repeat(33_000);
+    const envelopes = logToEnvelopes(
+      makeLog({
+        eventName: "browser.page_view",
+        attributes: {
+          "browser.page_view.name": pageName,
+          "browser.page_view.name_source": "explicit",
+          "browser.page_view.performance.total": 425.25,
+          "browser.page_view.performance.network_connect": 25,
+          "browser.page_view.performance.sent_request": 100.5,
+          "browser.page_view.performance.received_response": 50.25,
+          "browser.page_view.performance.dom_processing": 249.5,
+        },
+      }),
+      instrumentationKey,
+    );
+
+    expect(envelopes.map((envelope) => envelope.tags["ai.operation.name"])).toEqual([
+      "p".repeat(1_024),
+      "p".repeat(1_024),
+    ]);
+    expect(envelopes.map((envelope) => envelope.data.baseData.name)).toEqual([pageName, pageName]);
   });
 
   it("omits default envelope fields and diagnostic custom fields from both page-view envelopes", () => {

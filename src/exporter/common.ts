@@ -165,7 +165,9 @@ export function createTags(
     "ai.device.id": "browser",
   };
   if (traceId) tags["ai.operation.id"] = traceId;
-  if (operationName) tags["ai.operation.name"] = operationName;
+  if (operationName) {
+    tags["ai.operation.name"] = truncateToLength(operationName, MaxPropertyLengths.TEN_BIT);
+  }
   if (parentContext?.spanId && !isPageContext(parentContext)) {
     tags["ai.operation.parentId"] = parentContext.spanId;
   }
