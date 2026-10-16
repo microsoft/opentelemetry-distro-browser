@@ -4,7 +4,7 @@
 import type { LogRecordProcessor, ReadWriteLogRecord } from "@opentelemetry/sdk-logs";
 import type { Span, SpanProcessor } from "@opentelemetry/sdk-trace-base";
 import { isNonEmptyString } from "../shared/isNonEmptyString.js";
-import { setManagedOperationName } from "./operationName.js";
+import { setManagedOperationName, type ManagedOperationNameSnapshot } from "./operationName.js";
 import {
   ATTR_ENDUSER_ID,
   ATTR_ENDUSER_PSEUDO_ID,
@@ -15,7 +15,7 @@ import type { UserContextProvider } from "../user/createUserContext.js";
 
 export interface BrowserContextProvider extends UserContextProvider {
   getSessionId(): string | null;
-  getOperationName(traceId: string | undefined): string | undefined;
+  getOperationNameSnapshot(traceId: string | undefined): ManagedOperationNameSnapshot | undefined;
 }
 
 type AttributeBag = Readonly<Record<string, unknown>>;
@@ -28,7 +28,7 @@ function enrich(
   provider: BrowserContextProvider,
   traceId?: string,
 ): void {
-  setManagedOperationName(record, provider.getOperationName(traceId));
+  setManagedOperationName(record, provider.getOperationNameSnapshot(traceId));
   // Context configured on the record or its resource belongs to the application.
   const hasAttribute = (name: string): boolean =>
     isNonEmptyString(attributes[name]) || isNonEmptyString(resourceAttributes[name]);

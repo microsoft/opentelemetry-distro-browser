@@ -61,6 +61,13 @@ async function start(options: MicrosoftOpenTelemetryBrowserOptions = {}) {
   };
 }
 
+/** Resolves after the page-view soft-navigation settle heuristic. */
+async function settle(): Promise<void> {
+  await new Promise<void>((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(resolve, 50)));
+  });
+}
+
 it("keeps page views, child spans, logs and propagation correlated with an all-zero RNG", async () => {
   vi.spyOn(crypto, "getRandomValues").mockImplementation((array) => array);
   vi.spyOn(Math, "random").mockReturnValue(0);
@@ -255,6 +262,57 @@ it("keeps a delayed page callback's operation name aligned with its operation ID
   for (const envelope of [logToEnvelope(log, "key"), spanToEnvelope(span, "key")]) {
     expect(envelope.tags["ai.operation.id"]).toBe(firstOperation.traceId);
     expect(envelope.tags["ai.operation.name"]).toBe(firstName);
+  }
+});
+
+it("uses the finalized route name for records buffered before page settlement", async () => {
+  let route = "/previous";
+  const pipeline = await start({ pageView: { routeResolver: () => route } });
+  await settle();
+
+  history.pushState(null, "", "/checkout");
+  const operation = trace.getSpanContext(context.active())!;
+  pipeline.logger.emit({ body: "before route settlement" });
+  const span = pipeline.tracer.startSpan("before route settlement");
+  route = "/checkout";
+  await settle();
+  span.end();
+  await pipeline.forceFlush();
+
+  const log = pipeline.onLog.mock.calls.find(
+    ([record]) => record.body === "before route settlement",
+  )![0];
+  const exportedSpan = pipeline.spanExporter
+    .getFinishedSpans()
+    .find((candidate) => candidate.name === "before route settlement")!;
+  for (const envelope of [logToEnvelope(log, "key"), spanToEnvelope(exportedSpan, "key")]) {
+    expect(envelope.tags["ai.operation.id"]).toBe(operation.traceId);
+    expect(envelope.tags["ai.operation.name"]).toBe("/checkout");
+  }
+});
+
+it("removes a provisional route name from records buffered before page settlement", async () => {
+  document.title = "Checkout 8472";
+  let route: string | undefined = "/previous";
+  const pipeline = await start({ pageView: { routeResolver: () => route } });
+  await settle();
+
+  history.pushState(null, "", "/checkout/8472");
+  pipeline.logger.emit({ body: "before title settlement" });
+  const span = pipeline.tracer.startSpan("before title settlement");
+  route = undefined;
+  await settle();
+  span.end();
+  await pipeline.forceFlush();
+
+  const log = pipeline.onLog.mock.calls.find(
+    ([record]) => record.body === "before title settlement",
+  )![0];
+  const exportedSpan = pipeline.spanExporter
+    .getFinishedSpans()
+    .find((candidate) => candidate.name === "before title settlement")!;
+  for (const envelope of [logToEnvelope(log, "key"), spanToEnvelope(exportedSpan, "key")]) {
+    expect(envelope.tags).not.toHaveProperty("ai.operation.name");
   }
 });
 

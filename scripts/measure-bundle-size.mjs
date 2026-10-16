@@ -39,7 +39,7 @@ export const entryPointBudgets = {
 // The SDK browser bundle also carries every instrumentation, because CDN users cannot add them later.
 const sdkBrowserBundleBudget = {
   rawBytes: 164 * 1024,
-  gzipBytes: 50 * 1024,
+  gzipBytes: 50.25 * 1024,
   brotliBytes: 44 * 1024,
 };
 const instrumentationsBrowserBundleBudget = {

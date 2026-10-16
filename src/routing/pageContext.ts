@@ -11,6 +11,7 @@ import {
   type SpanContext,
   type TextMapPropagator,
 } from "@opentelemetry/api";
+import type { ManagedOperationNameSnapshot } from "../context/operationName.js";
 import { withoutPageOperation } from "../instrumentation/pageView/pageViewCorrelation.js";
 import {
   conflict,
@@ -25,6 +26,7 @@ export interface PageCorrelation {
   decorate(active: Context): Context;
   operation(): SpanContext | undefined;
   operationName?(traceId?: string): string | undefined;
+  operationNameSnapshot?(traceId?: string): ManagedOperationNameSnapshot | undefined;
 }
 
 export interface PageContextState {
@@ -213,15 +215,18 @@ export function getPageOperation(self: PageCorrelation | undefined): SpanContext
   return correlation === self ? undefined : correlation?.operation();
 }
 
-/** Returns another instance's current page operation name, if any. */
-export function getPageOperationName(
+/** Returns another instance's mutable page operation name, if supported. */
+export function getPageOperationNameSnapshot(
   self: PageCorrelation | undefined,
   traceId?: string,
-): string | undefined {
+): ManagedOperationNameSnapshot | undefined {
   const { correlation } = getPageContext();
-  return correlation !== self && typeof correlation?.operationName === "function"
-    ? correlation.operationName(traceId)
-    : undefined;
+  if (correlation === self) return undefined;
+  if (typeof correlation?.operationNameSnapshot === "function") {
+    return correlation.operationNameSnapshot(traceId);
+  }
+  const name = correlation?.operationName?.(traceId);
+  return name === undefined ? undefined : { name };
 }
 
 /** Whether a distribution instance has registered the page context and propagation. */

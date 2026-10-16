@@ -9,7 +9,10 @@ import { BrowserBatchLogRecordProcessor } from "../../../src/browserBatchLogReco
 import { BasicTracerProvider, BatchSpanProcessor } from "@opentelemetry/sdk-trace-base";
 import { StackContextManager } from "@opentelemetry/sdk-trace-web";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { getManagedOperationName } from "../../../src/context/operationName.js";
+import {
+  getManagedOperationName,
+  setManagedOperationName,
+} from "../../../src/context/operationName.js";
 import { useMicrosoftOpenTelemetry, type BrowserInstrumentation } from "../../../src/index.js";
 import { addPageCorrelation } from "../../../src/routing/pageContext.js";
 import { getRegisteredGlobal, getSharedRegistry } from "../../../src/shared/globalOwnership.js";
@@ -75,6 +78,19 @@ it("does not initialize the shared registry for exporter-only operation-name rea
 
   expect(getManagedOperationName({})).toBeUndefined();
   expect(realm[distroKey]).toBeUndefined();
+});
+
+it("keeps version 1 string operation names compatible with mutable snapshots", () => {
+  const legacyRecord = {};
+  const snapshotRecord = {};
+  const operationNames = new WeakMap<object, string>([[legacyRecord, "Legacy"]]);
+  realm[distroKey] = { version: 1, operationNames };
+
+  setManagedOperationName(snapshotRecord, { name: "Current" });
+
+  expect(getManagedOperationName(legacyRecord)).toBe("Legacy");
+  expect(getManagedOperationName(snapshotRecord)).toBe("Current");
+  expect(operationNames.has(snapshotRecord)).toBe(false);
 });
 
 it.each(["trace", "logs", "context", "propagation"] as const)(

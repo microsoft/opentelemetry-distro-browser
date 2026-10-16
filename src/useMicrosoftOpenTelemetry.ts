@@ -29,7 +29,7 @@ import { getSharedRegistry, reportError } from "./shared/globalOwnership.js";
 import { runLifecycleTasks, subscribeToUnload } from "./shared/lifecycle.js";
 import {
   getPageOperation,
-  getPageOperationName,
+  getPageOperationNameSnapshot,
   isPageContextRegistered,
 } from "./routing/pageContext.js";
 import { startTelemetryInstance, type TelemetryInstance } from "./routing/telemetryInstance.js";
@@ -143,10 +143,10 @@ export async function useMicrosoftOpenTelemetry(
   const contextProvider = {
     ...userContext.provider,
     ...sessionProvider,
-    getOperationName: (traceId: string | undefined) =>
+    getOperationNameSnapshot: (traceId: string | undefined) =>
       getPageOperation(correlationState.current)
-        ? getPageOperationName(correlationState.current, traceId)
-        : correlation?.operationName(traceId),
+        ? getPageOperationNameSnapshot(correlationState.current, traceId)
+        : correlation?.operationNameSnapshot(traceId),
   };
   const contextSpanProcessor = new BrowserContextSpanProcessor(contextProvider);
   const contextLogRecordProcessor = new BrowserContextLogRecordProcessor(contextProvider);
