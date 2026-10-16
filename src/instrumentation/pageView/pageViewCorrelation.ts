@@ -90,7 +90,8 @@ export class PageViewCorrelation implements LogRecordProcessor {
     const previous = this.operationNames;
     if (operationNames) {
       for (const [operationId, snapshot] of operationNames) {
-        snapshot.name = previous.get(operationId)?.name ?? snapshot.name;
+        const replacement = previous.get(operationId);
+        if (replacement) snapshot.name = replacement.name;
       }
     }
     this.operationNames = operationNames ?? new Map<string, ManagedOperationNameSnapshot>();
