@@ -21,7 +21,7 @@ export function withoutPageOperation(active: Context): Context {
  * Stops exposing synthetic page contexts at shutdown while preserving application contexts.
  */
 export class PageViewCorrelation implements LogRecordProcessor {
-  private readonly operationNames = new Map<string, ManagedOperationNameSnapshot>();
+  private operationNames = new Map<string, ManagedOperationNameSnapshot>();
   private readonly releasePageViews: (() => void) | undefined;
 
   constructor(
@@ -81,6 +81,20 @@ export class PageViewCorrelation implements LogRecordProcessor {
     snapshot = { name: this.getUnpublishedOperationName?.(operationId) };
     this.operationNames.set(operationId, snapshot);
     return snapshot;
+  }
+
+  /** Transfers buffered record metadata when another instance takes over page correlation. */
+  handoffOperationNames(
+    operationNames?: Map<string, ManagedOperationNameSnapshot>,
+  ): Map<string, ManagedOperationNameSnapshot> {
+    const previous = this.operationNames;
+    if (operationNames) {
+      for (const [operationId, snapshot] of operationNames) {
+        snapshot.name = previous.get(operationId)?.name ?? snapshot.name;
+      }
+    }
+    this.operationNames = operationNames ?? new Map<string, ManagedOperationNameSnapshot>();
+    return previous;
   }
 
   // Correlation must not enable records rejected by the application's log processors.
