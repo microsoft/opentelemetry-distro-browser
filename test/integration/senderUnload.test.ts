@@ -33,7 +33,6 @@ it("delivers accumulated SDK stats after the source document navigates away", as
     ]),
   );
 }, 30_000);
-import type { AzureMonitorEnvelope } from "../../src/exporter/telemetryModels.js";
 
 it.each([
   ["source", undefined],
@@ -92,10 +91,7 @@ it.each([
     if (largeBatch) fixtureUrl.searchParams.set("largeBatch", "true");
     const captureUrl = `${new URL(ingestionEndpoint).origin}/captured?runId=${encodeURIComponent(runId)}`;
 
-    const envelopes = (await commands.verifyUnloadDelivery(
-      fixtureUrl.href,
-      captureUrl,
-    )) as AzureMonitorEnvelope[];
+    const envelopes = await commands.verifyUnloadDelivery(fixtureUrl.href, captureUrl);
     expect(envelopes).toHaveLength(expectedNames.length);
     expect(envelopes).toEqual(
       expectedNames.map((name) =>
@@ -112,10 +108,15 @@ it.each([
       ),
     );
     if (largeBatch) {
-      const fittedEnvelope = envelopes.find(
-        (envelope) => envelope.data.baseData.properties?.payload === undefined,
+      expect(envelopes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            data: expect.objectContaining({
+              baseData: expect.objectContaining({ properties: { "test.run_id": runId } }),
+            }),
+          }),
+        ]),
       );
-      expect(fittedEnvelope?.data.baseData.properties).toMatchObject({ "test.run_id": runId });
     }
   },
 );
@@ -138,39 +139,11 @@ it("delivers an unsettled page view after the source document navigates away", a
           baseData: expect.objectContaining({
             url: `${fixtureUrl.href}#unsettled`,
             duration: expect.any(String),
-            properties: expect.objectContaining({
+            properties: {
               refUri: fixtureUrl.href,
               "test.duration_source": "page_hide",
-            }),
+            },
           }),
-        }),
-      }),
-    ]),
-  );
-});
-
-it("delivers telemetry with an oversized resource service.version during unload", async () => {
-  const runId = crypto.randomUUID();
-  const ingestionEndpoint = `${inject("ingestionEndpoint")}${encodeURIComponent(runId)}`;
-  const fixtureUrl = new URL("./unloadFixture.html", import.meta.url);
-  fixtureUrl.searchParams.set("ingestionEndpoint", ingestionEndpoint);
-  fixtureUrl.searchParams.set("runId", runId);
-  fixtureUrl.searchParams.set("oversizedVersion", "true");
-  const captureUrl = `${new URL(ingestionEndpoint).origin}/captured?runId=${encodeURIComponent(runId)}`;
-
-  const envelopes = (await commands.verifyUnloadDelivery(
-    fixtureUrl.href,
-    captureUrl,
-  )) as AzureMonitorEnvelope[];
-  expect(envelopes).toEqual(
-    expect.arrayContaining([
-      expect.objectContaining({
-        tags: expect.objectContaining({
-          "ai.application.ver": "v".repeat(1_024),
-        }),
-        data: expect.objectContaining({
-          baseType: "RemoteDependencyData",
-          baseData: expect.objectContaining({ name: "navigation-away" }),
         }),
       }),
     ]),

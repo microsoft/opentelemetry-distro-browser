@@ -37,6 +37,7 @@ import {
   ATTR_USER_ID,
 } from "../user/constants.js";
 import { AZURE_MONITOR_SAMPLE_RATE } from "../sampling.js";
+import { selectNonEmptyString } from "../shared/isNonEmptyString.js";
 
 const promotedSpanAttributes = /* @__PURE__ */ new Set([
   HTTP_METHOD,
@@ -54,19 +55,9 @@ const promotedExceptionEventAttributes = /* @__PURE__ */ new Set([
   "exception.message",
   "exception.stacktrace",
   "exception.type",
-  ATTR_ENDUSER_ID,
-  ATTR_ENDUSER_PSEUDO_ID,
-  ATTR_USER_ACCOUNT_ID,
-  ATTR_USER_ID,
   "session.id",
 ]);
-const promotedEventAttributes = /* @__PURE__ */ new Set([
-  ATTR_ENDUSER_ID,
-  ATTR_ENDUSER_PSEUDO_ID,
-  ATTR_USER_ACCOUNT_ID,
-  ATTR_USER_ID,
-  "session.id",
-]);
+const promotedEventAttributes = /* @__PURE__ */ new Set(["session.id"]);
 
 function omitCustomFields(envelope: AzureMonitorEnvelope): AzureMonitorEnvelope {
   const {
@@ -93,12 +84,7 @@ export function spanToEnvelope(
   const method = span.attributes[HTTP_METHOD];
   const url = span.attributes[URL_FULL];
   const duration = millisecondsToTimeSpan(hrTimeToMilliseconds(span.duration));
-  const customFields = mapAttributes(
-    span.attributes,
-    promotedSpanAttributes,
-    span.resource.attributes,
-    true,
-  );
+  const customFields = mapAttributes(span.attributes, promotedSpanAttributes, true);
   const sampleRate = getSampleRate(span.attributes);
   const tags = createTags(
     spanContext.traceId,
@@ -185,20 +171,17 @@ function spanEventToEnvelope(
   const customFields = mapAttributes(
     attributes,
     isException ? promotedExceptionEventAttributes : promotedEventAttributes,
-    span.resource.attributes,
   );
   const tags = createTags(
     spanContext.traceId,
     spanContext,
     span.resource.attributes["service.name"],
-    {
-      ...attributes,
-      "user_agent.os.name": span.attributes["user_agent.os.name"],
-      "user_agent.os.version": span.attributes["user_agent.os.version"],
-    },
-    span.resource.attributes,
     span.attributes,
+    span.resource.attributes,
   );
+  const eventSessionId = attributes["session.id"];
+  const sessionId = selectNonEmptyString(eventSessionId, span.attributes["session.id"]);
+  if (sessionId !== undefined) tags["ai.session.id"] = sessionId;
   const time = hrTimeToDate(event.time);
   const sampleRate = getSampleRate(span.attributes);
 

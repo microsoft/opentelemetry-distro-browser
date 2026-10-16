@@ -42,11 +42,7 @@ it("sends telemetry from a browser interaction to Azure Monitor ingestion", asyn
         `IngestionEndpoint=${ingestionEndpoint}`,
     },
     resource: resourceFromAttributes({
-      "service.name": "browser-distro-resource-repro",
       "service.version": "synthetic-release-42",
-      "deployment.environment.name": "synthetic-environment-42",
-      "browser.language": "en-US",
-      "custom.resource.marker": "synthetic-resource-value-42",
     }),
     pageView: { applyCustomLogRecordData: () => pageReady() },
     session: { enabled: true, persist: false, inactivityTimeout: 60, maxDuration: 3600 },
@@ -116,17 +112,11 @@ it("sends telemetry from a browser interaction to Azure Monitor ingestion", asyn
       expect(envelope.tags).toMatchObject({
         "ai.device.type": "Browser",
         "ai.device.id": "browser",
-        "ai.cloud.role": "browser-distro-resource-repro",
         "ai.application.ver": "synthetic-release-42",
       });
       expect(envelope).not.toHaveProperty("ver");
       expect(envelope).not.toHaveProperty("sampleRate");
       expect(envelope.data.baseData.properties?.["session.id"]).toBeUndefined();
-      expect(envelope.data.baseData.properties).toMatchObject({
-        "deployment.environment.name": "synthetic-environment-42",
-        "browser.language": "en-US",
-        "custom.resource.marker": "synthetic-resource-value-42",
-      });
       if (["PageViewData", "PageviewPerformanceData"].includes(envelope.data.baseType)) {
         for (const key of [
           "browser.page_view.index",

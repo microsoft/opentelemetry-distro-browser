@@ -24,15 +24,6 @@ import { MaxPropertyLengths } from "./constants.js";
 let unloadingCount = 0;
 let textDecoder: TextDecoder | undefined;
 let textEncoder: TextEncoder | undefined;
-const promotedResourceAttributes = /* @__PURE__ */ new Set([
-  "service.name",
-  "service.version",
-  ATTR_ENDUSER_ID,
-  ATTR_ENDUSER_PSEUDO_ID,
-  ATTR_USER_ACCOUNT_ID,
-  ATTR_USER_ID,
-  "session.id",
-]);
 
 export function isUnloading(): boolean {
   return unloadingCount > 0;
@@ -125,7 +116,6 @@ export function truncateCustomDimensions(
 export function mapAttributes(
   attributes: Attributes,
   promotedAttributes: ReadonlySet<string>,
-  resourceAttributes?: Attributes,
   omitPromotedOsAttributes = false,
 ): Pick<AzureMonitorBaseData, "properties" | "measurements"> {
   const properties: Record<string, string> = {};
@@ -135,14 +125,10 @@ export function mapAttributes(
     isNonEmptyString(attributes[ATTR_USER_AGENT_OS_NAME]) &&
     isNonEmptyString(attributes[ATTR_USER_AGENT_OS_VERSION]);
 
-  for (const key of Object.keys({ ...resourceAttributes, ...attributes })) {
-    const recordValue = Object.hasOwn(attributes, key) ? attributes[key] : undefined;
-    const value = recordValue === undefined ? resourceAttributes?.[key] : recordValue;
+  for (const [key, value] of Object.entries(attributes)) {
     if (
       value === undefined ||
-      (recordValue === undefined
-        ? promotedResourceAttributes.has(key)
-        : promotedAttributes.has(key)) ||
+      promotedAttributes.has(key) ||
       (hasPromotedOs && (key === ATTR_USER_AGENT_OS_NAME || key === ATTR_USER_AGENT_OS_VERSION)) ||
       (key === "session.id" && isNonEmptyString(value))
     ) {
@@ -168,7 +154,6 @@ export function createTags(
   serviceName: unknown,
   attributes: Attributes,
   resourceAttributes: Attributes,
-  fallbackAttributes?: Attributes,
 ): Record<string, string> {
   const tags: Record<string, string> = {
     "ai.internal.sdkVersion": getSdkVersion(),
@@ -196,29 +181,18 @@ export function createTags(
   } else if (isNonEmptyString(resourceOsName) && isNonEmptyString(resourceOsVersion)) {
     tags["ai.device.osVersion"] = `${resourceOsName}${resourceOsVersion}`;
   }
-  const selectAttribute = (key: string): string | undefined =>
-    selectNonEmptyString(
-      attributes[key],
-      selectNonEmptyString(fallbackAttributes?.[key], resourceAttributes[key]),
-    );
   const anonymousUserId = selectNonEmptyString(
     attributes[ATTR_ENDUSER_PSEUDO_ID],
-    selectNonEmptyString(
-      fallbackAttributes?.[ATTR_ENDUSER_PSEUDO_ID],
-      resourceAttributes[ATTR_ENDUSER_PSEUDO_ID],
-    ),
+    resourceAttributes[ATTR_ENDUSER_PSEUDO_ID],
   );
   const authenticatedUserId = selectNonEmptyString(
     selectNonEmptyString(attributes[ATTR_ENDUSER_ID], attributes[ATTR_USER_ID]),
-    selectNonEmptyString(
-      selectNonEmptyString(
-        fallbackAttributes?.[ATTR_ENDUSER_ID],
-        fallbackAttributes?.[ATTR_USER_ID],
-      ),
-      selectNonEmptyString(resourceAttributes[ATTR_ENDUSER_ID], resourceAttributes[ATTR_USER_ID]),
-    ),
+    selectNonEmptyString(resourceAttributes[ATTR_ENDUSER_ID], resourceAttributes[ATTR_USER_ID]),
   );
-  const accountId = selectAttribute(ATTR_USER_ACCOUNT_ID);
+  const accountId = selectNonEmptyString(
+    attributes[ATTR_USER_ACCOUNT_ID],
+    resourceAttributes[ATTR_USER_ACCOUNT_ID],
+  );
   if (isNonEmptyString(anonymousUserId)) {
     tags["ai.user.id"] = anonymousUserId;
   }
@@ -228,7 +202,10 @@ export function createTags(
   if (isNonEmptyString(accountId)) {
     tags["ai.user.accountId"] = accountId;
   }
-  const sessionId = selectAttribute("session.id");
+  const sessionId = selectNonEmptyString(
+    attributes["session.id"],
+    resourceAttributes["session.id"],
+  );
   if (sessionId !== undefined) {
     tags["ai.session.id"] = sessionId;
   }

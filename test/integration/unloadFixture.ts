@@ -6,7 +6,6 @@ import { SDK_STATS_ENDPOINT, withoutSdkStats } from "../fixtures/sdkStats.js";
 import { trace as sourceTrace } from "@opentelemetry/api";
 import { logs } from "@opentelemetry/api-logs";
 import { ConsoleInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/console";
-import type { Resource } from "@opentelemetry/resources";
 import { useMicrosoftOpenTelemetry as initializeSource } from "../../src/index.js";
 import { useMicrosoftOpenTelemetry as initializeEsm } from "../../dist/esm/index.js";
 import { useMicrosoftOpenTelemetry as initializeMinifiedEsm } from "../../dist/esm/index.min.js";
@@ -19,7 +18,6 @@ const statsIngestionEndpoint = parameters.get("statsIngestionEndpoint");
 const inFlight = parameters.get("inFlight") === "true";
 const artifact = parameters.get("artifact");
 const largeBatch = parameters.get("largeBatch") === "true";
-const oversizedVersion = parameters.get("oversizedVersion") === "true";
 if (!ingestionEndpoint || !runId) {
   throw new Error("Unload fixture requires ingestionEndpoint and runId parameters.");
 }
@@ -60,23 +58,12 @@ if (statsIngestionEndpoint) {
   trace = bundle.trace;
 }
 
-const handle = await useMicrosoftOpenTelemetry({
+await useMicrosoftOpenTelemetry({
   azureMonitor: {
     connectionString:
       `InstrumentationKey=00000000-0000-0000-0000-000000000000;` +
       `IngestionEndpoint=${ingestionEndpoint}`,
   },
-  resource: oversizedVersion
-    ? ({
-        attributes: { "service.version": "v".repeat(70_000) },
-        merge: () => {
-          throw new Error("Unload fixture resource does not support merging.");
-        },
-        getRawAttributes: () => {
-          throw new Error("Unload fixture resource does not expose raw attributes.");
-        },
-      } satisfies Resource)
-    : undefined,
   pageView: {
     enabled: pageView,
     softNavigationSettleTimeoutMs: 60_000,
@@ -94,7 +81,6 @@ const handle = await useMicrosoftOpenTelemetry({
 });
 if (inFlight) {
   logs.getLogger("browser-unload-test").emit({ body: "pending-before-navigation" });
-  void handle.forceFlush().catch(() => undefined);
   const captureUrl = `${new URL(ingestionEndpoint).origin}/captured?runId=${encodeURIComponent(runId)}`;
   const deadline = Date.now() + 5_000;
   let exporting = false;

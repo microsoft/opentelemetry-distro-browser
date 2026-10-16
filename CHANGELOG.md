@@ -65,9 +65,7 @@ All notable changes to this package are documented in this file.
 
 - Preserve asynchronously detected resource attributes when initializing trace and log pipelines.
 - Detect OS version from high-entropy client hints
-- Preserve configured resource metadata during Azure Monitor span and log export. Map
-  `service.version` to `ai.application.ver`, retain other resource attributes as custom fields,
-  and let record-level attributes take precedence when keys overlap.
+- Map resource `service.version` to the Azure Monitor `ai.application.ver` tag.
 - Only gzip Azure Monitor request bodies for recognized first-party ingestion endpoints in the
   public, US Government, and China clouds. Custom ingestion endpoints, such as proxies that parse
   request bodies as JSON, now receive uncompressed JSON.

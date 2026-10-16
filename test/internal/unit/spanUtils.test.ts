@@ -77,113 +77,34 @@ describe("Azure Monitor span envelope mapping", () => {
     );
 
     expect(envelope.tags).not.toHaveProperty("ai.device.osVersion");
-    expect(envelope.data.baseData.properties).toEqual({
-      "user_agent.os.name": "Linux",
-      "user_agent.os.version": "11",
-    });
+    expect(envelope.data.baseData.properties).toEqual({ "user_agent.os.name": "Linux" });
   });
 
-  it("preserves resource metadata with record attributes taking precedence", () => {
-    const resource = resourceFromAttributes({
-      "service.name": "browser-distro-resource-repro",
-      "service.version": "synthetic-release-42",
-      "deployment.environment.name": "synthetic-environment-42",
-      "browser.language": "en-US",
-      "custom.resource.marker": "synthetic-resource-value-42",
-      "server.address": "resource.example.test",
-    });
-    Object.defineProperty(resource.attributes, "constructor", {
-      value: "release-42",
-      enumerable: true,
-    });
-    const span = makeSpan({
-      attributes: {
-        "test.run_id": "run-42",
-        "record.control": "synthetic-record-value-42",
-        "custom.resource.marker": "record-value",
-        "service.version": "record-version",
-      },
-      resource,
-    });
-
-    const envelope = spanToEnvelope(span, instrumentationKey);
-
-    expect(envelope.tags).toMatchObject({
-      "ai.cloud.role": "browser-distro-resource-repro",
-      "ai.application.ver": "synthetic-release-42",
-    });
-    expect(envelope.data.baseData.properties).toMatchObject({
-      "test.run_id": "run-42",
-      "record.control": "synthetic-record-value-42",
-      "deployment.environment.name": "synthetic-environment-42",
-      "browser.language": "en-US",
-      "custom.resource.marker": "record-value",
-      "service.version": "record-version",
-      "server.address": "resource.example.test",
-      constructor: "release-42",
-    });
-    expect(envelope.data.baseData.properties).not.toHaveProperty("service.name");
-  });
-
-  it("preserves resource metadata on span event envelopes without duplicating tags", () => {
-    const envelopes = spanToEnvelopes(
+  it("maps resource service.version to the Application Insights application version tag", () => {
+    const envelope = spanToEnvelope(
       makeSpan({
-        events: [
-          {
-            name: "resource-event",
-            time: [1_735_689_601, 0],
-            attributes: { "event.control": "event-value" },
-            droppedAttributesCount: 0,
-          },
-        ],
         resource: resourceFromAttributes({
-          "service.name": "browser-distro-resource-repro",
           "service.version": "synthetic-release-42",
-          "deployment.environment.name": "synthetic-environment-42",
-          "enduser.pseudo.id": "anonymous-user",
+          "custom.resource.marker": "not-exported-per-record",
         }),
       }),
       instrumentationKey,
     );
 
-    expect(envelopes[1].tags).toMatchObject({
-      "ai.cloud.role": "browser-distro-resource-repro",
-      "ai.application.ver": "synthetic-release-42",
-      "ai.user.id": "anonymous-user",
-    });
-    expect(envelopes[1].data.baseData.properties).toEqual({
-      "deployment.environment.name": "synthetic-environment-42",
-      "event.control": "event-value",
-    });
+    expect(envelope.tags["ai.application.ver"]).toBe("synthetic-release-42");
+    expect(envelope.data.baseData.properties).toBeUndefined();
   });
 
-  it.each(["checkout.step", "exception"])(
-    "prefers %s event identity over span and resource identity",
-    (eventName) => {
-      const envelopes = spanToEnvelopes(
-        makeSpan({
-          attributes: { "user.id": "span-user" },
-          events: [
-            {
-              name: eventName,
-              time: [1_735_689_601, 0],
-              attributes: {
-                "user.id": "event-user",
-                ...(eventName === "exception"
-                  ? { "exception.type": "Error", "exception.message": "boom" }
-                  : {}),
-              },
-              droppedAttributesCount: 0,
-            },
-          ],
-          resource: resourceFromAttributes({ "user.id": "resource-user" }),
-        }),
-        instrumentationKey,
-      );
+  it("bounds the Application Insights application version tag", () => {
+    const envelope = spanToEnvelope(
+      makeSpan({
+        resource: resourceFromAttributes({ "service.version": "v".repeat(1_025) }),
+      }),
+      instrumentationKey,
+    );
 
-      expect(envelopes[1].tags["ai.user.authUserId"]).toBe("event-user");
-    },
-  );
+    expect(envelope.tags["ai.application.ver"]).toBe("v".repeat(1_024));
+  });
 
   it.each([SpanKind.CLIENT, SpanKind.SERVER, SpanKind.CONSUMER, SpanKind.INTERNAL])(
     "promotes standard session IDs to tags without changing the source span (kind=%i)",
