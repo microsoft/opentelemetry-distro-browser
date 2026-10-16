@@ -181,12 +181,14 @@ describe("AzureMonitorSamplingLogRecordProcessor", () => {
 
   it("preserves managed operation names on records derived for sampling metadata", async () => {
     const accepted = makeRecord();
-    setManagedOperationName(accepted, "Products");
+    const snapshot: { name: string | undefined } = { name: "Products" };
+    setManagedOperationName(accepted, snapshot);
 
     const [exported] = await exportRecords(50, [accepted], () => 0);
+    snapshot.name = "Checkout";
 
     expect(exported).not.toBe(accepted);
-    expect(getManagedOperationName(exported!)).toBe("Products");
+    expect(getManagedOperationName(exported!)).toBe("Checkout");
   });
 
   it("combines producer and local rates for independently sampled records", async () => {
