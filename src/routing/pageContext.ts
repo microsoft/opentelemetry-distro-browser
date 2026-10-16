@@ -27,6 +27,9 @@ export interface PageCorrelation {
   operation(): SpanContext | undefined;
   operationName?(traceId?: string): string | undefined;
   operationNameSnapshot?(traceId?: string): ManagedOperationNameSnapshot | undefined;
+  handoffOperationNames?(
+    operationNames?: Map<string, ManagedOperationNameSnapshot>,
+  ): Map<string, ManagedOperationNameSnapshot>;
 }
 
 export interface PageContextState {
@@ -203,9 +206,13 @@ export function addPageCorrelation(owner: PageCorrelation): () => void {
   state.owners.push(owner);
   state.correlation = state.owners[0];
   return () => {
+    const wasCurrent = state.correlation === owner;
     const index = state.owners.indexOf(owner);
     if (index >= 0) state.owners.splice(index, 1);
     state.correlation = state.owners[0];
+    if (wasCurrent && state.correlation?.handoffOperationNames && owner.handoffOperationNames) {
+      state.correlation.handoffOperationNames(owner.handoffOperationNames());
+    }
   };
 }
 
