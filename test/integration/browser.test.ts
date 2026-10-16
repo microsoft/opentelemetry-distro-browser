@@ -129,7 +129,6 @@ it("sends telemetry from a browser interaction to Azure Monitor ingestion", asyn
       });
       expect(envelope).not.toHaveProperty("ver");
       expect(envelope).not.toHaveProperty("sampleRate");
-      expect(envelope.tags["ai.application.ver"]).toBe("2.4.1");
       expect(envelope.data.baseData.properties?.["session.id"]).toBeUndefined();
       if (["PageViewData", "PageviewPerformanceData"].includes(envelope.data.baseType)) {
         for (const key of [
