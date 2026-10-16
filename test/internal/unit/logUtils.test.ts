@@ -729,6 +729,17 @@ describe("Azure Monitor log envelope mapping", () => {
     expect(envelope.data.baseData.properties).toBeUndefined();
   });
 
+  it("bounds the Application Insights application version tag", () => {
+    const envelope = logToEnvelope(
+      makeLog({
+        resource: resourceFromAttributes({ "service.version": "v".repeat(1_025) }),
+      }),
+      instrumentationKey,
+    );
+
+    expect(envelope.tags["ai.application.ver"]).toBe("v".repeat(1_024));
+  });
+
   it.each([undefined, "browser.page_view"])(
     "maps log user attributes to tags instead of properties for event %s",
     (eventName) => {

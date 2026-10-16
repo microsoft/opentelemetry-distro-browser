@@ -170,7 +170,7 @@ export function createTags(
     tags["ai.operation.parentId"] = parentContext.spanId;
   }
   if (serviceName) tags["ai.cloud.role"] = serializeAttribute(serviceName);
-  const serviceVersion = resourceAttributes["service.version"];
+  const serviceVersion = resourceAttributes[ATTR_SERVICE_VERSION];
   if (serviceVersion) {
     tags["ai.application.ver"] = truncateToLength(
       serializeAttribute(serviceVersion),
@@ -185,10 +185,6 @@ export function createTags(
     tags["ai.device.osVersion"] = `${attributeOsName}${attributeOsVersion}`;
   } else if (isNonEmptyString(resourceOsName) && isNonEmptyString(resourceOsVersion)) {
     tags["ai.device.osVersion"] = `${resourceOsName}${resourceOsVersion}`;
-  }
-  const applicationVersion = resourceAttributes[ATTR_SERVICE_VERSION];
-  if (isNonEmptyString(applicationVersion)) {
-    tags["ai.application.ver"] = applicationVersion;
   }
   const anonymousUserId = selectNonEmptyString(
     attributes[ATTR_ENDUSER_PSEUDO_ID],
