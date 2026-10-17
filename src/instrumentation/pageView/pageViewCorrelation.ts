@@ -3,7 +3,12 @@
 
 import { isSpanContextValid, trace, type Context, type SpanContext } from "@opentelemetry/api";
 import type { LogRecordProcessor, ReadWriteLogRecord } from "@opentelemetry/sdk-logs";
+import type { ManagedOperationNameSnapshot } from "../../context/operationName.js";
 import { isPageContext } from "../../shared/pageOperationContext.js";
+import { NAME_SOURCE_EXPLICIT, NAME_SOURCE_ROUTE } from "./semconv.js";
+import type { PageView, PageViewSource } from "./types.js";
+
+const MAX_OPERATION_NAMES = 32;
 
 /** Removes a synthetic page operation while preserving application contexts and values. */
 export function withoutPageOperation(active: Context): Context {
@@ -16,7 +21,31 @@ export function withoutPageOperation(active: Context): Context {
  * Stops exposing synthetic page contexts at shutdown while preserving application contexts.
  */
 export class PageViewCorrelation implements LogRecordProcessor {
-  constructor(private getOperation: (() => SpanContext | undefined) | undefined) {}
+  private operationNames = new Map<string, ManagedOperationNameSnapshot>();
+  private readonly releasePageViews: (() => void) | undefined;
+
+  constructor(
+    private getOperation: (() => SpanContext | undefined) | undefined,
+    pageViews?: PageViewSource,
+    private getUnpublishedOperationName?: (traceId: string) => string | undefined,
+  ) {
+    const track = (pageView: PageView): void => {
+      const snapshot = this.operationNames.get(pageView.id) ?? { name: undefined };
+      snapshot.name =
+        pageView.nameSource === NAME_SOURCE_EXPLICIT || pageView.nameSource === NAME_SOURCE_ROUTE
+          ? pageView.name
+          : undefined;
+      this.operationNames.delete(pageView.id);
+      this.operationNames.set(pageView.id, snapshot);
+      if (this.operationNames.size > MAX_OPERATION_NAMES) {
+        const oldest = this.operationNames.keys().next().value;
+        if (oldest !== undefined) this.operationNames.delete(oldest);
+      }
+    };
+    const current = pageViews?.getCurrentPageView();
+    if (current) track(current);
+    this.releasePageViews = pageViews?.onPageViewChanged(track);
+  }
 
   /** Applies page correlation to the active context supplied by the page context manager. */
   decorate(active: Context): Context {
@@ -31,6 +60,42 @@ export class PageViewCorrelation implements LogRecordProcessor {
   /** The current page operation, until shutdown. */
   operation(): SpanContext | undefined {
     return this.getOperation?.();
+  }
+
+  /** The safe page name for an operation, until shutdown. */
+  operationName(traceId?: string): string | undefined {
+    return this.operationNameSnapshot(traceId)?.name;
+  }
+
+  /** Mutable page name shared with records buffered before the page view settles. */
+  operationNameSnapshot(traceId?: string): ManagedOperationNameSnapshot | undefined {
+    const operationId = traceId ?? this.getOperation?.()?.traceId;
+    if (!operationId) return undefined;
+    let snapshot = this.operationNames.get(operationId);
+    if (snapshot) {
+      this.operationNames.delete(operationId);
+      this.operationNames.set(operationId, snapshot);
+      return snapshot;
+    }
+    if (this.getOperation?.()?.traceId !== operationId) return undefined;
+    snapshot = { name: this.getUnpublishedOperationName?.(operationId) };
+    this.operationNames.set(operationId, snapshot);
+    return snapshot;
+  }
+
+  /** Transfers buffered record metadata when another instance takes over page correlation. */
+  handoffOperationNames(
+    operationNames?: Map<string, ManagedOperationNameSnapshot>,
+  ): Map<string, ManagedOperationNameSnapshot> {
+    const previous = this.operationNames;
+    if (operationNames) {
+      for (const [operationId, snapshot] of operationNames) {
+        const replacement = previous.get(operationId);
+        if (replacement) snapshot.name = replacement.name;
+      }
+    }
+    this.operationNames = operationNames ?? new Map<string, ManagedOperationNameSnapshot>();
+    return previous;
   }
 
   // Correlation must not enable records rejected by the application's log processors.
@@ -48,6 +113,9 @@ export class PageViewCorrelation implements LogRecordProcessor {
 
   shutdown(): Promise<void> {
     this.getOperation = undefined;
+    this.getUnpublishedOperationName = undefined;
+    this.releasePageViews?.();
+    this.operationNames.clear();
     return Promise.resolve();
   }
 }

@@ -5,6 +5,7 @@ import { diag, type SpanContext } from "@opentelemetry/api";
 import type { RouterState } from "../routing/instanceRouter.js";
 import type { PageContextState } from "../routing/pageContext.js";
 import type { BrowserPatchState } from "../instrumentation/sharedBrowserPatches.js";
+import type { ManagedOperationNameSnapshot } from "../context/operationName.js";
 
 const distroKey = /* @__PURE__ */ Symbol.for("@microsoft/opentelemetry-browser");
 const apiKey = /* @__PURE__ */ Symbol.for("opentelemetry.js.api.1");
@@ -15,6 +16,8 @@ interface SharedRegistry {
   version: 1;
   diagInitialized?: boolean;
   pageContexts?: WeakSet<SpanContext>;
+  operationNames?: WeakMap<object, string>;
+  operationNameSnapshots?: WeakMap<object, ManagedOperationNameSnapshot>;
   router?: RouterState;
   page?: PageContextState;
   unloadSubscribers?: Set<() => void>;
@@ -27,6 +30,16 @@ interface SharedRegistry {
 export function getPageContexts(): WeakSet<SpanContext> | undefined {
   const registry = realm[distroKey] as SharedRegistry | undefined;
   return registry?.version === 1 ? registry.pageContexts : undefined;
+}
+
+/** Exporter-only consumers may read operation names without initializing a distribution. */
+export function getOperationName(
+  record: object,
+): string | ManagedOperationNameSnapshot | undefined {
+  const registry = realm[distroKey] as SharedRegistry | undefined;
+  return registry?.version === 1
+    ? (registry.operationNameSnapshots?.get(record) ?? registry.operationNames?.get(record))
+    : undefined;
 }
 
 /** One versioned, realm-local registry shared by separately bundled distribution copies. */
