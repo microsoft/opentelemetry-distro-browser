@@ -11,7 +11,6 @@ import {
   type SpanContext,
   type TextMapPropagator,
 } from "@opentelemetry/api";
-import type { ManagedOperationNameSnapshot } from "../context/operationName.js";
 import { withoutPageOperation } from "../instrumentation/pageView/pageViewCorrelation.js";
 import {
   conflict,
@@ -26,10 +25,6 @@ export interface PageCorrelation {
   decorate(active: Context): Context;
   operation(): SpanContext | undefined;
   operationName?(traceId?: string): string | undefined;
-  operationNameSnapshot?(traceId?: string): ManagedOperationNameSnapshot | undefined;
-  handoffOperationNames?(
-    operationNames?: Map<string, ManagedOperationNameSnapshot>,
-  ): Map<string, ManagedOperationNameSnapshot>;
 }
 
 export interface PageContextState {
@@ -206,13 +201,9 @@ export function addPageCorrelation(owner: PageCorrelation): () => void {
   state.owners.push(owner);
   state.correlation = state.owners[0];
   return () => {
-    const wasCurrent = state.correlation === owner;
     const index = state.owners.indexOf(owner);
     if (index >= 0) state.owners.splice(index, 1);
     state.correlation = state.owners[0];
-    if (wasCurrent && state.correlation?.handoffOperationNames && owner.handoffOperationNames) {
-      state.correlation.handoffOperationNames(owner.handoffOperationNames());
-    }
   };
 }
 
@@ -222,18 +213,14 @@ export function getPageOperation(self: PageCorrelation | undefined): SpanContext
   return correlation === self ? undefined : correlation?.operation();
 }
 
-/** Returns another instance's mutable page operation name, if supported. */
-export function getPageOperationNameSnapshot(
+/** Returns another instance's page operation name, if available. */
+export function getPageOperationName(
   self: PageCorrelation | undefined,
   traceId?: string,
-): ManagedOperationNameSnapshot | undefined {
+): string | undefined {
   const { correlation } = getPageContext();
   if (correlation === self) return undefined;
-  if (typeof correlation?.operationNameSnapshot === "function") {
-    return correlation.operationNameSnapshot(traceId);
-  }
-  const name = correlation?.operationName?.(traceId);
-  return name === undefined ? undefined : { name };
+  return correlation?.operationName?.(traceId);
 }
 
 /** Whether a distribution instance has registered the page context and propagation. */

@@ -265,7 +265,7 @@ it("keeps a delayed page callback's operation name aligned with its operation ID
   }
 });
 
-it("uses the finalized route name for records buffered before page settlement", async () => {
+it("keeps the route name captured before page settlement", async () => {
   let route = "/previous";
   const pipeline = await start({ pageView: { routeResolver: () => route } });
   await settle();
@@ -287,11 +287,11 @@ it("uses the finalized route name for records buffered before page settlement", 
     .find((candidate) => candidate.name === "before route settlement")!;
   for (const envelope of [logToEnvelope(log, "key"), spanToEnvelope(exportedSpan, "key")]) {
     expect(envelope.tags["ai.operation.id"]).toBe(operation.traceId);
-    expect(envelope.tags["ai.operation.name"]).toBe("/checkout");
+    expect(envelope.tags["ai.operation.name"]).toBe("/previous");
   }
 });
 
-it("removes a provisional route name from records buffered before page settlement", async () => {
+it("does not revise captured telemetry when the page settles to a title", async () => {
   document.title = "Checkout 8472";
   let route: string | undefined = "/previous";
   const pipeline = await start({ pageView: { routeResolver: () => route } });
@@ -312,7 +312,7 @@ it("removes a provisional route name from records buffered before page settlemen
     .getFinishedSpans()
     .find((candidate) => candidate.name === "before title settlement")!;
   for (const envelope of [logToEnvelope(log, "key"), spanToEnvelope(exportedSpan, "key")]) {
-    expect(envelope.tags).not.toHaveProperty("ai.operation.name");
+    expect(envelope.tags["ai.operation.name"]).toBe("/previous");
   }
 });
 

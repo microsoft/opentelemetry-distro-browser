@@ -413,69 +413,14 @@ it("hands page correlation to a surviving instance when the owner shuts down", a
   expect(headers.traceparent).toContain(betaOperation);
 });
 
-it("preserves buffered operation names when page correlation changes owners", async () => {
-  let route = "/previous";
-  const pageView = { routeResolver: () => route };
-  const alpha = await start({ pageView });
-  const beta = await start({ pageView });
-  await settle();
-
-  history.pushState(null, "", "/checkout");
-  const operation = trace.getSpanContext(context.active())!;
-  beta.probe.record("buffered");
-  route = "/checkout";
-  await alpha.handle.shutdown();
-  await settle();
-  await beta.pipeline.forceFlush();
-
-  const span = beta.pipeline.spanExporter
-    .getFinishedSpans()
-    .find((candidate) => candidate.name === "buffered")!;
-  const log = beta.pipeline.logExporter
-    .getFinishedLogRecords()
-    .find((candidate) => candidate.eventName === "buffered")!;
-  for (const envelope of [spanToEnvelope(span, "key"), logToEnvelope(log, "key")]) {
-    expect(envelope.tags["ai.operation.id"]).toBe(operation.traceId);
-    expect(envelope.tags["ai.operation.name"]).toBe("/checkout");
-  }
-});
-
-it.each([
-  ["a title", undefined],
-  ["another route", "/successor-route"],
-])("preserves the owner's settled operation name when the successor uses %s", async (_, route) => {
+it("keeps the operation name captured before page correlation changes owners", async () => {
   const alpha = await start({ pageView: { routeResolver: () => "/owner-route" } });
-  const beta = await start({ pageView: { routeResolver: () => route } });
+  const beta = await start({ pageView: { routeResolver: () => "/successor-route" } });
   await settle();
 
   const operation = trace.getSpanContext(context.active())!;
   beta.probe.record("buffered");
   await alpha.handle.shutdown();
-  await beta.pipeline.forceFlush();
-
-  const span = beta.pipeline.spanExporter
-    .getFinishedSpans()
-    .find((candidate) => candidate.name === "buffered")!;
-  const log = beta.pipeline.logExporter
-    .getFinishedLogRecords()
-    .find((candidate) => candidate.eventName === "buffered")!;
-  for (const envelope of [spanToEnvelope(span, "key"), logToEnvelope(log, "key")]) {
-    expect(envelope.tags["ai.operation.id"]).toBe(operation.traceId);
-    expect(envelope.tags["ai.operation.name"]).toBe("/owner-route");
-  }
-});
-
-it("preserves a settled owner name while the successor settles after handoff", async () => {
-  const alpha = await start({ pageView: { routeResolver: () => "/owner-route" } });
-  await settle();
-
-  let successorRoute = "/successor-provisional";
-  const beta = await start({ pageView: { routeResolver: () => successorRoute } });
-  const operation = trace.getSpanContext(context.active())!;
-  beta.probe.record("buffered");
-  await alpha.handle.shutdown();
-  successorRoute = "/successor-final";
-  await settle();
   await beta.pipeline.forceFlush();
 
   const span = beta.pipeline.spanExporter

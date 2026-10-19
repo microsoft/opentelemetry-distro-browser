@@ -80,17 +80,17 @@ it("does not initialize the shared registry for exporter-only operation-name rea
   expect(realm[distroKey]).toBeUndefined();
 });
 
-it("keeps version 1 string operation names compatible with mutable snapshots", () => {
+it("reuses a version 1 operation-name registry across package copies", () => {
   const legacyRecord = {};
-  const snapshotRecord = {};
+  const currentRecord = {};
   const operationNames = new WeakMap<object, string>([[legacyRecord, "Legacy"]]);
   realm[distroKey] = { version: 1, operationNames };
 
-  setManagedOperationName(snapshotRecord, { name: "Current" });
+  setManagedOperationName(currentRecord, "Current");
 
   expect(getManagedOperationName(legacyRecord)).toBe("Legacy");
-  expect(getManagedOperationName(snapshotRecord)).toBe("Current");
-  expect(operationNames.has(snapshotRecord)).toBe(false);
+  expect(getManagedOperationName(currentRecord)).toBe("Current");
+  expect(operationNames.has(currentRecord)).toBe(true);
 });
 
 it.each(["trace", "logs", "context", "propagation"] as const)(
