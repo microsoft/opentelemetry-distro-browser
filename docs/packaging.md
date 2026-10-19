@@ -58,11 +58,11 @@ in each Node job's check summary and uploads all three files as build artifacts.
 
 Every executable published entry point has absolute minified, gzip and Brotli budgets:
 
-| Entry point          | Minified |    Gzip | Brotli |
-| -------------------- | -------: | ------: | -----: |
-| `.`                  |   124 kB |   39 kB |  35 kB |
-| `./instrumentations` |    64 kB |   24 kB |  22 kB |
-| `./snippet`          |     6 kB | 2.75 kB | 2.5 kB |
+| Entry point          |  Minified |     Gzip |   Brotli |
+| -------------------- | --------: | -------: | -------: |
+| `.`                  | 124.75 kB | 39.25 kB | 34.75 kB |
+| `./instrumentations` |     64 kB |    24 kB |    22 kB |
+| `./snippet`          |      6 kB |  2.75 kB |   2.5 kB |
 
 The generated JSON and Markdown reports show the measured values, ceilings and result for each
 entry point. During alpha releases, violations are report-only so the baselines can stabilize.
@@ -74,10 +74,10 @@ comparison remains informational and does not replace the absolute gate.
 emits them, so it must run after a production build. Their budgets block in every release channel,
 including alpha:
 
-| Artifact                                                   | Minified |  Gzip | Brotli |
-| ---------------------------------------------------------- | -------: | ----: | -----: |
-| `opentelemetry-browser.{iife,umd}.min.js`                  |   165 kB | 51 kB |  45 kB |
-| `opentelemetry-browser-instrumentations.{iife,umd}.min.js` |    63 kB | 19 kB |  17 kB |
+| Artifact                                                   | Minified |  Gzip |  Brotli |
+| ---------------------------------------------------------- | -------: | ----: | ------: |
+| `opentelemetry-browser.{iife,umd}.min.js`                  | 165.5 kB | 51 kB | 44.5 kB |
+| `opentelemetry-browser-instrumentations.{iife,umd}.min.js` |    63 kB | 19 kB |   17 kB |
 
 The browser bundles contain only ES2022 syntax. `npm run test:build` parses every emitted UMD and
 IIFE file as an ES2022 script and requires a budget for every minified browser bundle. This check
