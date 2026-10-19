@@ -139,8 +139,8 @@ export async function useMicrosoftOpenTelemetry(
   const correlation = pageViewInstrumentation
     ? new PageViewCorrelation(
         () => pageViewInstrumentation.getOperationContext(),
-        pageView.pageViews,
-        (traceId) => pageView.getOperationName(traceId),
+        pageViewInstrumentation.pageViews,
+        (traceId) => pageViewInstrumentation.getOperationName(traceId),
       )
     : undefined;
   correlationState.current = correlation;
