@@ -445,6 +445,58 @@ test("the built package redacts only upstream fetch/XHR URLs before OTLP export"
   }
 });
 
+test("ESM and CommonJS clear dependency URLs that cannot be redacted without a browser base", async () => {
+  assert.equal(typeof document, "undefined");
+  assert.equal(typeof location, "undefined");
+  for (const distro of [
+    await import(pkg.name),
+    await import(new URL("dist/esm/index.min.js", root).href),
+    require(pkg.name),
+  ]) {
+    const exporter = new InMemorySpanExporter();
+    const telemetry = await distro.useMicrosoftOpenTelemetry({
+      pageView: { enabled: false },
+      session: { enabled: false },
+      userContext: { enabled: false },
+      instrumentations: [],
+      spanProcessors: [new SimpleSpanProcessor(exporter)],
+    });
+    try {
+      for (const name of ["fetch", "xhr"]) {
+        for (const [url, expected] of [
+          ["https://[redacted]/resource?token=private", ""],
+          ["//[redacted]/resource?token=private", ""],
+          ["/resource?token=private", ""],
+          [
+            "https://example.test/resource?token=private",
+            "https://example.test/resource?token=REDACTED",
+          ],
+          ["", ""],
+          [" \t ", " \t "],
+        ]) {
+          trace
+            .getTracer(`@opentelemetry/browser-instrumentation/${name}`)
+            .startSpan("request", {
+              kind: SpanKind.CLIENT,
+              attributes: { "url.full": url, "http.url": url, "http.request.method": "GET" },
+            })
+            .end();
+          const span = exporter.getFinishedSpans().at(-1);
+          assert.equal(span.attributes["url.full"], expected);
+          assert.equal(span.attributes["http.url"], expected);
+        }
+      }
+    } finally {
+      await telemetry.shutdown();
+      trace.disable();
+      logs.disable();
+      propagation.disable();
+      context.disable();
+      diag.disable();
+    }
+  }
+});
+
 test("using the initializer includes both SDKs but not the OTLP exporters", async () => {
   const chunk = await bundleConsumer('export { useMicrosoftOpenTelemetry } from "distro";');
   assert.doesNotMatch(chunk.code, /BrowserDetector|UserAgentDetector/);

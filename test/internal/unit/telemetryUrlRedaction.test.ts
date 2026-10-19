@@ -560,6 +560,54 @@ describe("instance telemetry URL redaction", () => {
     expect(pipeline.spans[0].attributes["url.full"]).toBe(expected);
   });
 
+  describe.each(["fetch", "xhr"])("%s sanitizer output", (name) => {
+    it.each(["document", "location"])(
+      "does not restore page query data from the %s base",
+      async (baseSource) => {
+        history.replaceState(null, "", "/location/page?email=private#location-secret");
+        vi.spyOn(document, "baseURI", "get").mockReturnValue(
+          baseSource === "document"
+            ? "https://base.example/base/page?email=private#document-secret"
+            : "",
+        );
+        const pipeline = await start({}, `@opentelemetry/browser-instrumentation/${name}`);
+        pipeline.tracer
+          .startSpan("request", {
+            kind: SpanKind.CLIENT,
+            attributes: {
+              "url.full": "#/sanitized",
+              "http.url": "#/sanitized",
+              "http.request.method": "GET",
+            },
+          })
+          .end();
+
+        const expected =
+          baseSource === "document"
+            ? "https://base.example/base/page#/sanitized"
+            : `${location.origin}/location/page#/sanitized`;
+        expect(pipeline.spans[0].attributes["url.full"]).toBe(expected);
+        expect(pipeline.spans[0].attributes["http.url"]).toBe(expected);
+        expect(pipeline.records).toHaveLength(0);
+      },
+    );
+
+    it.each(["https://[redacted]/resource?token=private", "//[redacted]/resource?token=private"])(
+      "clears unparseable URL attributes instead of exporting secrets: %s",
+      async (url) => {
+        const pipeline = await start({}, `@opentelemetry/browser-instrumentation/${name}`);
+        const span = pipeline.tracer.startSpan("request", {
+          kind: SpanKind.CLIENT,
+          attributes: { "url.full": url, "http.url": url, "http.request.method": "GET" },
+        });
+        expect(() => span.end()).not.toThrow();
+        expect(pipeline.spans).toHaveLength(1);
+        expect(pipeline.spans[0].attributes["url.full"]).toBe("");
+        expect(pipeline.spans[0].attributes["http.url"]).toBe("");
+      },
+    );
+  });
+
   it("preserves relative source file paths on exception spans and logs", async () => {
     const pipeline = await start();
     const attributes = { "code.filepath": "src/app.ts", "code.file.path": "../lib/load.ts" };

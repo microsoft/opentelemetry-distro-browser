@@ -149,9 +149,16 @@ export async function startTelemetryInstance(
                   const base =
                     (typeof document !== "undefined" && document.baseURI) ||
                     (typeof location !== "undefined" ? location.href : undefined);
-                  span.setAttribute(name, redactUrl(new URL(url, base).href, parameters));
+                  const baseUrl = base ? new URL(base) : undefined;
+                  if (baseUrl) {
+                    // Never restore page data removed by an application sanitizer.
+                    baseUrl.search = "";
+                    baseUrl.hash = "";
+                  }
+                  span.setAttribute(name, redactUrl(new URL(url, baseUrl).href, parameters));
                 } catch {
-                  // Preserve the existing fallback when no usable URL or browser base is available.
+                  // Unparseable sanitizer output may still contain sensitive parameters.
+                  span.setAttribute(name, "");
                 }
               }
             }
