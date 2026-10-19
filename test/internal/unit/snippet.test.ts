@@ -270,7 +270,7 @@ const snippetOptionsMatchTheDistribution = (
   config: Required<SdkLoaderConfig>,
 ): Pick<
   Options,
-  "samplingPercentage" | "session" | "userContext" | "pageView" | "redactQueryParams"
+  "samplingPercentage" | "session" | "userContext" | "storage" | "pageView" | "redactQueryParams"
 > & {
   azureMonitor: Partial<AzureMonitorOptions>;
   instrumentationOptions: InstrumentationOptions;
@@ -295,6 +295,7 @@ const configuredOptions = {
   azureMonitor: { disableBeacon: true },
   session: { enabled: true, persist: false, inactivityTimeout: 60, maxDuration: 600 },
   userContext: { enabled: false },
+  storage: { enabled: false, namePrefix: "shop-" },
   pageView: {
     enabled: true,
     redactedQueryParams: ["token"],
@@ -347,6 +348,7 @@ it("passes configured options to the bundle", async () => {
       azureMonitor: { connectionString: "InstrumentationKey=test", disableBeacon: true },
       session: configuredOptions.session,
       userContext: configuredOptions.userContext,
+      storage: configuredOptions.storage,
       pageView: configuredOptions.pageView,
       instrumentations: ["errors"],
       resource: { attributes: configuredOptions.resourceAttributes, built: true },
