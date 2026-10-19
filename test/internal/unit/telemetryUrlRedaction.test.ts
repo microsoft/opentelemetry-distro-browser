@@ -475,15 +475,45 @@ describe("instance telemetry URL redaction", () => {
     expect(pipeline.spans[0].attributes["http.url"]).toBe(redactedUrl);
   });
 
-  it("preserves non-absolute instrumentation sanitizer output", async () => {
+  it.each([
+    ["/sanitized", "/sanitized"],
+    [
+      "/sanitized?token=private&tenant=secret&safe=visible#access_token=private&tenant=secret",
+      "/sanitized?token=REDACTED&tenant=REDACTED&safe=visible#access_token=REDACTED&tenant=REDACTED",
+    ],
+    ["../sanitized?token=private#tenant=secret", "/sanitized?token=REDACTED#tenant=REDACTED"],
+    ["?token=private", "/base/page?token=REDACTED"],
+    ["#/route?token=private&tenant=secret", "/base/page#/route?token=REDACTED&tenant=REDACTED"],
+  ])(
+    "resolves relative dependency output against document.baseURI before redaction: %s",
+    async (url, expected) => {
+      vi.spyOn(document, "baseURI", "get").mockReturnValue("https://base.example/base/page");
+      const pipeline = await start({ redactQueryParams: ["tenant"] });
+      pipeline.tracer
+        .startSpan("request", {
+          kind: SpanKind.CLIENT,
+          attributes: { "url.full": url, "http.url": url, "http.request.method": "GET" },
+        })
+        .end();
+      expect(pipeline.spans[0].attributes["url.full"]).toBe(`https://base.example${expected}`);
+      expect(pipeline.spans[0].attributes["http.url"]).toBe(`https://base.example${expected}`);
+    },
+  );
+
+  it("falls back to location.href and protects built-in parameters without custom settings", async () => {
+    vi.spyOn(document, "baseURI", "get").mockReturnValue("");
     const pipeline = await start();
     pipeline.tracer
       .startSpan("request", {
         kind: SpanKind.CLIENT,
-        attributes: { "url.full": "/sanitized", "http.request.method": "GET" },
+        attributes: {
+          "url.full": "?token=private#access_token=private",
+          "http.request.method": "GET",
+        },
       })
       .end();
-    expect(pipeline.spans[0].attributes["url.full"]).toBe("/sanitized");
+    const expected = new URL("?token=REDACTED#access_token=REDACTED", location.href).href;
+    expect(pipeline.spans[0].attributes["url.full"]).toBe(expected);
   });
 
   it("preserves relative source file paths on exception spans and logs", async () => {

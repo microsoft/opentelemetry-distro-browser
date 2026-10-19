@@ -144,7 +144,15 @@ export async function startTelemetryInstance(
               try {
                 span.setAttribute(name, redactUrl(url, parameters));
               } catch {
-                // Preserve non-absolute output from an application's sanitizeUrl hook.
+                try {
+                  // Resolve relative sanitizer output only; absolute URLs need no browser globals.
+                  const base =
+                    (typeof document !== "undefined" && document.baseURI) ||
+                    (typeof location !== "undefined" ? location.href : undefined);
+                  span.setAttribute(name, redactUrl(new URL(url, base).href, parameters));
+                } catch {
+                  // Preserve the existing fallback when no usable URL or browser base is available.
+                }
               }
             }
           },
