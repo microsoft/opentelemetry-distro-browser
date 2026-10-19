@@ -271,19 +271,6 @@ describe("Azure Monitor sessionStorage buffer", () => {
     expect(sentNames(fetch)).toEqual([["first"], ["second"]]);
   });
 
-  it("never touches sessionStorage when disabled", async () => {
-    const storage = vi.fn(() => testSessionStorage);
-    Object.defineProperty(window, "sessionStorage", { configurable: true, get: storage });
-    stubFetch(() => new Response("", { status: 503, headers: { "retry-after": "86400" } }));
-    const client = createClient({ disableSessionStorageBuffer: true });
-
-    await exportAsync(client, [envelope()]);
-    hidePage();
-    await client.shutdown();
-
-    expect(storage).not.toHaveBeenCalled();
-  });
-
   it("exports without throwing when sessionStorage is unavailable", async () => {
     setSessionStorage(undefined);
     const warn = vi.spyOn(diag, "warn").mockImplementation(() => {});

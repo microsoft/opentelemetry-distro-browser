@@ -10,7 +10,7 @@ All notable changes to this package are documented in this file.
   page load in the same tab. Covers requests in flight at navigation, envelopes that do not fit the
   unload beacon, and retriable failures. Records are isolated per connection string and exporter,
   bounded to 512 KiB of characters per exporter and one hour, and tolerate unavailable or full
-  storage. Set `azureMonitor.disableSessionStorageBuffer` to never touch `sessionStorage`.
+  storage by logging a warning.
 - Measure actual CDN response-body sizes with `npm run perf -- --cdn` and in merged-PR performance
   runs. Preserve existing build and browser measurements, compare encoded responses with identity bytes, and report
   missing artifacts or unsupported encodings without fabricated sizes.

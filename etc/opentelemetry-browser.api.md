@@ -35,7 +35,6 @@ export class AzureMonitorLogRecordExporter implements LogRecordExporter {
 export interface AzureMonitorOptions {
     readonly connectionString: string;
     readonly disableBeacon?: boolean;
-    readonly disableSessionStorageBuffer?: boolean;
 }
 
 // @public

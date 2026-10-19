@@ -31,14 +31,14 @@ side effects. Initialize only in client-side code, before importing application 
 | ------------------------------------------ | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `azureMonitor.connectionString`            | `string`, required | Application Insights connection string with a valid UUID `InstrumentationKey`. Supports explicit ingestion endpoints and cloud suffixes.                                                                                 |
 | `azureMonitor.disableBeacon`               | `boolean`          | `false`. Set to `true` to disable the `sendBeacon` fallback when an unload keepalive request cannot be queued. This may reduce delivery when the page closes.                                                            |
-| `azureMonitor.disableSessionStorageBuffer` | `boolean`          | `false`. Unsent Azure Monitor telemetry is buffered in `sessionStorage` and sent first by the next page load in the same tab. Set to `true` to never read or write `sessionStorage`, for example before storage consent. |
 
 Endpoints require HTTPS except for localhost or loopback IPs. Invalid endpoints warn and fall back
 to suffix-derived or public-cloud endpoints; an invalid/missing instrumentation key fails startup.
 Connection strings identify a destination and do not grant read access to the resource. They are
 public browser configuration, not secrets. Built-in Entra ID token authentication is not supported.
 
-The `sessionStorage` buffer covers telemetry that is in flight when the page goes away, does not
+Unsent Azure Monitor telemetry is always buffered in `sessionStorage` and sent first by the next
+page load in the same tab. The buffer covers telemetry that is in flight when the page goes away, does not
 fit the unload beacon, or fails with a retriable error. Records are keyed by connection string and
 exporter, kept until ingestion accepts or permanently rejects them or the browser takes an unload
 request, and adopted only once after the page that wrote them is hidden or unloaded. Each exporter
@@ -221,7 +221,7 @@ or acquire tracers/loggers after initialization. Iframes and workers have indepe
 Both methods return `Promise<void>` and can reject; multiple failures are reported with
 `AggregateError`. Other instances keep running after one handle shuts down. Automatic flushing on
 page hide/hidden visibility is best effort, not guaranteed delivery; Azure Monitor telemetry left
-unsent is retried by the next page load in the same tab unless the `sessionStorage` buffer is disabled.
+unsent is retried by the next page load in the same tab through the `sessionStorage` buffer.
 
 ## CDN loader configuration
 
@@ -237,7 +237,7 @@ It generates a script; it does not itself initialize telemetry in the current pa
 | `loadDelay`                                                                                                              | Immediate injection. A nonnegative delay in milliseconds adds nonblocking delayed loading.                                   |
 | `cdnFallback`                                                                                                            | `false`. Retry backup Azure Monitor CDN hosts; requires a recognized CDN source URL.                                         |
 | `reportLoadFailure`                                                                                                      | `false`. Report an `SDKLoadFailed` exception after bundle load attempts fail.                                                |
-| `samplingPercentage`, `azureMonitor.disableBeacon`, `azureMonitor.disableSessionStorageBuffer`, `session`, `userContext` | Same meanings as initialization options above.                                                                               |
+| `samplingPercentage`, `azureMonitor.disableBeacon`, `session`, `userContext` | Same meanings as initialization options above.                                                                               |
 | `pageView`                                                                                                               | Data-only settings: `enabled`, `redactedQueryParams`, `softNavigationSettleTimeoutMs`, `useNavigationApiIfAvailable`.        |
 | `instrumentationOptions`                                                                                                 | JSON-only helper settings. Omitted: fetch/XHR defaults.                                                                      |
 | `resourceAttributes`                                                                                                     | String, number or boolean attributes converted into a resource by the bundle.                                                |

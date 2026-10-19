@@ -11,7 +11,6 @@ export function getSdkLoaderScript(config: SdkLoaderConfig): string;
 export interface SdkLoaderConfig {
     readonly azureMonitor?: {
         readonly disableBeacon?: boolean;
-        readonly disableSessionStorageBuffer?: boolean;
     };
     readonly cdnFallback?: boolean;
     readonly connectionString: string;

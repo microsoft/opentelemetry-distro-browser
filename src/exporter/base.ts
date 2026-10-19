@@ -36,22 +36,6 @@ export interface AzureMonitorOptions {
    * This can prevent pending telemetry from being delivered when the page closes.
    */
   readonly disableBeacon?: boolean;
-  /**
-   * Disables buffering unsent Azure Monitor telemetry in `sessionStorage`. Defaults to `false`.
-   *
-   * @remarks
-   * While enabled, each exporter mirrors telemetry that is in flight, could not be sent during
-   * page unload, or failed with a retriable error into same-origin `sessionStorage`, and removes it
-   * once it is delivered or permanently rejected. The next page load in the same tab sends what is
-   * left for the same connection string before new telemetry, once. Each exporter stores at most
-   * 512 KiB of characters and items older than one hour are discarded. Storage that is
-   * unavailable or full is skipped with a diagnostic warning.
-   *
-   * Set to `true` to never read or write `sessionStorage`, for example until the user consents to
-   * storage. Telemetry buffered earlier in the tab is then left unsent. Custom span and log
-   * processors are not buffered.
-   */
-  readonly disableSessionStorageBuffer?: boolean;
 }
 
 export class AzureMonitorExportClient {
@@ -59,7 +43,7 @@ export class AzureMonitorExportClient {
   readonly #pending = new Set<Promise<void>>();
   #stopped = false;
   readonly #stats: InternalSdkStats;
-  readonly #buffer: SessionBuffer | undefined;
+  readonly #buffer: SessionBuffer;
 
   public constructor(options: AzureMonitorOptions) {
     const { instrumentationKey, ingestionEndpoint } = parseConnectionString(
@@ -76,14 +60,13 @@ export class AzureMonitorExportClient {
       disableBeacon: options.disableBeacon,
       stats: this.#stats,
     });
-    if (!options.disableSessionStorageBuffer) {
-      this.#buffer = new SessionBuffer(`${instrumentationKey}|${ingestionEndpoint}`);
-      // Leftovers from the previous page load go out before any new telemetry.
-      for (const [id, body] of this.#buffer.adopt()) {
-        this.#track(
-          this.#send(body, JSON.parse(body) as AzureMonitorEnvelope[], false, id).then(noop, noop),
-        );
-      }
+    // Unsent telemetry is mirrored in sessionStorage; leftovers from the previous page load in
+    // this tab go out before any new telemetry. Storage failures only log a warning.
+    this.#buffer = new SessionBuffer(`${instrumentationKey}|${ingestionEndpoint}`);
+    for (const [id, body] of this.#buffer.adopt()) {
+      this.#track(
+        this.#send(body, JSON.parse(body) as AzureMonitorEnvelope[], false, id).then(noop, noop),
+      );
     }
   }
 
@@ -115,7 +98,7 @@ export class AzureMonitorExportClient {
     }
     const { requests, dropped, error } = batchResult;
     // Envelopes that cannot fit the unload beacon wait for the next page load.
-    if (dropped.length > 0) this.#buffer?.add(JSON.stringify(dropped));
+    if (dropped.length > 0) this.#buffer.add(JSON.stringify(dropped));
     if (error) {
       callback({ code: ExportResultCode.FAILED, error });
       return;
@@ -160,11 +143,9 @@ export class AzureMonitorExportClient {
     body: string,
     envelopes: readonly AzureMonitorEnvelope[],
     unloading: boolean,
-    id = this.#buffer?.add(body),
+    id = this.#buffer.add(body),
   ): Promise<SenderResultType> {
-    const settle = (keep: boolean): void => {
-      if (id !== undefined) this.#buffer?.settle(id, body, keep);
-    };
+    const settle = (keep: boolean): void => this.#buffer.settle(id, body, keep);
     return this.#sender
       .send({
         body: new TextEncoder().encode(body),
@@ -207,7 +188,7 @@ export class AzureMonitorExportClient {
     try {
       await this.#stats.shutdown(pending);
     } finally {
-      this.#buffer?.dispose();
+      this.#buffer.dispose();
     }
   }
 }

@@ -288,7 +288,7 @@ void instrumentationNamesExist;
 
 const configuredOptions = {
   samplingPercentage: 25,
-  azureMonitor: { disableBeacon: true, disableSessionStorageBuffer: true },
+  azureMonitor: { disableBeacon: true },
   session: { enabled: true, persist: false, inactivityTimeout: 60, maxDuration: 600 },
   userContext: { enabled: false },
   pageView: {
@@ -339,11 +339,7 @@ it("passes configured options to the bundle", async () => {
     ).toEqual(configuredOptions.instrumentationOptions);
     expect(loaderWindow.snippetOptions).toEqual({
       samplingPercentage: 25,
-      azureMonitor: {
-        connectionString: "InstrumentationKey=test",
-        disableBeacon: true,
-        disableSessionStorageBuffer: true,
-      },
+      azureMonitor: { connectionString: "InstrumentationKey=test", disableBeacon: true },
       session: configuredOptions.session,
       userContext: configuredOptions.userContext,
       pageView: configuredOptions.pageView,
@@ -393,7 +389,6 @@ it.each([
   ["samplingPercentage", "50", "a number from 0 through 100 when provided"],
   ["azureMonitor", null, "a JSON object when provided"],
   ["azureMonitor", { disableBeacon: "yes" }, undefined],
-  ["azureMonitor", { disableSessionStorageBuffer: 0 }, undefined],
   ["session", true, "a JSON object when provided"],
   ["session", [], "a JSON object when provided"],
   ["userContext", "enabled", "a JSON object when provided"],
@@ -423,7 +418,7 @@ it.each([
       ? `SdkLoaderConfig.${name} must be ${expected}.`
       : name === "cdnFallback"
         ? "SdkLoaderConfig.src must be on an Azure Monitor CDN host for cdnFallback."
-        : `SdkLoaderConfig.azureMonitor.${Object.keys(value as object)[0]} must be a boolean when provided.`;
+        : "SdkLoaderConfig.azureMonitor.disableBeacon must be a boolean when provided.";
   expect(() =>
     getSdkLoaderScript({
       src: "https://example.test/sdk.js",
