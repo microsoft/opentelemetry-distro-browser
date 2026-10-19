@@ -147,6 +147,71 @@ it("isolates prefixed sessions and users, restores them, and scopes identity rem
   });
 });
 
+it.each([false, null, [], true, 0, "", "disabled", () => {}])(
+  "rejects a malformed storage container before accessing browser storage (%j)",
+  async (storage) => {
+    for (const key of keys) preserve(key);
+    const local = vi.spyOn(window, "localStorage", "get");
+    const session = vi.spyOn(window, "sessionStorage", "get");
+    const cookie = vi.spyOn(document, "cookie", "get");
+    await expect(
+      initialize({
+        // @ts-expect-error Verify untyped JavaScript input.
+        storage,
+      }),
+    ).rejects.toThrow("storage must be a non-null, non-array object.");
+    expect(local).not.toHaveBeenCalled();
+    expect(session).not.toHaveBeenCalled();
+    expect(cookie).not.toHaveBeenCalled();
+  },
+);
+
+it.each(["inherited getters", "non-enumerable properties"])(
+  "preserves session persistence and lifetime settings supplied through %s",
+  async (kind) => {
+    preserve("opentelemetry-session");
+    class SessionOptions {
+      get persist() {
+        return false;
+      }
+      get inactivityTimeout() {
+        return 1;
+      }
+      get maxDuration() {
+        return 3;
+      }
+    }
+    const session =
+      kind === "inherited getters"
+        ? new SessionOptions()
+        : Object.defineProperties(
+            {},
+            {
+              persist: { value: false },
+              inactivityTimeout: { value: 1 },
+              maxDuration: { value: 3 },
+            },
+          );
+    const now = Date.now();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(now);
+    const access = vi.spyOn(window, "localStorage", "get");
+    const { emit, handle } = await initialize({ session, userContext: { enabled: false } });
+    const first = emit()["session.id"];
+    expect(first).toMatch(/^[0-9a-f]{32}$/);
+    clock.mockReturnValue(now + 1000);
+    const renewed = emit()["session.id"];
+    expect(renewed).not.toBe(first);
+    for (const offset of [1500, 2000, 2500, 3000, 3500]) {
+      clock.mockReturnValue(now + offset);
+      expect(emit()["session.id"]).toBe(renewed);
+    }
+    clock.mockReturnValue(now + 4000);
+    expect(emit()["session.id"]).not.toBe(renewed);
+    await handle.shutdown();
+    expect(access).not.toHaveBeenCalled();
+  },
+);
+
 it.each([{ enabled: "false" }, { enabled: null }, { namePrefix: 42 }, { namePrefix: null }])(
   "rejects invalid storage options before accessing storage (%j)",
   async (storage) => {

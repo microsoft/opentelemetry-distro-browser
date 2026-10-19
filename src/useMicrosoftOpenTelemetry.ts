@@ -102,6 +102,14 @@ export async function useMicrosoftOpenTelemetry(
     ...DEFAULT_QUERY_STRINGS_TO_REDACT,
     ...(options.redactQueryParams ?? []),
   ];
+  if (
+    options.storage !== undefined &&
+    (typeof options.storage !== "object" ||
+      options.storage === null ||
+      Array.isArray(options.storage))
+  ) {
+    throw new TypeError("storage must be a non-null, non-array object.");
+  }
   const { enabled: storageEnabled = true, namePrefix = "" } = options.storage ?? {};
   if (typeof storageEnabled !== "boolean" || typeof namePrefix !== "string") {
     throw new TypeError("storage.enabled must be a boolean and storage.namePrefix a string.");
@@ -109,7 +117,11 @@ export async function useMicrosoftOpenTelemetry(
   const session =
     options.session?.enabled !== false
       ? createSession(
-          { ...options.session, ...(storageEnabled ? {} : { persist: false }) },
+          {
+            persist: storageEnabled ? options.session?.persist : false,
+            inactivityTimeout: options.session?.inactivityTimeout,
+            maxDuration: options.session?.maxDuration,
+          },
           createLocalStorageKeyValueStorage(
             "Session storage unavailable; using an in-memory session.",
             namePrefix,
