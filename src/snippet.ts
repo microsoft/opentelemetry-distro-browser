@@ -300,6 +300,11 @@ export function getSdkLoaderScript(config: SdkLoaderConfig): string {
   checkField(config.integrity, "integrity", "string");
   checkField(config.redactQueryParams, "redactQueryParams", "strings");
   check(
+    config.redactQueryParams === undefined || isJson(config.redactQueryParams),
+    "redactQueryParams",
+    "a JSON array of strings when provided",
+  );
+  check(
     config.crossOrigin === undefined || typeof config.crossOrigin === "string",
     "crossOrigin",
     `a string ${optional}`,

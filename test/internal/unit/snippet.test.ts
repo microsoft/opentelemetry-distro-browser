@@ -549,7 +549,6 @@ cyclic.self = cyclic;
 it.each([
   ["session", cyclic],
   ["instrumentationOptions", { errors: { enabled: true, nested: [cyclic] } }],
-  ["pageView", { redactedQueryParams: new Array<string>(1) }],
   ["instrumentationOptions", JSON.parse('{"__proto__":{"errors":{"enabled":true}}}') as object],
   ["resourceAttributes", JSON.parse('{"__proto__":"shop"}') as object],
 ])("rejects %s values JSON cannot represent as an own property %#", (name, value) => {
@@ -560,6 +559,24 @@ it.each([
       [name]: value,
     } as SdkLoaderConfig),
   ).toThrow(new TypeError(`SdkLoaderConfig.${name} must be a JSON object when provided.`));
+});
+
+it.each([
+  [
+    { redactQueryParams: new Array<string>(1) },
+    "SdkLoaderConfig.redactQueryParams must be a JSON array of strings when provided.",
+  ],
+  [
+    { pageView: { redactedQueryParams: new Array<string>(1) } },
+    "SdkLoaderConfig.pageView must be a JSON object when provided.",
+  ],
+])("rejects sparse redaction arrays before serialization %#", (options, message) => {
+  expect(() =>
+    getSdkLoaderScript({
+      connectionString: "connection",
+      ...options,
+    }),
+  ).toThrow(new TypeError(message));
 });
 
 it("accepts JSON objects with a null prototype and undefined members", () => {
