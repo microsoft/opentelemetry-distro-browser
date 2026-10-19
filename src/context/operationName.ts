@@ -5,6 +5,7 @@ import { getOperationName, getSharedRegistry } from "../shared/globalOwnership.j
 
 export interface ManagedOperationNameSnapshot {
   name: string | undefined;
+  settled?: boolean;
 }
 
 /** Snapshots managed page context without adding vendor attributes to OpenTelemetry records. */

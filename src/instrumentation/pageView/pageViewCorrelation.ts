@@ -5,7 +5,7 @@ import { isSpanContextValid, trace, type Context, type SpanContext } from "@open
 import type { LogRecordProcessor, ReadWriteLogRecord } from "@opentelemetry/sdk-logs";
 import type { ManagedOperationNameSnapshot } from "../../context/operationName.js";
 import { isPageContext } from "../../shared/pageOperationContext.js";
-import { NAME_SOURCE_EXPLICIT, NAME_SOURCE_ROUTE } from "./semconv.js";
+import { EVENT_BROWSER_PAGE_VIEW, NAME_SOURCE_EXPLICIT, NAME_SOURCE_ROUTE } from "./semconv.js";
 import type { PageView, PageViewSource } from "./types.js";
 
 const MAX_OPERATION_NAMES = 32;
@@ -31,10 +31,12 @@ export class PageViewCorrelation implements LogRecordProcessor {
   ) {
     const track = (pageView: PageView): void => {
       const snapshot = this.operationNames.get(pageView.id) ?? { name: undefined };
-      snapshot.name =
-        pageView.nameSource === NAME_SOURCE_EXPLICIT || pageView.nameSource === NAME_SOURCE_ROUTE
-          ? pageView.name
-          : undefined;
+      if (!snapshot.settled) {
+        snapshot.name =
+          pageView.nameSource === NAME_SOURCE_EXPLICIT || pageView.nameSource === NAME_SOURCE_ROUTE
+            ? pageView.name
+            : undefined;
+      }
       this.operationNames.delete(pageView.id);
       this.operationNames.set(pageView.id, snapshot);
       if (this.operationNames.size > MAX_OPERATION_NAMES) {
@@ -91,7 +93,10 @@ export class PageViewCorrelation implements LogRecordProcessor {
     if (operationNames) {
       for (const [operationId, snapshot] of operationNames) {
         const replacement = previous.get(operationId);
-        if (replacement) snapshot.name = replacement.name;
+        if (replacement && !snapshot.settled) {
+          snapshot.name = replacement.name;
+          snapshot.settled = replacement.settled;
+        }
       }
     }
     this.operationNames = operationNames ?? new Map<string, ManagedOperationNameSnapshot>();
@@ -104,6 +109,12 @@ export class PageViewCorrelation implements LogRecordProcessor {
   }
 
   onEmit(record: ReadWriteLogRecord): void {
+    const operationId =
+      record.eventName === EVENT_BROWSER_PAGE_VIEW ? record.spanContext?.traceId : undefined;
+    if (operationId) {
+      const snapshot = this.operationNames.get(operationId);
+      if (snapshot) snapshot.settled = true;
+    }
     const operation =
       (!record.spanContext || !isSpanContextValid(record.spanContext)) && this.getOperation?.();
     if (operation) record.spanContext = operation;

@@ -440,6 +440,56 @@ it("preserves buffered operation names when page correlation changes owners", as
   }
 });
 
+it.each([
+  ["a title", undefined],
+  ["another route", "/successor-route"],
+])("preserves the owner's settled operation name when the successor uses %s", async (_, route) => {
+  const alpha = await start({ pageView: { routeResolver: () => "/owner-route" } });
+  const beta = await start({ pageView: { routeResolver: () => route } });
+  await settle();
+
+  const operation = trace.getSpanContext(context.active())!;
+  beta.probe.record("buffered");
+  await alpha.handle.shutdown();
+  await beta.pipeline.forceFlush();
+
+  const span = beta.pipeline.spanExporter
+    .getFinishedSpans()
+    .find((candidate) => candidate.name === "buffered")!;
+  const log = beta.pipeline.logExporter
+    .getFinishedLogRecords()
+    .find((candidate) => candidate.eventName === "buffered")!;
+  for (const envelope of [spanToEnvelope(span, "key"), logToEnvelope(log, "key")]) {
+    expect(envelope.tags["ai.operation.id"]).toBe(operation.traceId);
+    expect(envelope.tags["ai.operation.name"]).toBe("/owner-route");
+  }
+});
+
+it("preserves a settled owner name while the successor settles after handoff", async () => {
+  const alpha = await start({ pageView: { routeResolver: () => "/owner-route" } });
+  await settle();
+
+  let successorRoute = "/successor-provisional";
+  const beta = await start({ pageView: { routeResolver: () => successorRoute } });
+  const operation = trace.getSpanContext(context.active())!;
+  beta.probe.record("buffered");
+  await alpha.handle.shutdown();
+  successorRoute = "/successor-final";
+  await settle();
+  await beta.pipeline.forceFlush();
+
+  const span = beta.pipeline.spanExporter
+    .getFinishedSpans()
+    .find((candidate) => candidate.name === "buffered")!;
+  const log = beta.pipeline.logExporter
+    .getFinishedLogRecords()
+    .find((candidate) => candidate.eventName === "buffered")!;
+  for (const envelope of [spanToEnvelope(span, "key"), logToEnvelope(log, "key")]) {
+    expect(envelope.tags["ai.operation.id"]).toBe(operation.traceId);
+    expect(envelope.tags["ai.operation.name"]).toBe("/owner-route");
+  }
+});
+
 it("correlates a reinitialized instance with its own page operation", async () => {
   const first = await start({ pageView: {} });
   first.probe.record("probe");
