@@ -12,7 +12,6 @@ Status: beta published. `0.1.0-beta.1` is the npm `latest` release and is on the
 | Item | Description |
 | --- | --- |
 | Semconv barrel lint | ESLint `no-restricted-imports` banning barrel imports from `@opentelemetry/semantic-conventions`, permitting the individual `ATTR_*`/`METRIC_*` constants |
-| Beta validation | End-to-end validation of `0.1.0-beta.1` against a real Application Insights resource, with the result recorded before sign-off |
 | Release notes correction | The `0.1.0-beta.1` changelog lists minimum supported browser versions with acceptance tests. That work was reverted (#102) and the README still states a latest-stable policy, so the entry must be corrected |
 | npm dist-tags | The `alpha` dist-tag still points to `0.1.0-alpha.2` rather than `0.1.0-alpha.3`, and no `beta` dist-tag exists |
 
@@ -43,6 +42,7 @@ Status: beta published. `0.1.0-beta.1` is the npm `latest` release and is on the
 | Instrumentation entry point | `getInstrumentations()` on `./instrumentations`, each module dynamically imported (#21) |
 | Size harness | `scripts/measure-bundle-size.mjs` (#37), scenario trends (#49), per-entry-point budgets reported during alpha (#52) |
 | Root bundle budget | Default OTLP exporters removed (#117) and the root budget re-approved at 121 KiB minified (#125). Budgets are blocking from beta |
+| Beta validation | `0.1.0-beta.1` validated end to end against a real Application Insights resource |
 | Beta documentation | Configuration reference, event catalogue and beta release notes (#131); TypeDoc API reference on GitHub Pages (#113) |
 | PR performance harness | Pull-request performance regression reporting and comparison (#38) |
 | Changelog check | CI changelog gate (#35) |
