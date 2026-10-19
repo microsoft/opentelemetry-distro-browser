@@ -3,7 +3,7 @@
 
 import type { ExportResult } from "@opentelemetry/core";
 import { ExportResultCode } from "@opentelemetry/core";
-import { isSamplingRejection, parseBreezeResponse } from "./breezeUtils.js";
+import { isRetriable, isSamplingRejection, parseBreezeResponse } from "./breezeUtils.js";
 import { isUnloading } from "./common.js";
 import { isValidInstrumentationKey, parseConnectionString } from "./connectionStringParser.js";
 import {
@@ -14,9 +14,11 @@ import {
 import { Sender, type SenderResultType } from "./sender.js";
 import { createInternalSdkStats, type InternalSdkStats } from "./sdkStats.js";
 import { getInternalSdkStatsConfiguration } from "./sdkStatsConfiguration.js";
+import { SessionBuffer } from "./sessionBuffer.js";
 import type { AzureMonitorBaseData, AzureMonitorEnvelope } from "./telemetryModels.js";
 
 const CONTENT_TYPE = "application/json";
+const noop = (): void => {};
 
 /**
  * Azure Monitor destination configuration.
@@ -34,6 +36,22 @@ export interface AzureMonitorOptions {
    * This can prevent pending telemetry from being delivered when the page closes.
    */
   readonly disableBeacon?: boolean;
+  /**
+   * Disables buffering unsent Azure Monitor telemetry in `sessionStorage`. Defaults to `false`.
+   *
+   * @remarks
+   * While enabled, each exporter mirrors telemetry that is in flight, could not be sent during
+   * page unload, or failed with a retriable error into same-origin `sessionStorage`, and removes it
+   * once it is delivered or permanently rejected. The next page load in the same tab sends what is
+   * left for the same connection string before new telemetry, once. Each exporter stores at most
+   * 512 KiB of characters and items older than one hour are discarded. Storage that is
+   * unavailable or full is skipped with a diagnostic warning.
+   *
+   * Set to `true` to never read or write `sessionStorage`, for example until the user consents to
+   * storage. Telemetry buffered earlier in the tab is then left unsent. Custom span and log
+   * processors are not buffered.
+   */
+  readonly disableSessionStorageBuffer?: boolean;
 }
 
 export class AzureMonitorExportClient {
@@ -41,6 +59,7 @@ export class AzureMonitorExportClient {
   readonly #pending = new Set<Promise<void>>();
   #stopped = false;
   readonly #stats: InternalSdkStats;
+  readonly #buffer: SessionBuffer | undefined;
 
   public constructor(options: AzureMonitorOptions) {
     const { instrumentationKey, ingestionEndpoint } = parseConnectionString(
@@ -57,6 +76,15 @@ export class AzureMonitorExportClient {
       disableBeacon: options.disableBeacon,
       stats: this.#stats,
     });
+    if (!options.disableSessionStorageBuffer) {
+      this.#buffer = new SessionBuffer(`${instrumentationKey}|${ingestionEndpoint}`);
+      // Leftovers from the previous page load go out before any new telemetry.
+      for (const [id, body] of this.#buffer.adopt()) {
+        this.#track(
+          this.#send(body, JSON.parse(body) as AzureMonitorEnvelope[], false, id).then(noop, noop),
+        );
+      }
+    }
   }
 
   public readonly instrumentationKey: string;
@@ -85,14 +113,16 @@ export class AzureMonitorExportClient {
       });
       return;
     }
+    const { requests, dropped, error } = batchResult;
+    // Envelopes that cannot fit the unload beacon wait for the next page load.
+    if (dropped.length > 0) this.#buffer?.add(JSON.stringify(dropped));
+    if (error) {
+      callback({ code: ExportResultCode.FAILED, error });
+      return;
+    }
     const operation = Promise.allSettled(
-      batchResult.requests.map(({ body, envelopes: batchEnvelopes }) =>
-        this.#sender.send({
-          body,
-          contentType: CONTENT_TYPE,
-          envelopes: batchEnvelopes,
-          unloading,
-        }),
+      requests.map(({ body, envelopes: batchEnvelopes }) =>
+        this.#send(body, batchEnvelopes, unloading),
       ),
     )
       .then((results) => {
@@ -102,16 +132,13 @@ export class AzureMonitorExportClient {
           fulfilled.push(result.value);
         }
         const exportResult = toExportResult(fulfilled);
-        if (
-          exportResult.code === ExportResultCode.FAILED ||
-          batchResult.droppedEnvelopeCount === 0
-        ) {
+        if (exportResult.code === ExportResultCode.FAILED || dropped.length === 0) {
           return exportResult;
         }
         return {
           code: ExportResultCode.FAILED,
           error: new Error(
-            `Unload beacon limit exceeded; sent ${envelopes.length - batchResult.droppedEnvelopeCount} of ${envelopes.length} envelopes.`,
+            `Unload beacon limit exceeded; sent ${envelopes.length - dropped.length} of ${envelopes.length} envelopes.`,
           ),
         };
       })
@@ -120,9 +147,51 @@ export class AzureMonitorExportClient {
         error: error instanceof Error ? error : new Error(String(error)),
       }))
       // Callback errors must not be reported back to the same callback as export failures.
-      .then(callback)
-      .finally(() => this.#pending.delete(operation));
-    this.#pending.add(operation);
+      .then(callback);
+    this.#track(operation);
+  }
+
+  /**
+   * Sends one serialized batch, buffering it until it is delivered or permanently rejected.
+   * Unload requests leave the buffer when the browser accepts them, since their responses may
+   * never be observed.
+   */
+  #send(
+    body: string,
+    envelopes: readonly AzureMonitorEnvelope[],
+    unloading: boolean,
+    id = this.#buffer?.add(body),
+  ): Promise<SenderResultType> {
+    const settle = (keep: boolean): void => {
+      if (id !== undefined) this.#buffer?.settle(id, body, keep);
+    };
+    return this.#sender
+      .send({
+        body: new TextEncoder().encode(body),
+        contentType: CONTENT_TYPE,
+        envelopes,
+        unloading,
+        onDispatch: () => settle(false),
+      })
+      .then(
+        (result) => {
+          settle(
+            result.transport === "fetch" &&
+              result.statusCode !== 206 &&
+              isRetriable(result.statusCode),
+          );
+          return result;
+        },
+        (error: unknown) => {
+          settle(true);
+          throw error;
+        },
+      );
+  }
+
+  #track(operation: Promise<void>): void {
+    const tracked = operation.finally(() => this.#pending.delete(tracked));
+    this.#pending.add(tracked);
   }
 
   public async forceFlush(): Promise<void> {
@@ -135,7 +204,11 @@ export class AzureMonitorExportClient {
     if (this.#stopped) return;
     this.#stopped = true;
     const pending = Promise.all([...this.#pending]);
-    await this.#stats.shutdown(pending);
+    try {
+      await this.#stats.shutdown(pending);
+    } finally {
+      this.#buffer?.dispose();
+    }
   }
 }
 
@@ -144,23 +217,25 @@ function createBatchRequests(
   maxBatchSize: number,
   enforceMaxBatchSize: boolean,
 ): {
-  requests: Array<{
-    body: Uint8Array<ArrayBuffer>;
-    envelopes: readonly AzureMonitorEnvelope[];
-  }>;
-  droppedEnvelopeCount: number;
+  requests: BatchRequest[];
+  /** Original envelopes left out of an unload request. */
+  dropped: readonly AzureMonitorEnvelope[];
+  error?: RangeError;
 } {
   const encoder = new TextEncoder();
   if (enforceMaxBatchSize) {
-    if (envelopes.length === 0) return { requests: [], droppedEnvelopeCount: 0 };
+    if (envelopes.length === 0) return { requests: [], dropped: [] };
     const original = serializeBatch(envelopes, encoder);
     const fitted =
       original.size <= MAX_BEACON_BODY_SIZE
         ? original
         : fitBatchCustomFields(envelopes, MAX_BEACON_BODY_SIZE, encoder);
     let deliverable = fitted;
+    let dropped: readonly AzureMonitorEnvelope[] = [];
     if (fitted.size > MAX_BEACON_BODY_SIZE) {
       const subset = selectEnvelopeSubset(fitted.envelopes, MAX_BEACON_BODY_SIZE, encoder);
+      const selected = new Set(subset.indexes);
+      dropped = envelopes.filter((_, index) => !selected.has(index));
       deliverable = fitBatchCustomFields(
         subset.indexes.map((index) => envelopes[index]),
         MAX_BEACON_BODY_SIZE,
@@ -168,32 +243,28 @@ function createBatchRequests(
       );
     }
     if (deliverable.envelopes.length === 0) {
-      throw new RangeError(
-        `Unload payload size ${fitted.size} exceeds the ${MAX_BEACON_BODY_SIZE} byte aggregate beacon limit.`,
-      );
+      return {
+        requests: [],
+        dropped,
+        error: new RangeError(
+          `Unload payload size ${fitted.size} exceeds the ${MAX_BEACON_BODY_SIZE} byte aggregate beacon limit.`,
+        ),
+      };
     }
     return {
-      requests: [
-        { body: encoder.encode(deliverable.serialized), envelopes: deliverable.envelopes },
-      ],
-      droppedEnvelopeCount: fitted.envelopes.length - deliverable.envelopes.length,
+      requests: [{ body: deliverable.serialized, envelopes: deliverable.envelopes }],
+      dropped,
     };
   }
 
-  const requests: Array<{
-    body: Uint8Array<ArrayBuffer>;
-    envelopes: readonly AzureMonitorEnvelope[];
-  }> = [];
+  const requests: BatchRequest[] = [];
   let batch: AzureMonitorEnvelope[] = [];
   let serializedBatch: string[] = [];
   let batchSize = 2;
 
   const flush = (): void => {
     if (batch.length === 0) return;
-    requests.push({
-      body: encoder.encode(`[${serializedBatch.join(",")}]`),
-      envelopes: batch,
-    });
+    requests.push({ body: `[${serializedBatch.join(",")}]`, envelopes: batch });
     batch = [];
     serializedBatch = [];
     batchSize = 2;
@@ -213,7 +284,12 @@ function createBatchRequests(
     batchSize += (batch.length === 1 ? 0 : 1) + serializedSize;
   }
   flush();
-  return { requests, droppedEnvelopeCount: 0 };
+  return { requests, dropped: [] };
+}
+
+interface BatchRequest {
+  body: string;
+  envelopes: readonly AzureMonitorEnvelope[];
 }
 
 interface SerializedEnvelope {

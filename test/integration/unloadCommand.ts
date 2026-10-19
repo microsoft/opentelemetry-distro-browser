@@ -11,8 +11,40 @@ declare module "vitest/browser" {
       captureUrl: string,
       expectedCount?: number,
     ): Promise<unknown[]>;
+    verifyReloadDelivery(
+      fixtureUrl: string,
+      reloadUrl: string,
+      captureUrl: string,
+    ): Promise<unknown[]>;
   }
 }
+
+/**
+ * Loads the fixture, navigates away and loads `reloadUrl` twice in the same tab, then returns
+ * everything ingestion captured.
+ */
+export const verifyReloadDelivery = defineBrowserCommand(
+  async ({ page }, fixtureUrl: string, reloadUrl: string, captureUrl: string) => {
+    const browser = page.context().browser();
+    if (!browser) throw new Error("Reload tests require a browser connection.");
+    const fixtureContext = await browser.newContext();
+    try {
+      const fixturePage = await fixtureContext.newPage();
+      for (const url of [fixtureUrl, reloadUrl, reloadUrl]) {
+        await fixturePage.goto(url);
+        await fixturePage.waitForFunction(() => document.body.dataset.ready === "true", undefined, {
+          timeout: 15_000,
+        });
+        // Let leftovers adopted on load reach ingestion before leaving.
+        await fixturePage.waitForTimeout(500);
+        await fixturePage.goto("about:blank");
+      }
+      return (await (await fetch(captureUrl)).json()) as unknown[];
+    } finally {
+      await fixtureContext.close();
+    }
+  },
+);
 
 export const verifyUnloadDelivery = defineBrowserCommand(
   async (

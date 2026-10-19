@@ -27,15 +27,25 @@ side effects. Initialize only in client-side code, before importing application 
 
 ### Azure Monitor destination
 
-| Option                          | Type               | Default and behavior                                                                                                                                          |
-| ------------------------------- | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `azureMonitor.connectionString` | `string`, required | Application Insights connection string with a valid UUID `InstrumentationKey`. Supports explicit ingestion endpoints and cloud suffixes.                      |
-| `azureMonitor.disableBeacon`    | `boolean`          | `false`. Set to `true` to disable the `sendBeacon` fallback when an unload keepalive request cannot be queued. This may reduce delivery when the page closes. |
+| Option                                     | Type               | Default and behavior                                                                                                                                                                                                     |
+| ------------------------------------------ | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `azureMonitor.connectionString`            | `string`, required | Application Insights connection string with a valid UUID `InstrumentationKey`. Supports explicit ingestion endpoints and cloud suffixes.                                                                                 |
+| `azureMonitor.disableBeacon`               | `boolean`          | `false`. Set to `true` to disable the `sendBeacon` fallback when an unload keepalive request cannot be queued. This may reduce delivery when the page closes.                                                            |
+| `azureMonitor.disableSessionStorageBuffer` | `boolean`          | `false`. Unsent Azure Monitor telemetry is buffered in `sessionStorage` and sent first by the next page load in the same tab. Set to `true` to never read or write `sessionStorage`, for example before storage consent. |
 
 Endpoints require HTTPS except for localhost or loopback IPs. Invalid endpoints warn and fall back
 to suffix-derived or public-cloud endpoints; an invalid/missing instrumentation key fails startup.
 Connection strings identify a destination and do not grant read access to the resource. They are
 public browser configuration, not secrets. Built-in Entra ID token authentication is not supported.
+
+The `sessionStorage` buffer covers telemetry that is in flight when the page goes away, does not
+fit the unload beacon, or fails with a retriable error. Records are keyed by connection string and
+exporter, kept until ingestion accepts or permanently rejects them or the browser takes an unload
+request, and adopted only once after the page that wrote them is hidden or unloaded. Each exporter
+keeps at most 512 KiB of characters and drops items older than one hour; unavailable or full storage
+only logs a diagnostic warning. Requests interrupted after ingestion received them can be sent
+again. Custom span and log processors are not buffered, and the buffer does not survive closing
+the tab.
 
 When Azure Monitor is configured, its processor is added before non-empty custom processor lists
 for each signal. They are independent processor branches, not a chain: filtering within the Azure
@@ -210,26 +220,27 @@ or acquire tracers/loggers after initialization. Iframes and workers have indepe
 
 Both methods return `Promise<void>` and can reject; multiple failures are reported with
 `AggregateError`. Other instances keep running after one handle shuts down. Automatic flushing on
-page hide/hidden visibility is best effort, not offline persistence or guaranteed delivery.
+page hide/hidden visibility is best effort, not guaranteed delivery; Azure Monitor telemetry left
+unsent is retried by the next page load in the same tab unless the `sessionStorage` buffer is disabled.
 
 ## CDN loader configuration
 
 `getSdkLoaderScript()` is exported from the ESM-only `@microsoft/opentelemetry-browser/snippet` entry.
 It generates a script; it does not itself initialize telemetry in the current page.
 
-| Option                                                                       | Default and behavior                                                                                                         |
-| ---------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| `connectionString`                                                           | Required non-empty string; becomes `cfg.azureMonitor.connectionString`.                                                      |
-| `src`                                                                        | This package version's immutable CDN IIFE URL. Custom URLs must expose `Microsoft.OpenTelemetry` as a classic script global. |
-| `crossOrigin`                                                                | `"anonymous"`. Applied to the injected script.                                                                               |
-| `integrity`                                                                  | Unset. Supply integrity metadata for the exact version and artifact.                                                         |
-| `loadDelay`                                                                  | Immediate injection. A nonnegative delay in milliseconds adds nonblocking delayed loading.                                   |
-| `cdnFallback`                                                                | `false`. Retry backup Azure Monitor CDN hosts; requires a recognized CDN source URL.                                         |
-| `reportLoadFailure`                                                          | `false`. Report an `SDKLoadFailed` exception after bundle load attempts fail.                                                |
-| `samplingPercentage`, `azureMonitor.disableBeacon`, `session`, `userContext` | Same meanings as initialization options above.                                                                               |
-| `pageView`                                                                   | Data-only settings: `enabled`, `redactedQueryParams`, `softNavigationSettleTimeoutMs`, `useNavigationApiIfAvailable`.        |
-| `instrumentationOptions`                                                     | JSON-only helper settings. Omitted: fetch/XHR defaults.                                                                      |
-| `resourceAttributes`                                                         | String, number or boolean attributes converted into a resource by the bundle.                                                |
+| Option                                                                                                                   | Default and behavior                                                                                                         |
+| ------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------- |
+| `connectionString`                                                                                                       | Required non-empty string; becomes `cfg.azureMonitor.connectionString`.                                                      |
+| `src`                                                                                                                    | This package version's immutable CDN IIFE URL. Custom URLs must expose `Microsoft.OpenTelemetry` as a classic script global. |
+| `crossOrigin`                                                                                                            | `"anonymous"`. Applied to the injected script.                                                                               |
+| `integrity`                                                                                                              | Unset. Supply integrity metadata for the exact version and artifact.                                                         |
+| `loadDelay`                                                                                                              | Immediate injection. A nonnegative delay in milliseconds adds nonblocking delayed loading.                                   |
+| `cdnFallback`                                                                                                            | `false`. Retry backup Azure Monitor CDN hosts; requires a recognized CDN source URL.                                         |
+| `reportLoadFailure`                                                                                                      | `false`. Report an `SDKLoadFailed` exception after bundle load attempts fail.                                                |
+| `samplingPercentage`, `azureMonitor.disableBeacon`, `azureMonitor.disableSessionStorageBuffer`, `session`, `userContext` | Same meanings as initialization options above.                                                                               |
+| `pageView`                                                                                                               | Data-only settings: `enabled`, `redactedQueryParams`, `softNavigationSettleTimeoutMs`, `useNavigationApiIfAvailable`.        |
+| `instrumentationOptions`                                                                                                 | JSON-only helper settings. Omitted: fetch/XHR defaults.                                                                      |
+| `resourceAttributes`                                                                                                     | String, number or boolean attributes converted into a resource by the bundle.                                                |
 
 The generator accepts JSON-serializable settings, not functions or regular expressions. Processors,
 exporters, context managers, propagators and resource detectors require npm-based initialization.

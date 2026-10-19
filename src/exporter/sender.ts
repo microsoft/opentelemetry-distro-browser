@@ -55,6 +55,8 @@ export interface SendRequest {
   readonly unloading?: boolean;
   readonly signal?: AbortSignal;
   readonly retry?: boolean;
+  /** Called once an unload request is handed to the browser by keepalive fetch or beacon. */
+  readonly onDispatch?: () => void;
 }
 
 export interface SenderResult {
@@ -234,8 +236,8 @@ export class Sender {
         const startTime = Date.now();
         try {
           // Browser context may not survive compression or retry awaits, so suppress at the call.
-          response = await context.with(suppressTracing(context.active()), () =>
-            this.#fetch(endpoint, {
+          response = await context.with(suppressTracing(context.active()), () => {
+            const pending = this.#fetch(endpoint, {
               method: "POST",
               headers: {
                 "content-type": request.contentType,
@@ -246,8 +248,10 @@ export class Sender {
               ...(request.signal
                 ? { signal: request.signal, credentials: "omit", referrerPolicy: "no-referrer" }
                 : {}),
-            }),
-          );
+            });
+            if (useKeepalive) request.onDispatch?.();
+            return pending;
+          });
         } catch (error) {
           this.#stats?.countException(error, endpoint);
           if (!isBrowserTransportFailure(error)) {
@@ -341,6 +345,7 @@ export class Sender {
       throw error;
     }
 
+    request.onDispatch?.();
     return { transport: "beacon" };
   }
 }

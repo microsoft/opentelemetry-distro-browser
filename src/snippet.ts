@@ -54,6 +54,8 @@ export interface SdkLoaderConfig {
   readonly azureMonitor?: {
     /** Same as `AzureMonitorOptions.disableBeacon`. */
     readonly disableBeacon?: boolean;
+    /** Same as `AzureMonitorOptions.disableSessionStorageBuffer`. */
+    readonly disableSessionStorageBuffer?: boolean;
   };
   /** Same as `MicrosoftOpenTelemetryBrowserOptions.session`. */
   readonly session?: {
@@ -196,7 +198,7 @@ const fieldKinds: Record<FieldKind, [(value: unknown) => boolean, string]> = {
 
 /** Typed fields of the nested options, validated so mistakes fail at generation time. */
 const optionFields: Record<string, Record<string, FieldKind>> = {
-  azureMonitor: { disableBeacon: "boolean" },
+  azureMonitor: { disableBeacon: "boolean", disableSessionStorageBuffer: "boolean" },
   session: {
     enabled: "boolean",
     persist: "boolean",
