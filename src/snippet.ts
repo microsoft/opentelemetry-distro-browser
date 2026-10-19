@@ -383,7 +383,13 @@ export function getSdkLoaderScript(config: SdkLoaderConfig): string {
       redactQueryParams: config.redactQueryParams,
       session: config.session,
       userContext: config.userContext,
-      storage: config.storage,
+      storage:
+        config.storage === undefined
+          ? undefined
+          : {
+              enabled: config.storage.enabled,
+              namePrefix: config.storage.namePrefix,
+            },
       pageView: config.pageView,
     },
     instrumentationOptions,
