@@ -4,16 +4,7 @@ Ship a thin distribution: configure the upstream `@opentelemetry/browser-sdk`, a
 Azure Monitor exporter, adopt the upstream browser instrumentations, and publish. M0 is
 single-instance and ES2022 ESM-only, and does not build its own SDK.
 
-Status: beta published. `0.1.0-beta.1` is the npm `latest` release and is on the CDN at
-`js.monitor.azure.com/scripts/otel/beta/` (#125). The items below remain.
-
-## Remaining
-
-| Item | Description |
-| --- | --- |
-| Semconv barrel lint | ESLint `no-restricted-imports` banning barrel imports from `@opentelemetry/semantic-conventions`, permitting the individual `ATTR_*`/`METRIC_*` constants |
-| Release notes correction | The `0.1.0-beta.1` changelog lists minimum supported browser versions with acceptance tests. That work was reverted (#102) and the README still states a latest-stable policy, so the entry must be corrected |
-| npm dist-tags | The `alpha` dist-tag still points to `0.1.0-alpha.2` rather than `0.1.0-alpha.3`, and no `beta` dist-tag exists |
+Status: complete. `0.1.0-beta.1` is published to npm and the CDN at `js.monitor.azure.com/scripts/otel/beta/` (#125). Follow-up work is tracked in M2 and M3.
 
 ## Shipped
 
