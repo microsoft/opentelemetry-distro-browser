@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-import { diag } from "@opentelemetry/api";
+import { createKeyValueStorage } from "../storage/keyValueStorage.js";
 import { isUnloading, onBeginUnloading } from "./common.js";
 
 export const SESSION_BUFFER_KEY_PREFIX = "opentelemetry-buffer|";
@@ -30,7 +30,10 @@ export class SessionBuffer {
   readonly #unsubscribe: () => void;
   #nextId = 0;
   #stored = false;
-  #warned = false;
+  readonly #storage = createKeyValueStorage(
+    "sessionStorage",
+    "Unsent telemetry cannot be buffered in sessionStorage.",
+  );
 
   public constructor(destination: string) {
     this.#prefix = `${SESSION_BUFFER_KEY_PREFIX}${destination}|`;
@@ -62,44 +65,40 @@ export class SessionBuffer {
   public adopt(): Array<[id: number, body: string]> {
     const adopted: Array<[number, string]> = [];
     const now = Date.now();
-    this.#use((storage) => {
-      const keys: string[] = [];
-      for (let index = 0; index < storage.length; index++) {
-        const key = storage.key(index);
-        if (key?.startsWith(this.#prefix) && !key.startsWith(this.#pagePrefix)) keys.push(key);
+    for (const key of this.#storage.keys()) {
+      if (!key.startsWith(this.#prefix) || key.startsWith(this.#pagePrefix)) continue;
+      const read = this.#storage.getItem(key);
+      if (!read.success) continue;
+      let record: unknown;
+      try {
+        record = JSON.parse(read.value ?? "");
+      } catch {
+        // Malformed records are removed below.
       }
-      for (const key of keys) {
-        let record: unknown;
-        try {
-          record = JSON.parse(storage.getItem(key) ?? "");
-        } catch {
-          // Malformed records are removed below.
-        }
-        const released = Array.isArray(record) && record[0] === 1;
-        const entries = Array.isArray(record)
-          ? record
-              .slice(1)
-              .filter(
-                (entry): entry is [number, unknown[]] =>
-                  Array.isArray(entry) &&
-                  typeof entry[0] === "number" &&
-                  now - entry[0] <= MAX_SESSION_BUFFER_AGE_MS &&
-                  Array.isArray(entry[1]) &&
-                  entry[1].length > 0,
-              )
-          : [];
-        // Live records belong to another open document; leave them until they expire.
-        if (!released && entries.length > 0) continue;
-        storage.removeItem(key);
-        if (!released) continue;
-        for (const [time, envelopes] of entries) {
-          const body = JSON.stringify(envelopes);
-          const id = this.#nextId++;
-          this.#entries.set(id, [time, body]);
-          adopted.push([id, body]);
-        }
+      const released = Array.isArray(record) && record[0] === 1;
+      const entries = Array.isArray(record)
+        ? record
+            .slice(1)
+            .filter(
+              (entry): entry is [number, unknown[]] =>
+                Array.isArray(entry) &&
+                typeof entry[0] === "number" &&
+                now - entry[0] <= MAX_SESSION_BUFFER_AGE_MS &&
+                Array.isArray(entry[1]) &&
+                entry[1].length > 0,
+            )
+        : [];
+      // Live records belong to another open document; leave them until they expire.
+      if (!released && entries.length > 0) continue;
+      this.#storage.removeItem(key);
+      if (!released) continue;
+      for (const [time, envelopes] of entries) {
+        const body = JSON.stringify(envelopes);
+        const id = this.#nextId++;
+        this.#entries.set(id, [time, body]);
+        adopted.push([id, body]);
       }
-    });
+    }
     if (adopted.length > 0) this.#write();
     return adopted;
   }
@@ -108,7 +107,7 @@ export class SessionBuffer {
   public dispose(): void {
     this.#unsubscribe();
     this.#entries.clear();
-    this.#use((storage) => storage.removeItem(this.#key));
+    this.#storage.removeItem(this.#key);
   }
 
   #write(): void {
@@ -129,25 +128,9 @@ export class SessionBuffer {
     }
     const released = isUnloading() || globalThis.document?.visibilityState === "hidden";
     if (parts.length === 0 && !this.#stored) return;
-    const written = this.#use((storage) => {
-      if (parts.length === 0) storage.removeItem(this.#key);
-      else storage.setItem(this.#key, `[${released ? 1 : 0},${parts.join(",")}]`);
-      return true;
-    });
-    this.#stored = !!written && parts.length > 0;
-    if (!written) this.#use((storage) => storage.removeItem(this.#key));
-  }
-
-  #use<T>(operation: (storage: Storage) => T): T | undefined {
-    try {
-      const storage = globalThis.sessionStorage;
-      if (storage) return operation(storage);
-    } catch (error) {
-      if (!this.#warned) {
-        this.#warned = true;
-        diag.warn("Unsent telemetry cannot be buffered in sessionStorage", error);
-      }
-    }
-    return undefined;
+    this.#stored =
+      parts.length > 0 &&
+      this.#storage.setItem(this.#key, `[${released ? 1 : 0},${parts.join(",")}]`);
+    if (!this.#stored) this.#storage.removeItem(this.#key);
   }
 }
