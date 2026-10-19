@@ -282,6 +282,50 @@ describe("instance telemetry URL redaction", () => {
     });
   });
 
+  it.each([
+    ["fetch", ""],
+    ["xhr", ""],
+    ["fetch", " \t "],
+    ["xhr", " \t "],
+  ])("preserves URL attributes cleared by an application hook for %s (%j)", async (name, value) => {
+    const exporter = new InMemorySpanExporter();
+    const onEnding = vi.fn((span: Span) => {
+      span.setAttribute("url.full", value);
+      span.setAttribute("http.url", value);
+    });
+    const pipeline = await start(
+      {
+        spanProcessors: [
+          new SimpleSpanProcessor(exporter),
+          {
+            onStart() {},
+            onEnding,
+            onEnd() {},
+            async forceFlush() {},
+            async shutdown() {},
+          },
+        ],
+      },
+      `@opentelemetry/browser-instrumentation/${name}`,
+    );
+    const span = pipeline.tracer.startSpan("request", {
+      kind: SpanKind.CLIENT,
+      attributes: {
+        "url.full": sensitiveUrl,
+        "http.url": sensitiveUrl,
+        "http.request.method": "GET",
+      },
+    });
+    span.end();
+    await pipeline.handle.forceFlush();
+
+    expect(onEnding).toHaveBeenCalledOnce();
+    const exported = exporter.getFinishedSpans();
+    expect(exported).toHaveLength(1);
+    expect(exported[0].attributes["url.full"]).toBe(value);
+    expect(exported[0].attributes["http.url"]).toBe(value);
+  });
+
   it("does not redact or call application hooks for spans ending after shutdown", async () => {
     const onEnding = vi.fn();
     const onEnd = vi.fn();

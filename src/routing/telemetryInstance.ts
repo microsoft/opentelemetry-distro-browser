@@ -140,7 +140,7 @@ export async function startTelemetryInstance(
             }
             for (const name of ["url.full", "http.url"]) {
               const url = span.attributes[name];
-              if (typeof url !== "string") continue;
+              if (typeof url !== "string" || !url.trim()) continue;
               try {
                 span.setAttribute(name, redactUrl(url, parameters));
               } catch {
