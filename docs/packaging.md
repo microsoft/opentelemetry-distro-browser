@@ -76,8 +76,8 @@ including alpha:
 
 | Artifact                                                   |  Minified |     Gzip |   Brotli |
 | ---------------------------------------------------------- | --------: | -------: | -------: |
-| `opentelemetry-browser.{iife,umd}.min.js`                  | 151.50 kB | 48.50 kB | 42.50 kB |
-| `opentelemetry-browser-instrumentations.{iife,umd}.min.js` |     56 kB |    17 kB |  15.5 kB |
+| `opentelemetry-browser.{iife,umd}.min.js`                  | 165.50 kB | 50.75 kB | 44.25 kB |
+| `opentelemetry-browser-instrumentations.{iife,umd}.min.js` |     63 kB |    19 kB |    17 kB |
 
 SWC minifies the browser bundles and shortens `_`-prefixed properties, the TypeScript `private`
 convention used by OpenTelemetry, so source code keeps descriptive names. Members that
