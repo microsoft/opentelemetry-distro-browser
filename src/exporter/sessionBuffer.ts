@@ -22,7 +22,7 @@ export function createSessionBufferStorage(namePrefix?: string): WebKeyValueStor
   );
 }
 
-type Entry = [time: number, body: string];
+type Entry = [time: number, body: string, dispatched?: boolean];
 
 const pageListeners = new Set<() => void>();
 let pageHidden = false;
@@ -74,7 +74,8 @@ export class SessionBuffer {
 
   public constructor(destination: string, storage = createSessionBufferStorage()) {
     this.#storage = storage;
-    this.#prefix = `${SESSION_BUFFER_KEY_PREFIX}${destination}|`;
+    // Encoded so a `|` in the endpoint cannot make one destination's prefix match another's keys.
+    this.#prefix = `${SESSION_BUFFER_KEY_PREFIX}${encodeURIComponent(destination)}|`;
     this.#pagePrefix = `${this.#prefix}${globalThis.performance?.timeOrigin}|`;
     this.#key = `${this.#pagePrefix}${Math.random().toString(36).slice(2)}`;
     this.#unsubscribe = subscribeToPageTransitions(() => {
@@ -99,13 +100,24 @@ export class SessionBuffer {
   }
 
   /**
+   * Leaves an unload request the browser accepted out of the record; it returns if the request
+   * is later observed to fail.
+   */
+  public dispatch(id: number): void {
+    const entry = this.owns(id) ? this.#entries.get(id) : undefined;
+    if (!entry || entry[2]) return;
+    entry[2] = true;
+    this.#write();
+  }
+
+  /**
    * Keeps `body` for a buffered ID, replacing any earlier body, or removes it once delivered or
-   * permanently rejected.
+   * permanently rejected. Evicted, removed and handed-off IDs stay gone.
    */
   public settle(id: number, body: string, keep: boolean): void {
-    const entry = this.#entries.get(id);
-    if (!this.owns(id) || (keep ? entry?.[1] === body : !entry)) return;
-    if (keep) this.#entries.set(id, [entry?.[0] ?? Date.now(), body]);
+    const entry = this.owns(id) ? this.#entries.get(id) : undefined;
+    if (!entry || (keep && !entry[2] && entry[1] === body)) return;
+    if (keep) this.#entries.set(id, [entry[0], body]);
     else this.#entries.delete(id);
     this.#write();
   }
@@ -180,7 +192,8 @@ export class SessionBuffer {
     let length = 0;
     // Newest first, so the oldest batches are evicted even when adopted records interleave.
     const entries = [...this.#entries].sort(([, [left]], [, [right]]) => left - right).reverse();
-    for (const [id, [time, body]] of entries) {
+    for (const [id, [time, body, dispatched]] of entries) {
+      if (dispatched) continue;
       const part = `[${time},${body}]`;
       if (
         now - time > MAX_SESSION_BUFFER_AGE_MS ||

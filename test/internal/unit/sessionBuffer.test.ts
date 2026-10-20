@@ -415,6 +415,46 @@ describe("Azure Monitor sessionStorage buffer", () => {
     },
   );
 
+  it("does not fall back to a beacon for telemetry another document adopted", async () => {
+    const sendBeacon = vi.spyOn(navigator, "sendBeacon").mockReturnValue(true);
+    let failBody: (() => void) | undefined;
+    const firstFetch = stubFetch(
+      () =>
+        new Response(
+          new ReadableStream({
+            start: (controller) => (failBody = () => controller.error(new TypeError("reset"))),
+          }),
+          { status: 503 },
+        ),
+    );
+    const client = createClient();
+    let original: Promise<ExportResult>;
+    // A hidden-visibility flush whose response body is still being read when the page freezes.
+    beginUnloading();
+    try {
+      original = exportAsync(client, [envelope("handed off")]);
+    } finally {
+      endUnloading();
+    }
+    await vi.waitFor(() => expect(failBody).toBeDefined());
+    await vi.waitFor(() => expect(bufferKeys()).toHaveLength(1));
+    hidePage();
+
+    loadPage();
+    const fetch = stubFetch();
+    await createClient().forceFlush();
+    expect(sentNames(fetch)).toEqual([["handed off"]]);
+
+    restorePage();
+    failBody?.();
+    await expect(original).resolves.toMatchObject({
+      code: ExportResultCode.FAILED,
+      error: { message: "Telemetry was handed off to another page." },
+    });
+    expect(firstFetch).toHaveBeenCalledOnce();
+    expect(sendBeacon).not.toHaveBeenCalled();
+  });
+
   it("reclaims its telemetry when restored before another document adopts it", () => {
     const buffer = new SessionBuffer("destination");
     buffer.add('[{"name":"kept"}]');
@@ -560,9 +600,38 @@ describe("Azure Monitor sessionStorage buffer", () => {
     buffer.dispose();
   });
 
+  it("keeps endpoints whose keys could overlap apart", () => {
+    const destination = `${TEST_INSTRUMENTATION_KEY}|https://example.test/ingest`;
+    const other = new SessionBuffer(`${destination}|tenant-b`);
+    other.add('[{"name":"tenant-b"}]');
+    hidePage();
+
+    loadPage();
+    const buffer = new SessionBuffer(destination);
+    expect(buffer.adopt()).toEqual([]);
+    const tenantB = new SessionBuffer(`${destination}|tenant-b`);
+    expect(tenantB.adopt().map(([, body]) => body)).toEqual(['[{"name":"tenant-b"}]']);
+    for (const item of [other, buffer, tenantB]) item.dispose();
+  });
+
+  it("keeps evicted batches out when their requests later fail", () => {
+    const buffer = new SessionBuffer("destination");
+    const body = (name: string): string =>
+      `[{"name":"${name}","pad":"${"x".repeat(MAX_SESSION_BUFFER_LENGTH / 3)}"}]`;
+    const oldest = buffer.add(body("oldest"));
+    buffer.add(body("middle"));
+    buffer.add(body("newest"));
+
+    buffer.settle(oldest, body("oldest"), true);
+    const stored = testSessionStorage.getItem(bufferKeys()[0]) ?? "";
+    expect(stored).not.toContain("oldest");
+    expect(stored).toContain("newest");
+    buffer.dispose();
+  });
+
   it("discards expired and malformed records", () => {
     const destination = `${TEST_INSTRUMENTATION_KEY}|${endpoint}`;
-    const prefix = `${SESSION_BUFFER_KEY_PREFIX}${destination}|old-page|`;
+    const prefix = `${SESSION_BUFFER_KEY_PREFIX}${encodeURIComponent(destination)}|old-page|`;
     const now = Date.now();
     const expired = now - MAX_SESSION_BUFFER_AGE_MS - 1;
     testSessionStorage.setItem(

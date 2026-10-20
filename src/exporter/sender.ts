@@ -332,6 +332,8 @@ export class Sender {
   }
 
   #sendWithBeacon(request: SendRequest, cause?: unknown): BeaconSenderResult {
+    // A fallback can follow a frozen response body read, after the batch was handed off.
+    assertActive(request);
     const endpoint = this.#endpoint;
     if (request.body.byteLength > MAX_BEACON_BODY_SIZE) {
       throw new RangeError(

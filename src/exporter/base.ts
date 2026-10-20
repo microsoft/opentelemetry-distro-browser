@@ -163,7 +163,9 @@ export class AzureMonitorExportClient {
         contentType: CONTENT_TYPE,
         envelopes,
         unloading,
-        onDispatch: () => settle(false),
+        onDispatch: () => {
+          if (id !== undefined) this.#buffer?.dispatch(id);
+        },
         onPartial: (rest) => {
           if (rest.length > 0) outstanding = JSON.stringify(rest);
           settle(rest.length > 0);
@@ -178,10 +180,17 @@ export class AzureMonitorExportClient {
         // Stop retrying a batch another document adopted and delivered.
         active: () => id === undefined || this.#buffer?.owns(id) !== false,
       })
-      .catch((error: unknown) => {
-        if (!final) settle(true);
-        throw error;
-      });
+      .then(
+        (result) => {
+          // A beacon's outcome is never observed, so the browser accepting it is final.
+          if (result.transport === "beacon") settle(false);
+          return result;
+        },
+        (error: unknown) => {
+          if (!final) settle(true);
+          throw error;
+        },
+      );
   }
 
   #track(operation: Promise<void>): void {
