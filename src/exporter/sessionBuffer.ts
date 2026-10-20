@@ -66,8 +66,8 @@ export class SessionBuffer {
   readonly #storage: WebKeyValueStorage;
   readonly #unsubscribe: () => void;
   #nextId = 0;
-  /** IDs below this were handed off to another document. */
-  #firstOwnedId = 0;
+  /** IDs with a request in progress that this document still owns. */
+  readonly #live = new Set<number>();
   #stored = false;
   /** The stored record is marked released for adoption. */
   #released = false;
@@ -84,10 +84,22 @@ export class SessionBuffer {
     });
   }
 
-  /** Whether a buffered ID still belongs to this document rather than one that adopted it. */
+  /** Marks a request in progress for a buffered ID, until {@link SessionBuffer.end}. */
+  public begin(id: number): void {
+    this.#live.add(id);
+  }
+
+  public end(id: number): void {
+    this.#live.delete(id);
+  }
+
+  /**
+   * Whether a request's batch still belongs to this document rather than one that adopted it or
+   * a disposed exporter.
+   */
   public owns(id: number): boolean {
     this.#reconcile();
-    return id >= this.#firstOwnedId;
+    return this.#live.has(id);
   }
 
   /** Buffers a serialized envelope array and returns its ID. */
@@ -172,17 +184,23 @@ export class SessionBuffer {
     this.#unsubscribe();
     this.#entries.clear();
     // Requests that settle later must not recreate the record.
-    this.#firstOwnedId = this.#nextId;
+    this.#live.clear();
     this.#storage.removeItem(this.#key);
   }
 
-  /** Drops entries handed off to a document that adopted this page's released record. */
+  /**
+   * Drops entries handed off to a document that adopted this page's released record. Dispatched
+   * entries were not in the record, so they stay owned.
+   */
   #reconcile(): void {
     if (!this.#released) return;
     const read = this.#storage.getItem(this.#key);
     if (!read.success || read.value !== null) return;
-    this.#entries.clear();
-    this.#firstOwnedId = this.#nextId;
+    for (const [id, [, , dispatched]] of this.#entries) {
+      if (dispatched) continue;
+      this.#entries.delete(id);
+      this.#live.delete(id);
+    }
     this.#stored = this.#released = false;
   }
 
@@ -205,11 +223,13 @@ export class SessionBuffer {
       length += part.length + 1;
       parts.unshift(part);
     }
-    if (parts.length === 0 && !this.#stored) return;
+    const stored = this.#stored;
+    if (parts.length === 0 && !stored) return;
     this.#stored =
       parts.length > 0 &&
       this.#storage.setItem(this.#key, `[${pageHidden ? 1 : 0},${parts.join(",")}]`);
     this.#released = this.#stored && pageHidden;
-    if (!this.#stored) this.#storage.removeItem(this.#key);
+    // Only remove a record that exists, since a removal ends the storage write backoff.
+    if (stored && !this.#stored) this.#storage.removeItem(this.#key);
   }
 }

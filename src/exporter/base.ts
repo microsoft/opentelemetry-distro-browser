@@ -157,6 +157,10 @@ export class AzureMonitorExportClient {
     const settle = (keep: boolean): void => {
       if (id !== undefined) this.#buffer?.settle(id, outstanding, keep);
     };
+    const end = (): void => {
+      if (id !== undefined) this.#buffer?.end(id);
+    };
+    if (id !== undefined) this.#buffer?.begin(id);
     return this.#sender
       .send({
         body: new TextEncoder().encode(body),
@@ -184,10 +188,12 @@ export class AzureMonitorExportClient {
         (result) => {
           // A beacon's outcome is never observed, so the browser accepting it is final.
           if (result.transport === "beacon") settle(false);
+          end();
           return result;
         },
         (error: unknown) => {
           if (!final) settle(true);
+          end();
           throw error;
         },
       );

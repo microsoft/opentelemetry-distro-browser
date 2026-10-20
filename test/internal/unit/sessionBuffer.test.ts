@@ -455,6 +455,39 @@ describe("Azure Monitor sessionStorage buffer", () => {
     expect(sendBeacon).not.toHaveBeenCalled();
   });
 
+  it("keeps dispatched telemetry owned when its record was handed off", async () => {
+    const firstFetch = stubFetch(hang);
+    const client = createClient();
+    void exportAsync(client, [envelope("buffered")]);
+    await vi.waitFor(() => expect(firstFetch).toHaveBeenCalledOnce());
+    let dispatched: Promise<ExportResult>;
+    beginUnloading();
+    try {
+      dispatched = exportAsync(client, [envelope("dispatched")]);
+    } finally {
+      endUnloading();
+    }
+    await vi.waitFor(() => expect(firstFetch).toHaveBeenCalledTimes(2));
+    hidePage();
+
+    loadPage();
+    const fetch = stubFetch();
+    await createClient().forceFlush();
+    expect(sentNames(fetch)).toEqual([["buffered"]]);
+
+    restorePage();
+    const [buffered, unload] = hanging.splice(0);
+    buffered(new Response("", { status: 503, headers: { "retry-after": "86400" } }));
+    unload(new Response("", { status: 503 }));
+    await expect(dispatched).resolves.toMatchObject({ code: ExportResultCode.FAILED });
+    hidePage();
+
+    loadPage();
+    const nextFetch = stubFetch();
+    await createClient().forceFlush();
+    expect(sentNames(nextFetch)).toEqual([["dispatched"]]);
+  });
+
   it("reclaims its telemetry when restored before another document adopts it", () => {
     const buffer = new SessionBuffer("destination");
     buffer.add('[{"name":"kept"}]');
@@ -561,9 +594,17 @@ describe("Azure Monitor sessionStorage buffer", () => {
     vi.spyOn(storage, "setItem").mockImplementation(() => {
       throw new DOMException("Quota exceeded", "QuotaExceededError");
     });
+    const setItem = vi.spyOn(storage, "setItem").mockImplementation(() => {
+      throw new DOMException("Quota exceeded", "QuotaExceededError");
+    });
     expect(() => buffer.add('[{"name":"second"}]')).not.toThrow();
     expect(storage.length).toBe(0);
     expect(() => buffer.settle(first, "", false)).not.toThrow();
+    // Later batches back off instead of retrying the failing write each time.
+    buffer.add('[{"name":"third"}]');
+    buffer.add('[{"name":"fourth"}]');
+    buffer.add('[{"name":"fifth"}]');
+    expect(setItem).toHaveBeenCalledTimes(2);
     buffer.dispose();
   });
 
@@ -619,6 +660,7 @@ describe("Azure Monitor sessionStorage buffer", () => {
     const body = (name: string): string =>
       `[{"name":"${name}","pad":"${"x".repeat(MAX_SESSION_BUFFER_LENGTH / 3)}"}]`;
     const oldest = buffer.add(body("oldest"));
+    buffer.begin(oldest);
     buffer.add(body("middle"));
     buffer.add(body("newest"));
 
