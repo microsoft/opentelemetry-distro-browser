@@ -29,7 +29,7 @@ export interface AzureMonitorOptions {
    * Azure Monitor connection string containing a valid UUID instrumentation key.
    * Endpoints require HTTPS except on localhost or loopback IPs.
    * Invalid endpoints warn and fall back to suffix-derived or public cloud endpoints.
-  * Promises are supported by the distribution; standalone exporters require a resolved string.
+   * Promises are supported by the distribution; standalone exporters require a resolved string.
    */
   readonly connectionString: string | Promise<string>;
   /** Maximum promise wait in milliseconds. Defaults to 50000; zero expires immediately. */

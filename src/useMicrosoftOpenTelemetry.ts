@@ -36,7 +36,6 @@ import {
 } from "./routing/pageContext.js";
 import { startTelemetryInstance, type TelemetryInstance } from "./routing/telemetryInstance.js";
 import { ApplicationInsightsSampler, isTraceSampled, PageOperationSampler } from "./sampling.js";
-import { AzureMonitorSamplingLogRecordProcessor } from "./samplingLogRecordProcessor.js";
 import { DEFAULT_QUERY_STRINGS_TO_REDACT } from "./shared/urlRedaction.js";
 import type {
   MicrosoftOpenTelemetryBrowser,
