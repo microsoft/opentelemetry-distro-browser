@@ -210,12 +210,17 @@ export class SessionBuffer {
     let length = 0;
     // Newest first, so the oldest batches are evicted even when adopted records interleave.
     const entries = [...this.#entries].sort(([, [left]], [, [right]]) => left - right).reverse();
+    let full = false;
     for (const [id, [time, body, dispatched]] of entries) {
       if (dispatched) continue;
       const part = `[${time},${body}]`;
+      // Once a batch overflows, it and every older batch are evicted. A batch that cannot fit
+      // even alone is dropped without evicting older ones.
       if (
+        full ||
         now - time > MAX_SESSION_BUFFER_AGE_MS ||
-        length + part.length > MAX_SESSION_BUFFER_LENGTH
+        part.length > MAX_SESSION_BUFFER_LENGTH ||
+        (full = length + part.length > MAX_SESSION_BUFFER_LENGTH)
       ) {
         this.#entries.delete(id);
         continue;

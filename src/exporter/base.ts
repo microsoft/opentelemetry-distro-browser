@@ -174,11 +174,10 @@ export class AzureMonitorExportClient {
           if (rest.length > 0) outstanding = JSON.stringify(rest);
           settle(rest.length > 0);
         },
-        // A known status settles the batch even if its body cannot be read; partial responses
-        // settle through `onPartial`.
+        // A known status settles the batch even if its body cannot be read. A partial response
+        // keeps the whole batch, including a dispatched one, until `onPartial` narrows it.
         onResponse: (status) => {
-          if (status === 206) return;
-          final = !isRetriable(status);
+          final = status !== 206 && !isRetriable(status);
           settle(!final);
         },
         // Stop retrying a batch another document adopted and delivered.

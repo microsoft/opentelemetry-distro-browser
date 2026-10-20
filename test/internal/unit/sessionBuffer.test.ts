@@ -370,6 +370,33 @@ describe("Azure Monitor sessionStorage buffer", () => {
     expect(sentNames(fetch)).toEqual([["retriable"]]);
   });
 
+  it("keeps a dispatched batch while its partial response body is read", async () => {
+    let body!: ReadableStreamDefaultController;
+    const firstFetch = stubFetch(
+      () =>
+        new Response(new ReadableStream({ start: (controller) => void (body = controller) }), {
+          status: 206,
+        }),
+    );
+    const client = createClient();
+    beginUnloading();
+    try {
+      void exportAsync(client, [envelope("first"), envelope("second")]);
+    } finally {
+      endUnloading();
+    }
+    await vi.waitFor(() => expect(firstFetch).toHaveBeenCalledOnce());
+    // The dispatched batch left the record; the 206 headers bring it back.
+    await vi.waitFor(() => expect(bufferKeys()).toHaveLength(1));
+    hidePage();
+
+    loadPage();
+    const fetch = stubFetch();
+    await createClient().forceFlush();
+    expect(sentNames(fetch)).toEqual([["first", "second"]]);
+    body.close();
+  });
+
   it.each([false, true])(
     "keeps the whole batch after an unreadable partial response (unloading: %s)",
     async (unloading) => {
@@ -638,6 +665,36 @@ describe("Azure Monitor sessionStorage buffer", () => {
     expect(stored).not.toContain("oldest");
     expect(stored.indexOf("middle")).toBeGreaterThan(-1);
     expect(stored.indexOf("middle")).toBeLessThan(stored.indexOf("newest"));
+    buffer.dispose();
+  });
+
+  it("evicts every batch older than one that overflows the buffer", () => {
+    const buffer = new SessionBuffer("destination");
+    const now = Date.now();
+    const body = (name: string, length: number): string =>
+      `[{"name":"${name}","pad":"${"x".repeat(length)}"}]`;
+    buffer.add(body("oldest", 50 * 1024), now - 7000);
+    buffer.add(body("middle", 90 * 1024), now - 6000);
+    for (let index = 0; index < 5; index++) {
+      buffer.add(body(`newer${index}`, 90 * 1024), now - 5000 + index);
+    }
+
+    const stored = testSessionStorage.getItem(bufferKeys()[0]) ?? "";
+    expect(stored).not.toContain("oldest");
+    expect(stored).not.toContain("middle");
+    expect(stored).toContain("newer0");
+    expect(stored).toContain("newer4");
+    buffer.dispose();
+  });
+
+  it("drops a batch that cannot fit alone without evicting older ones", () => {
+    const buffer = new SessionBuffer("destination");
+    buffer.add('[{"name":"older"}]');
+    buffer.add(`[{"name":"huge","pad":"${"x".repeat(MAX_SESSION_BUFFER_LENGTH)}"}]`);
+
+    const stored = testSessionStorage.getItem(bufferKeys()[0]) ?? "";
+    expect(stored).toContain("older");
+    expect(stored).not.toContain("huge");
     buffer.dispose();
   });
 
