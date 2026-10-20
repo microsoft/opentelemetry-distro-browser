@@ -3,6 +3,8 @@
 
 import { context, diag, propagation, trace } from "@opentelemetry/api";
 import { logs } from "@opentelemetry/api-logs";
+import { resourceFromAttributes } from "@opentelemetry/resources";
+import { isUnloading } from "../../../src/exporter/common.js";
 import { afterEach, expect, it, vi } from "vitest";
 import {
   useMicrosoftOpenTelemetry,
@@ -143,4 +145,118 @@ it("cancels pending resolution on shutdown", async () => {
   await Promise.resolve();
   expect(vi.getTimerCount()).toBe(0);
   expect(result.fetch).not.toHaveBeenCalled();
+});
+
+it("coalesces pending flushes without waiting for the connection string", async () => {
+  installFakeClock();
+  const pending = deferred();
+  const result = await start({ azureMonitor: { connectionString: pending.promise } });
+  logs.getLogger("flush").emit({ body: "retained" });
+  const first = result.handle.forceFlush();
+  expect(result.handle.forceFlush()).toBe(first);
+  await first;
+  expect(result.fetch).not.toHaveBeenCalled();
+  pending.resolve(connectionString);
+  await Promise.resolve();
+  await result.handle.forceFlush();
+  expect(await result.envelopes()).toHaveLength(1);
+});
+
+it("retains the queue on page hide and releases unload state before resolution", async () => {
+  const clock = installFakeClock();
+  const pending = deferred();
+  const result = await start({ azureMonitor: { connectionString: pending.promise } });
+  logs.getLogger("pagehide").emit({ body: "retained" });
+  globalThis.dispatchEvent(new Event("pagehide"));
+  await clock.advance(0);
+  expect(isUnloading()).toBe(false);
+  expect(result.fetch).not.toHaveBeenCalled();
+  pending.resolve(connectionString);
+  await Promise.resolve();
+  await result.handle.forceFlush();
+  expect(await result.envelopes()).toHaveLength(1);
+});
+
+it("cancels pending startup when resource initialization fails", async () => {
+  installFakeClock();
+  const pending = deferred();
+  const resource = resourceFromAttributes({});
+  resource.waitForAsyncAttributes = async () => {
+    throw new Error("resource failed");
+  };
+  await expect(
+    start({ azureMonitor: { connectionString: pending.promise }, resource }),
+  ).rejects.toThrow("resource failed");
+  pending.resolve(connectionString);
+  await Promise.resolve();
+  expect(vi.getTimerCount()).toBe(0);
+  expect(globalThis.fetch).not.toHaveBeenCalled();
+});
+
+it("cleans up exporters resolved before a subsequent initialization failure", async () => {
+  installFakeClock();
+  const resource = resourceFromAttributes({});
+  resource.waitForAsyncAttributes = async () => {
+    throw new Error("resource failed");
+  };
+  await expect(
+    start({ azureMonitor: { connectionString: Promise.resolve(connectionString) }, resource }),
+  ).rejects.toThrow("resource failed");
+  expect(vi.getTimerCount()).toBe(0);
+  expect(globalThis.fetch).not.toHaveBeenCalled();
+});
+
+it("keeps buffers independent when the first instance stops before resolution", async () => {
+  installFakeClock();
+  const firstPromise = deferred();
+  const secondPromise = deferred();
+  const first = await start({ azureMonitor: { connectionString: firstPromise.promise } });
+  const cachedLogger = logs.getLogger("first");
+  cachedLogger.emit({ body: "discard first" });
+  const second = await start({ azureMonitor: { connectionString: secondPromise.promise } });
+  await first.handle.shutdown();
+  cachedLogger.emit({ body: "stale first" });
+  logs.getLogger("second").emit({ body: "retain second" });
+  firstPromise.resolve(connectionString);
+  secondPromise.resolve(connectionString);
+  await Promise.resolve();
+  await second.handle.forceFlush();
+  const envelopes = await second.envelopes();
+  expect(envelopes).toHaveLength(1);
+  expect(envelopes[0].data.baseData).toMatchObject({ message: "retain second" });
+  await second.handle.shutdown();
+  expect(vi.getTimerCount()).toBe(0);
+});
+
+it.each([0, 100])(
+  "preserves %s percent sampling before and after resolution",
+  async (samplingPercentage) => {
+    const pending = deferred();
+    const result = await start({
+      azureMonitor: { connectionString: pending.promise },
+      samplingPercentage,
+    });
+    trace.getTracer("sampling").startSpan("before").end();
+    logs.getLogger("sampling").emit({ body: "before" });
+    pending.resolve(connectionString);
+    await Promise.resolve();
+    trace.getTracer("sampling").startSpan("after").end();
+    logs.getLogger("sampling").emit({ body: "after" });
+    await result.handle.forceFlush();
+    expect(await result.envelopes()).toHaveLength(samplingPercentage === 0 ? 0 : 4);
+  },
+);
+
+it("flushes resolved processors during idempotent shutdown", async () => {
+  installFakeClock();
+  const result = await start({
+    azureMonitor: { connectionString: Promise.resolve(connectionString) },
+  });
+  trace.getTracer("shutdown").startSpan("final span").end();
+  logs.getLogger("shutdown").emit({ body: "final log" });
+  const shutdown = result.handle.shutdown();
+  expect(result.handle.shutdown()).toBe(shutdown);
+  await shutdown;
+  expect(await result.envelopes()).toHaveLength(2);
+  expect(vi.getTimerCount()).toBe(0);
 });
