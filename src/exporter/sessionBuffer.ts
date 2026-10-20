@@ -24,14 +24,14 @@ export function createSessionBufferStorage(namePrefix?: string): WebKeyValueStor
 
 type Entry = [time: number, body: string];
 
-const pageListeners = new Set<(event: PageTransitionEvent) => void>();
+const pageListeners = new Set<() => void>();
 let pageHidden = false;
 const onPageTransition = (event: Event): void => {
   pageHidden = event.type === "pagehide";
-  for (const listener of pageListeners) listener(event as PageTransitionEvent);
+  for (const listener of pageListeners) listener();
 };
 
-function subscribeToPageTransitions(listener: (event: PageTransitionEvent) => void): () => void {
+function subscribeToPageTransitions(listener: () => void): () => void {
   if (pageListeners.size === 0) {
     pageHidden = false;
     globalThis.addEventListener?.("pagehide", onPageTransition);
@@ -53,9 +53,10 @@ function subscribeToPageTransitions(listener: (event: PageTransitionEvent) => vo
  * Each record is `[released, [time, envelopes], ...]` under a key unique to the destination,
  * document and exporter. A record is released only on `pagehide`, and only released records from
  * another document are adopted, so live same-origin frames, including hidden ones, never send each
- * other's telemetry. Adoption removes the record; a page restored from the back/forward cache that
- * finds its record gone drops its copy and ignores later outcomes of requests started before the
- * handoff. Any failed write removes the record, so a stale copy cannot resend delivered telemetry.
+ * other's telemetry. Adoption removes the record. Before each use, a page whose released record is
+ * gone drops its copy, ignores later outcomes of requests started before the handoff and stops
+ * their retries. Any failed write removes the record, so a stale copy cannot resend delivered
+ * telemetry.
  */
 export class SessionBuffer {
   readonly #entries = new Map<number, Entry>();
@@ -68,27 +69,29 @@ export class SessionBuffer {
   /** IDs below this were handed off to another document. */
   #firstOwnedId = 0;
   #stored = false;
+  /** The stored record is marked released for adoption. */
+  #released = false;
 
   public constructor(destination: string, storage = createSessionBufferStorage()) {
     this.#storage = storage;
     this.#prefix = `${SESSION_BUFFER_KEY_PREFIX}${destination}|`;
     this.#pagePrefix = `${this.#prefix}${globalThis.performance?.timeOrigin}|`;
     this.#key = `${this.#pagePrefix}${Math.random().toString(36).slice(2)}`;
-    this.#unsubscribe = subscribeToPageTransitions((event) => {
-      if (event.type === "pageshow" && this.#stored) {
-        const read = this.#storage.getItem(this.#key);
-        if (read.success && read.value === null) {
-          this.#entries.clear();
-          this.#firstOwnedId = this.#nextId;
-          this.#stored = false;
-        }
-      }
+    this.#unsubscribe = subscribeToPageTransitions(() => {
+      this.#reconcile();
       this.#write();
     });
   }
 
+  /** Whether a buffered ID still belongs to this document rather than one that adopted it. */
+  public owns(id: number): boolean {
+    this.#reconcile();
+    return id >= this.#firstOwnedId;
+  }
+
   /** Buffers a serialized envelope array and returns its ID. */
   public add(body: string, time = Date.now()): number {
+    this.#reconcile();
     const id = this.#nextId++;
     this.#entries.set(id, [time, body]);
     this.#write();
@@ -101,7 +104,7 @@ export class SessionBuffer {
    */
   public settle(id: number, body: string, keep: boolean): void {
     const entry = this.#entries.get(id);
-    if (id < this.#firstOwnedId || (keep ? entry?.[1] === body : !entry)) return;
+    if (!this.owns(id) || (keep ? entry?.[1] === body : !entry)) return;
     if (keep) this.#entries.set(id, [entry?.[0] ?? Date.now(), body]);
     else this.#entries.delete(id);
     this.#write();
@@ -159,6 +162,16 @@ export class SessionBuffer {
     this.#storage.removeItem(this.#key);
   }
 
+  /** Drops entries handed off to a document that adopted this page's released record. */
+  #reconcile(): void {
+    if (!this.#released) return;
+    const read = this.#storage.getItem(this.#key);
+    if (!read.success || read.value !== null) return;
+    this.#entries.clear();
+    this.#firstOwnedId = this.#nextId;
+    this.#stored = this.#released = false;
+  }
+
   #write(): void {
     const now = Date.now();
     const parts: string[] = [];
@@ -179,6 +192,7 @@ export class SessionBuffer {
     this.#stored =
       parts.length > 0 &&
       this.#storage.setItem(this.#key, `[${pageHidden ? 1 : 0},${parts.join(",")}]`);
+    this.#released = this.#stored && pageHidden;
     if (!this.#stored) this.#storage.removeItem(this.#key);
   }
 }

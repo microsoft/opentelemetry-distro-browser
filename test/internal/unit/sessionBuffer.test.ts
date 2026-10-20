@@ -295,6 +295,81 @@ describe("Azure Monitor sessionStorage buffer", () => {
     expect(bufferKeys()).toEqual([]);
   });
 
+  it("stops retrying telemetry another document adopted", async () => {
+    const firstFetch = stubFetch(
+      () => new Response("", { status: 503, headers: { "retry-after": "1" } }),
+    );
+    const original = exportAsync(createClient(), [envelope("handed off")]);
+    await vi.waitFor(() => expect(firstFetch).toHaveBeenCalledOnce());
+    hidePage();
+
+    loadPage();
+    const fetch = stubFetch();
+    await createClient().forceFlush();
+    expect(sentNames(fetch)).toEqual([["handed off"]]);
+
+    restorePage();
+    await expect(original).resolves.toMatchObject({
+      code: ExportResultCode.FAILED,
+      error: { message: "Telemetry was handed off to another page." },
+    });
+    expect(firstFetch).toHaveBeenCalledOnce();
+    expect(bufferKeys()).toEqual([]);
+  });
+
+  it("keeps only new telemetry exported on restore before the buffer reconciles", async () => {
+    let client: AzureMonitorExportClient | undefined;
+    // Registered before the buffer's own listener, so it runs first.
+    const onShow = (): void => client?.export([envelope("restored")], () => {});
+    window.addEventListener("pageshow", onShow);
+    try {
+      stubFetch(hang);
+      client = createClient();
+      void exportAsync(client, [envelope("handed off")]);
+      await vi.waitFor(() => expect(bufferKeys()).toHaveLength(1));
+      hidePage();
+
+      loadPage();
+      const fetch = stubFetch();
+      await createClient().forceFlush();
+      expect(sentNames(fetch)).toEqual([["handed off"]]);
+
+      restorePage();
+    } finally {
+      window.removeEventListener("pageshow", onShow);
+    }
+    hidePage();
+
+    loadPage();
+    const fetch = stubFetch();
+    await createClient().forceFlush();
+    expect(sentNames(fetch)).toEqual([["restored"]]);
+  });
+
+  it("buffers retriable envelopes from a partial unload response", async () => {
+    stubFetch(() =>
+      breezeResponse([
+        { index: 1, statusCode: 503 },
+        { index: 2, statusCode: 400 },
+      ]),
+    );
+    const client = createClient();
+    let result: Promise<ExportResult>;
+    beginUnloading();
+    try {
+      result = exportAsync(client, [envelope("accepted"), envelope("retriable"), envelope("bad")]);
+    } finally {
+      endUnloading();
+    }
+    await expect(result).resolves.toMatchObject({ code: ExportResultCode.FAILED });
+    hidePage();
+
+    loadPage();
+    const fetch = stubFetch();
+    await createClient().forceFlush();
+    expect(sentNames(fetch)).toEqual([["retriable"]]);
+  });
+
   it("reclaims its telemetry when restored before another document adopts it", () => {
     const buffer = new SessionBuffer("destination");
     buffer.add('[{"name":"kept"}]');

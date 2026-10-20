@@ -58,10 +58,12 @@ export interface SendRequest {
   /** Called once an unload request is handed to the browser by keepalive fetch or beacon. */
   readonly onDispatch?: () => void;
   /**
-   * Called after each 206 response of a retried request with the envelopes that are still
-   * retriable, or an empty array when none remain.
+   * Called after each 206 response with the envelopes that are still retriable, or an empty array
+   * when none remain.
    */
   readonly onPartial?: (envelopes: readonly AzureMonitorEnvelope[]) => void;
+  /** Checked before each attempt; when it returns `false` the request stops with an error. */
+  readonly active?: () => boolean;
 }
 
 export interface SenderResult {
@@ -115,6 +117,9 @@ export class Sender {
     }
     if (request.unloading === true || request.retry === false) {
       const result = await this.#sendOnce(request);
+      if (result.transport === "fetch" && result.statusCode === 206) {
+        reportPartial(request, result, parseBreezeResponse(result.result)?.errors ?? []);
+      }
       this.#rememberThrottleDeadline(result);
       return result;
     }
@@ -161,8 +166,7 @@ export class Sender {
           (error) => !isRetriable(error.statusCode) && !isSamplingRejection(error),
         ),
       );
-      const retryRequest = getRetryRequest(currentRequest, result, breezeErrors);
-      if (result.statusCode === 206) request.onPartial?.(retryRequest?.envelopes ?? []);
+      const retryRequest = reportPartial(currentRequest, result, breezeErrors);
       this.#rememberThrottleDeadline(result);
       if (!retryRequest || attempt >= MAX_SEND_ATTEMPTS) {
         return permanentErrors.length === 0 ? result : { ...result, permanentErrors };
@@ -219,6 +223,7 @@ export class Sender {
 
   async #sendOnce(request: SendRequest): Promise<SenderResultType> {
     if (request.signal?.aborted) throw new DOMException("Request aborted", "AbortError");
+    assertActive(request);
     const unloading = request.unloading === true;
     const keepaliveAvailable =
       pendingKeepaliveBodySize + request.body.byteLength <= MAX_PENDING_KEEPALIVE_BODY_SIZE &&
@@ -238,6 +243,8 @@ export class Sender {
       let endpoint = this.#endpoint;
       try {
         const payload = unloading || !this.#compress ? undefined : await gzipPayload(request.body);
+        // Compression yields, so the page may have been frozen and handed off in between.
+        if (!unloading) assertActive(request);
         endpoint = this.#endpoint;
         const startTime = Date.now();
         try {
@@ -409,6 +416,17 @@ function normalizeHostname(hostname: string): string {
   return hostname.toLowerCase().replace(/\.+$/, "");
 }
 
+/** Returns the retry request, reporting the envelopes still outstanding after a 206 response. */
+function reportPartial(
+  request: SendRequest,
+  result: SenderResult,
+  breezeErrors: readonly BreezeError[],
+): SendRequest | undefined {
+  const retryRequest = getRetryRequest(request, result, breezeErrors);
+  if (result.statusCode === 206) request.onPartial?.(retryRequest?.envelopes ?? []);
+  return retryRequest;
+}
+
 function getRetryRequest(
   request: SendRequest,
   result: SenderResult,
@@ -437,6 +455,10 @@ function getRetryRequest(
     body: new TextEncoder().encode(JSON.stringify(envelopes)),
     envelopes,
   };
+}
+
+function assertActive(request: SendRequest): void {
+  if (request.active?.() === false) throw new Error("Telemetry was handed off to another page.");
 }
 
 function getRetryDelay(retryAttempt: number, random: number): number {

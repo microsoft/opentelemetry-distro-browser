@@ -166,6 +166,8 @@ export class AzureMonitorExportClient {
           if (rest.length > 0) outstanding = JSON.stringify(rest);
           settle(rest.length > 0);
         },
+        // Stop retrying a batch another document adopted and delivered.
+        active: () => id === undefined || this.#buffer?.owns(id) !== false,
       })
       .then(
         (result) => {
