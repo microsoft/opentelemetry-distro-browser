@@ -159,6 +159,8 @@ export class SessionBuffer {
   public dispose(): void {
     this.#unsubscribe();
     this.#entries.clear();
+    // Requests that settle later must not recreate the record.
+    this.#firstOwnedId = this.#nextId;
     this.#storage.removeItem(this.#key);
   }
 
@@ -176,7 +178,9 @@ export class SessionBuffer {
     const now = Date.now();
     const parts: string[] = [];
     let length = 0;
-    for (const [id, [time, body]] of [...this.#entries].reverse()) {
+    // Newest first, so the oldest batches are evicted even when adopted records interleave.
+    const entries = [...this.#entries].sort(([, [left]], [, [right]]) => left - right).reverse();
+    for (const [id, [time, body]] of entries) {
       const part = `[${time},${body}]`;
       if (
         now - time > MAX_SESSION_BUFFER_AGE_MS ||

@@ -152,6 +152,8 @@ export class AzureMonitorExportClient {
     id = this.#buffer?.add(body),
   ): Promise<SenderResultType> {
     let outstanding = body;
+    /** Ingestion accepted or permanently rejected the batch. */
+    let final = false;
     const settle = (keep: boolean): void => {
       if (id !== undefined) this.#buffer?.settle(id, outstanding, keep);
     };
@@ -166,22 +168,20 @@ export class AzureMonitorExportClient {
           if (rest.length > 0) outstanding = JSON.stringify(rest);
           settle(rest.length > 0);
         },
+        // A known status settles the batch even if its body cannot be read; partial responses
+        // settle through `onPartial`.
+        onResponse: (status) => {
+          if (status === 206) return;
+          final = !isRetriable(status);
+          settle(!final);
+        },
         // Stop retrying a batch another document adopted and delivered.
         active: () => id === undefined || this.#buffer?.owns(id) !== false,
       })
-      .then(
-        (result) => {
-          // Partial responses were already settled through `onPartial`.
-          if (result.transport === "beacon" || result.statusCode !== 206) {
-            settle(result.transport === "fetch" && isRetriable(result.statusCode));
-          }
-          return result;
-        },
-        (error: unknown) => {
-          settle(true);
-          throw error;
-        },
-      );
+      .catch((error: unknown) => {
+        if (!final) settle(true);
+        throw error;
+      });
   }
 
   #track(operation: Promise<void>): void {

@@ -370,6 +370,51 @@ describe("Azure Monitor sessionStorage buffer", () => {
     expect(sentNames(fetch)).toEqual([["retriable"]]);
   });
 
+  it.each([false, true])(
+    "keeps the whole batch after an unreadable partial response (unloading: %s)",
+    async (unloading) => {
+      stubFetch(() => new Response("not json", { status: 206 }));
+      const client = createClient();
+      let result: Promise<ExportResult>;
+      if (unloading) beginUnloading();
+      try {
+        result = exportAsync(client, [envelope("first"), envelope("second")]);
+      } finally {
+        if (unloading) endUnloading();
+      }
+      await expect(result).resolves.toMatchObject({ code: ExportResultCode.FAILED });
+      hidePage();
+
+      loadPage();
+      const fetch = stubFetch();
+      await createClient().forceFlush();
+      expect(sentNames(fetch)).toEqual([["first", "second"]]);
+    },
+  );
+
+  it.each([200, 400])(
+    "does not resend telemetry after HTTP %i when its body cannot be read",
+    async (status) => {
+      stubFetch(
+        () =>
+          new Response(
+            new ReadableStream({ start: (controller) => controller.error(new TypeError("reset")) }),
+            { status },
+          ),
+      );
+      await expect(exportAsync(createClient(), [envelope("settled")])).resolves.toMatchObject({
+        code: ExportResultCode.FAILED,
+      });
+      hidePage();
+      expect(bufferKeys()).toEqual([]);
+
+      loadPage();
+      const fetch = stubFetch();
+      await createClient().forceFlush();
+      expect(fetch).not.toHaveBeenCalled();
+    },
+  );
+
   it("reclaims its telemetry when restored before another document adopts it", () => {
     const buffer = new SessionBuffer("destination");
     buffer.add('[{"name":"kept"}]');
@@ -498,6 +543,23 @@ describe("Azure Monitor sessionStorage buffer", () => {
     buffer.dispose();
   });
 
+  it("evicts the oldest batches by timestamp, not insertion order", () => {
+    const buffer = new SessionBuffer("destination");
+    const now = Date.now();
+    const body = (name: string, length: number): string =>
+      `[{"name":"${name}","pad":"${"x".repeat(length)}"}]`;
+    // Adopted records can interleave timestamps and have unequal sizes.
+    buffer.add(body("newest", (MAX_SESSION_BUFFER_LENGTH * 3) / 5), now);
+    buffer.add(body("oldest", MAX_SESSION_BUFFER_LENGTH / 5), now - 2000);
+    buffer.add(body("middle", MAX_SESSION_BUFFER_LENGTH * 0.3), now - 1000);
+
+    const stored = testSessionStorage.getItem(bufferKeys()[0]) ?? "";
+    expect(stored).not.toContain("oldest");
+    expect(stored.indexOf("middle")).toBeGreaterThan(-1);
+    expect(stored.indexOf("middle")).toBeLessThan(stored.indexOf("newest"));
+    buffer.dispose();
+  });
+
   it("discards expired and malformed records", () => {
     const destination = `${TEST_INSTRUMENTATION_KEY}|${endpoint}`;
     const prefix = `${SESSION_BUFFER_KEY_PREFIX}${destination}|old-page|`;
@@ -524,6 +586,14 @@ describe("Azure Monitor sessionStorage buffer", () => {
     expect(bufferKeys()).toHaveLength(1);
 
     await client.shutdown();
+    expect(bufferKeys()).toEqual([]);
+  });
+
+  it("does not recreate its record when a request settles after disposal", () => {
+    const buffer = new SessionBuffer("destination");
+    const id = buffer.add('[{"name":"late"}]');
+    buffer.dispose();
+    buffer.settle(id, '[{"name":"late"}]', true);
     expect(bufferKeys()).toEqual([]);
   });
 });

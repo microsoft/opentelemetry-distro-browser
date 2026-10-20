@@ -14,6 +14,7 @@ import {
 } from "./constants.js";
 import {
   type BreezeError,
+  type BreezeResponse,
   isRetriable,
   isSamplingRejection,
   parseBreezeResponse,
@@ -62,6 +63,8 @@ export interface SendRequest {
    * when none remain.
    */
   readonly onPartial?: (envelopes: readonly AzureMonitorEnvelope[]) => void;
+  /** Called with each response status before its body is read. */
+  readonly onResponse?: (statusCode: number) => void;
   /** Checked before each attempt; when it returns `false` the request stops with an error. */
   readonly active?: () => boolean;
 }
@@ -118,7 +121,7 @@ export class Sender {
     if (request.unloading === true || request.retry === false) {
       const result = await this.#sendOnce(request);
       if (result.transport === "fetch" && result.statusCode === 206) {
-        reportPartial(request, result, parseBreezeResponse(result.result)?.errors ?? []);
+        reportPartial(request, result, parseBreezeResponse(result.result));
       }
       this.#rememberThrottleDeadline(result);
       return result;
@@ -159,14 +162,14 @@ export class Sender {
         return result;
       }
 
-      const breezeErrors =
-        result.statusCode === 206 ? (parseBreezeResponse(result.result)?.errors ?? []) : [];
+      const response = result.statusCode === 206 ? parseBreezeResponse(result.result) : undefined;
+      const breezeErrors = response?.errors ?? [];
       permanentErrors.push(
         ...breezeErrors.filter(
           (error) => !isRetriable(error.statusCode) && !isSamplingRejection(error),
         ),
       );
-      const retryRequest = reportPartial(currentRequest, result, breezeErrors);
+      const retryRequest = reportPartial(currentRequest, result, response);
       this.#rememberThrottleDeadline(result);
       if (!retryRequest || attempt >= MAX_SEND_ATTEMPTS) {
         return permanentErrors.length === 0 ? result : { ...result, permanentErrors };
@@ -284,6 +287,7 @@ export class Sender {
         throw error;
       }
 
+      request.onResponse?.(response.status);
       const retryAfterMs = parseRetryAfterHeader(response.headers.get("retry-after"));
       let result: string;
       try {
@@ -420,10 +424,13 @@ function normalizeHostname(hostname: string): string {
 function reportPartial(
   request: SendRequest,
   result: SenderResult,
-  breezeErrors: readonly BreezeError[],
+  response: BreezeResponse | undefined,
 ): SendRequest | undefined {
-  const retryRequest = getRetryRequest(request, result, breezeErrors);
-  if (result.statusCode === 206) request.onPartial?.(retryRequest?.envelopes ?? []);
+  const retryRequest = getRetryRequest(request, result, response?.errors ?? []);
+  if (result.statusCode === 206) {
+    // An unreadable response leaves every envelope outstanding, without an immediate retry.
+    request.onPartial?.(response ? (retryRequest?.envelopes ?? []) : (request.envelopes ?? []));
+  }
   return retryRequest;
 }
 
