@@ -55,12 +55,7 @@ import type {
   SeverityLevel,
   StackFrame,
 } from "./telemetryModels.js";
-import {
-  ATTR_ENDUSER_ID,
-  ATTR_ENDUSER_PSEUDO_ID,
-  ATTR_USER_ACCOUNT_ID,
-  ATTR_USER_ID,
-} from "../user/constants.js";
+import { USER_ATTRIBUTES } from "../user/constants.js";
 import { AZURE_MONITOR_SAMPLE_RATE } from "../sampling.js";
 import { getManagedOperationName } from "../context/operationName.js";
 
@@ -69,10 +64,7 @@ const promotedLogAttributes = /* @__PURE__ */ new Set([
   EXCEPTION_STACKTRACE,
   EXCEPTION_TYPE,
   NAVIGATION_DURATION,
-  ATTR_ENDUSER_ID,
-  ATTR_ENDUSER_PSEUDO_ID,
-  ATTR_USER_ACCOUNT_ID,
-  ATTR_USER_ID,
+  ...USER_ATTRIBUTES,
   AZURE_MONITOR_SAMPLE_RATE,
 ]);
 const promotedPageViewAttributes = /* @__PURE__ */ new Set([
@@ -96,10 +88,7 @@ const promotedPageViewAttributes = /* @__PURE__ */ new Set([
   ATTR_PAGE_VIEW_TYPE,
   URL_FULL,
   AZURE_MONITOR_SAMPLE_RATE,
-  ATTR_ENDUSER_ID,
-  ATTR_ENDUSER_PSEUDO_ID,
-  ATTR_USER_ACCOUNT_ID,
-  ATTR_USER_ID,
+  ...USER_ATTRIBUTES,
 ]);
 // Azure Monitor ExceptionDetails schema limits (character lengths).
 const MAX_EXCEPTION_TYPE_LENGTH = 1024;

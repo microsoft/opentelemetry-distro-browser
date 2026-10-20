@@ -30,12 +30,7 @@ import type {
   RemoteDependencyData,
   RequestData,
 } from "./telemetryModels.js";
-import {
-  ATTR_ENDUSER_ID,
-  ATTR_ENDUSER_PSEUDO_ID,
-  ATTR_USER_ACCOUNT_ID,
-  ATTR_USER_ID,
-} from "../user/constants.js";
+import { USER_ATTRIBUTES } from "../user/constants.js";
 import { AZURE_MONITOR_SAMPLE_RATE } from "../sampling.js";
 import { selectNonEmptyString } from "../shared/isNonEmptyString.js";
 import { getManagedOperationName } from "../context/operationName.js";
@@ -46,10 +41,7 @@ const promotedSpanAttributes = /* @__PURE__ */ new Set([
   SERVER_ADDRESS,
   SERVER_PORT,
   URL_FULL,
-  ATTR_ENDUSER_ID,
-  ATTR_ENDUSER_PSEUDO_ID,
-  ATTR_USER_ACCOUNT_ID,
-  ATTR_USER_ID,
+  ...USER_ATTRIBUTES,
   AZURE_MONITOR_SAMPLE_RATE,
 ]);
 const promotedExceptionEventAttributes = /* @__PURE__ */ new Set([
