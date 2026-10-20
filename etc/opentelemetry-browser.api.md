@@ -22,7 +22,9 @@ import { TracerProvider } from '@opentelemetry/api';
 
 // @public
 export class AzureMonitorLogRecordExporter implements LogRecordExporter {
-    constructor(options: AzureMonitorOptions);
+    constructor(options: AzureMonitorOptions & {
+        readonly connectionString: string;
+    });
     // (undocumented)
     export(logs: ReadableLogRecord[], callback: (result: ExportResult) => void): void;
     // (undocumented)
@@ -33,13 +35,17 @@ export class AzureMonitorLogRecordExporter implements LogRecordExporter {
 
 // @public
 export interface AzureMonitorOptions {
-    readonly connectionString: string;
+    readonly connectionString: string | Promise<string>;
     readonly disableBeacon?: boolean;
+    readonly initInMemoMaxSize?: number;
+    readonly initTimeOut?: number;
 }
 
 // @public
 export class AzureMonitorSpanExporter implements SpanExporter {
-    constructor(options: AzureMonitorOptions);
+    constructor(options: AzureMonitorOptions & {
+        readonly connectionString: string;
+    });
     // (undocumented)
     export(spans: ReadableSpan[], callback: (result: ExportResult) => void): void;
     // (undocumented)

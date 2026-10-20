@@ -20,7 +20,8 @@ import type { AzureMonitorEnvelope } from "./telemetryModels.js";
 export class AzureMonitorSpanExporter implements SpanExporter {
   readonly #client: AzureMonitorExportClient;
 
-  public constructor(options: AzureMonitorOptions) {
+  /** Standalone export requires a resolved string; the distribution owns startup buffering. */
+  public constructor(options: AzureMonitorOptions & { readonly connectionString: string }) {
     this.#client = new AzureMonitorExportClient(options);
   }
 

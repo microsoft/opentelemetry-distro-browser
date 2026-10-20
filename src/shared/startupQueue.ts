@@ -36,6 +36,12 @@ export class StartupQueue<T> {
     this.#timer = setTimeout(() => this.fail(), timeout);
   }
 
+  /** Check before constructing a destination so late resolution cannot start a stopped pipeline. */
+  public get pending(): boolean {
+    this.#checkTimeout();
+    return this.#status === "pending";
+  }
+
   public track(item: T): void {
     this.#checkTimeout();
     if (this.#status === "active") {

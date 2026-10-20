@@ -29,8 +29,13 @@ export interface AzureMonitorOptions {
    * Azure Monitor connection string containing a valid UUID instrumentation key.
    * Endpoints require HTTPS except on localhost or loopback IPs.
    * Invalid endpoints warn and fall back to suffix-derived or public cloud endpoints.
+  * Promises are supported by the distribution; standalone exporters require a resolved string.
    */
-  readonly connectionString: string;
+  readonly connectionString: string | Promise<string>;
+  /** Maximum promise wait in milliseconds. Defaults to 50000; zero expires immediately. */
+  readonly initTimeOut?: number;
+  /** Maximum spans and logs buffered together while waiting. Defaults to 100; zero drops all. */
+  readonly initInMemoMaxSize?: number;
   /**
    * Disables `sendBeacon` fallback when a keepalive request cannot be queued during page unload.
    * This can prevent pending telemetry from being delivered when the page closes.
@@ -45,7 +50,7 @@ export class AzureMonitorExportClient {
   readonly #stats: InternalSdkStats;
   readonly #buffer: SessionBuffer | undefined;
 
-  public constructor(options: AzureMonitorOptions) {
+  public constructor(options: AzureMonitorOptions & { readonly connectionString: string }) {
     const { instrumentationKey, ingestionEndpoint } = parseConnectionString(
       options.connectionString,
     );
