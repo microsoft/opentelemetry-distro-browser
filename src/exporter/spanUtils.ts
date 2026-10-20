@@ -109,7 +109,6 @@ export function spanToEnvelope(
     };
     return createEnvelope(
       instrumentationKey,
-      "Microsoft.ApplicationInsights.Request",
       hrTimeToDate(span.startTime),
       tags,
       "RequestData",
@@ -151,7 +150,6 @@ export function spanToEnvelope(
   };
   return createEnvelope(
     instrumentationKey,
-    "Microsoft.ApplicationInsights.RemoteDependency",
     hrTimeToDate(span.startTime),
     tags,
     "RemoteDependencyData",
@@ -195,7 +193,6 @@ function spanEventToEnvelope(
     };
     const envelopeWithoutException = createEnvelope(
       instrumentationKey,
-      "Microsoft.ApplicationInsights.Exception",
       time,
       tags,
       "ExceptionData",
@@ -214,15 +211,7 @@ function spanEventToEnvelope(
       exceptions: [createExceptionDetails(attributes, undefined, maxExceptionSize)],
       ...customFields,
     };
-    return createEnvelope(
-      instrumentationKey,
-      "Microsoft.ApplicationInsights.Exception",
-      time,
-      tags,
-      "ExceptionData",
-      baseData,
-      sampleRate,
-    );
+    return createEnvelope(instrumentationKey, time, tags, "ExceptionData", baseData, sampleRate);
   }
 
   const baseData: MessageData = {
@@ -230,15 +219,7 @@ function spanEventToEnvelope(
     message: truncateToLength(event.name, MaxPropertyLengths.FIFTEEN_BIT),
     ...customFields,
   };
-  return createEnvelope(
-    instrumentationKey,
-    "Microsoft.ApplicationInsights.Message",
-    time,
-    tags,
-    "MessageData",
-    baseData,
-    sampleRate,
-  );
+  return createEnvelope(instrumentationKey, time, tags, "MessageData", baseData, sampleRate);
 }
 
 export function spanToEnvelopes(
