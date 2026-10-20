@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+import { diag } from "@opentelemetry/api";
 import type { LogRecordProcessor } from "@opentelemetry/sdk-logs";
 import { BatchSpanProcessor, type SpanProcessor } from "@opentelemetry/sdk-trace-base";
 import { BrowserBatchLogRecordProcessor } from "../browserBatchLogRecordProcessor.js";
@@ -12,12 +13,17 @@ import { AzureMonitorSpanExporter } from "./trace.js";
 
 /** Creates only the Azure Monitor branches; custom processors never pass through this queue. */
 export function createAzureMonitorProcessors(
-  options: AzureMonitorOptions,
+  options: AzureMonitorOptions<string | Promise<string>>,
   tracesEnabled: boolean,
   logsEnabled: boolean,
   samplingPercentage: number | undefined,
   exporters: (AzureMonitorSpanExporter | AzureMonitorLogRecordExporter)[],
-): { span?: SpanProcessor; log?: LogRecordProcessor; stop: () => void } {
+): {
+  span?: SpanProcessor;
+  log?: LogRecordProcessor;
+  stop: () => void;
+  startDiagnostics: () => void;
+} {
   let span: SpanProcessor | undefined;
   let log: LogRecordProcessor | undefined;
 
@@ -42,10 +48,16 @@ export function createAzureMonitorProcessors(
   // Keep the existing synchronous path: invalid strings still fail initialization.
   if (typeof options.connectionString === "string") {
     initialize(options.connectionString);
-    return { span, log, stop() {} };
+    return { span, log, stop() {}, startDiagnostics() {} };
   }
 
-  const queue = new StartupQueue<() => void>(options);
+  // Promise settlement and timeout can precede diagnostic logger installation. Retain only
+  // safe messages, not payloads or rejection reasons, until the instance is ready.
+  let warnings: string[] | undefined = [];
+  const queue = new StartupQueue<() => void>(options, (message) => {
+    if (warnings) warnings.push(message);
+    else diag.warn(message);
+  });
   void Promise.resolve(options.connectionString).then(
     (connectionString) => {
       if (!queue.pending) return;
@@ -61,7 +73,15 @@ export function createAzureMonitorProcessors(
   );
 
   return {
-    stop: () => queue.shutdown(),
+    stop: () => {
+      queue.shutdown();
+      warnings = undefined;
+    },
+    startDiagnostics: () => {
+      const buffered = warnings ?? [];
+      warnings = undefined;
+      for (const message of buffered) diag.warn(message);
+    },
     span: tracesEnabled
       ? {
           onStart() {},

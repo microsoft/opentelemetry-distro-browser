@@ -22,16 +22,18 @@ const noop = (): void => {};
 
 /**
  * Azure Monitor destination configuration.
+ * @typeParam TConnectionString - Defaults to a resolved string for standalone exporters.
+ * The distribution also accepts `string | Promise<string>`.
  * @public
  */
-export interface AzureMonitorOptions {
+export interface AzureMonitorOptions<TConnectionString extends string | Promise<string> = string> {
   /**
    * Azure Monitor connection string containing a valid UUID instrumentation key.
    * Endpoints require HTTPS except on localhost or loopback IPs.
    * Invalid endpoints warn and fall back to suffix-derived or public cloud endpoints.
    * Promises are supported by the distribution; standalone exporters require a resolved string.
    */
-  readonly connectionString: string | Promise<string>;
+  readonly connectionString: TConnectionString;
   /** Maximum promise wait in milliseconds. Defaults to 50000; zero expires immediately. */
   readonly initTimeOut?: number;
   /** Maximum spans and logs buffered together while waiting. Defaults to 100; zero drops all. */
@@ -50,7 +52,7 @@ export class AzureMonitorExportClient {
   readonly #stats: InternalSdkStats;
   readonly #buffer: SessionBuffer | undefined;
 
-  public constructor(options: AzureMonitorOptions & { readonly connectionString: string }) {
+  public constructor(options: AzureMonitorOptions) {
     const { instrumentationKey, ingestionEndpoint } = parseConnectionString(
       options.connectionString,
     );

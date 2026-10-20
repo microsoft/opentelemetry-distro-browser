@@ -22,8 +22,13 @@ export class StartupQueue<T> {
   readonly #capacity: number;
   readonly #deadline: number;
   readonly #timer: ReturnType<typeof setTimeout>;
+  readonly #warn: (message: string) => void;
 
-  public constructor(options: StartupQueueOptions = {}) {
+  public constructor(
+    options: StartupQueueOptions = {},
+    warn: (message: string) => void = (message) => diag.warn(message),
+  ) {
+    this.#warn = warn;
     const timeout = options.initTimeOut ?? 50_000;
     this.#capacity = options.initInMemoMaxSize ?? 100;
     if (!Number.isFinite(timeout) || timeout < 0 || timeout > 2_147_483_647) {
@@ -51,7 +56,7 @@ export class StartupQueue<T> {
         this.#queue.push(item);
       } else if (!this.#queueFullReported) {
         this.#queueFullReported = true;
-        diag.warn("Telemetry startup queue full; dropping new items");
+        this.#warn("Telemetry startup queue full; dropping new items");
       }
     }
   }
@@ -73,7 +78,7 @@ export class StartupQueue<T> {
     if (this.#status !== "pending") return;
     const count = this.#queue.length;
     this.shutdown();
-    diag.warn(`Telemetry startup failed or timed out; dropping ${count} buffered items`);
+    this.#warn(`Telemetry startup failed or timed out; dropping ${count} buffered items`);
   }
 
   /** Cancels pending startup, releases retained items/callbacks, and drops subsequent telemetry. */
@@ -94,7 +99,7 @@ export class StartupQueue<T> {
       this.#deliver?.(item);
     } catch {
       // One bad item must not prevent releasing the rest or expose telemetry in diagnostics.
-      diag.warn("Telemetry startup delivery failed; dropping item");
+      this.#warn("Telemetry startup delivery failed; dropping item");
     }
   }
 }

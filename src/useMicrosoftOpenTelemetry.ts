@@ -156,6 +156,7 @@ export async function useMicrosoftOpenTelemetry(
   const ownedProcessors: (SpanProcessor | LogRecordProcessor)[] = [];
   const azureMonitorExporters: (AzureMonitorSpanExporter | AzureMonitorLogRecordExporter)[] = [];
   let stopAzureMonitorStartup: (() => void) | undefined;
+  let startAzureMonitorDiagnostics: (() => void) | undefined;
   const traceOptions = options.traces && {
     ...options.traces,
     propagators: options.traces.propagators?.slice(),
@@ -328,7 +329,7 @@ export async function useMicrosoftOpenTelemetry(
 
   try {
     if (azureMonitor) {
-      const { span, log, stop } = createAzureMonitorProcessors(
+      const { span, log, stop, startDiagnostics } = createAzureMonitorProcessors(
         azureMonitor,
         spanProcessors?.length !== 0,
         logRecordProcessors?.length !== 0,
@@ -336,6 +337,7 @@ export async function useMicrosoftOpenTelemetry(
         azureMonitorExporters,
       );
       stopAzureMonitorStartup = stop;
+      startAzureMonitorDiagnostics = startDiagnostics;
       if (span) {
         ownedProcessors.push(span);
         spanProcessors = [span, ...(spanProcessors ?? [])];
@@ -379,6 +381,7 @@ export async function useMicrosoftOpenTelemetry(
     processorsTransferred = true;
     instance = await startTelemetryInstance(instanceOptions);
     // Warn only once the instance has installed the console diagnostic logger.
+    startAzureMonitorDiagnostics?.();
     if (noDestination) {
       diag.warn(
         "No telemetry destination: set azureMonitor, spanProcessors or logRecordProcessors",

@@ -13,6 +13,7 @@ import {
 } from "../../../src/index.js";
 import type { AzureMonitorEnvelope } from "../../../src/exporter/telemetryModels.js";
 import { installFakeClock } from "../../fixtures/clock.js";
+import { getSharedRegistry } from "../../../src/shared/globalOwnership.js";
 
 const connectionString =
   "InstrumentationKey=00000000-0000-0000-0000-000000000000;IngestionEndpoint=https://customer.example.test";
@@ -114,6 +115,48 @@ it.each(["timeout", "rejected", "invalid"] as const)(
     logs.getLogger("failure").emit({ body: "after failure" });
     await result.handle.forceFlush();
     expect(result.fetch).not.toHaveBeenCalled();
+  },
+);
+
+it.each(["rejected", "invalid", "timeout"] as const)(
+  "reports early %s after installing diagnostics on a fresh page",
+  async (failure) => {
+    const clock = installFakeClock();
+    diag.disable();
+    getSharedRegistry().diagInitialized = false;
+    const originalWarn = diag.warn.bind(diag);
+    const warn = vi.spyOn(diag, "warn").mockImplementation((...args) => {
+      // DiagConsoleLogger captures console methods at module load; observe the public dispatch
+      // instead and require a real diagnostic registration before allowing the warning through.
+      expect(getSharedRegistry().diagInitialized).toBe(true);
+      originalWarn(...args);
+    });
+    const resource = resourceFromAttributes({});
+    resource.waitForAsyncAttributes = async () => {
+      if (failure === "timeout") await clock.advance(10);
+      expect(warn).not.toHaveBeenCalled();
+    };
+    const result = await start({
+      resource,
+      azureMonitor: {
+        connectionString:
+          failure === "rejected"
+            ? Promise.reject(new Error("private rejection reason"))
+            : failure === "invalid"
+              ? Promise.resolve("private invalid connection string")
+              : new Promise<string>(() => {}),
+        initTimeOut: 10,
+      },
+    });
+    expect(warn).toHaveBeenCalledExactlyOnceWith(
+      "Telemetry startup failed or timed out; dropping 0 buffered items",
+    );
+    expect(JSON.stringify(warn.mock.calls)).not.toContain("private");
+    logs.getLogger("early failure").emit({ body: "dropped" });
+    await result.handle.forceFlush();
+    expect(result.fetch).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
   },
 );
 
