@@ -21,17 +21,19 @@ export interface KeyValueStorage {
 
 /** Same-origin Web Storage with key listing, used to discover records written by earlier pages. */
 export interface WebKeyValueStorage extends KeyValueStorage {
+  /** Keys that start with the storage name prefix, without that prefix. */
   keys(): string[];
 }
 
 /**
  * Wraps `localStorage` or `sessionStorage` so storage failures never reach callers. Any error,
  * including unavailable, blocked or full storage, logs `unavailableMessage` once and returns a
- * failure result.
+ * failure result. Keys are prefixed with `namePrefix`.
  */
 export function createKeyValueStorage(
   area: "localStorage" | "sessionStorage",
   unavailableMessage: string,
+  namePrefix = "",
 ): WebKeyValueStorage {
   // After a write failure, pause writes briefly instead of retrying every activity.
   let writesPausedUntil = 0;
@@ -71,14 +73,14 @@ export function createKeyValueStorage(
   return {
     getItem: (key) =>
       useStorage<StorageReadResult>(
-        (storage) => ({ success: true as const, value: storage.getItem(key) }),
+        (storage) => ({ success: true as const, value: storage.getItem(namePrefix + key) }),
         { success: false as const },
         "read",
       ),
     setItem: (key, value) =>
       useStorage(
         (storage) => {
-          storage.setItem(key, value);
+          storage.setItem(namePrefix + key, value);
           return true;
         },
         false,
@@ -87,7 +89,7 @@ export function createKeyValueStorage(
     removeItem: (key) =>
       useStorage(
         (storage) => {
-          storage.removeItem(key);
+          storage.removeItem(namePrefix + key);
           return true;
         },
         false,
@@ -95,7 +97,10 @@ export function createKeyValueStorage(
       ),
     keys: () =>
       useStorage(
-        (storage) => Array.from({ length: storage.length }, (_, index) => storage.key(index) ?? ""),
+        (storage) =>
+          Array.from({ length: storage.length }, (_, index) => storage.key(index) ?? "")
+            .filter((key) => key.startsWith(namePrefix))
+            .map((key) => key.slice(namePrefix.length)),
         [],
         "read",
       ),

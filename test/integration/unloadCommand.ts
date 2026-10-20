@@ -15,16 +15,23 @@ declare module "vitest/browser" {
       fixtureUrl: string,
       reloadUrl: string,
       captureUrl: string,
+      expected: Record<string, number>,
     ): Promise<unknown[]>;
   }
 }
 
 /**
  * Loads the fixture, navigates away and loads `reloadUrl` twice in the same tab, then returns
- * everything ingestion captured.
+ * everything ingestion captured once it holds at least the `expected` count of each envelope name.
  */
 export const verifyReloadDelivery = defineBrowserCommand(
-  async ({ page }, fixtureUrl: string, reloadUrl: string, captureUrl: string) => {
+  async (
+    { page },
+    fixtureUrl: string,
+    reloadUrl: string,
+    captureUrl: string,
+    expected: Record<string, number>,
+  ) => {
     const browser = page.context().browser();
     if (!browser) throw new Error("Reload tests require a browser connection.");
     const fixtureContext = await browser.newContext();
@@ -39,7 +46,24 @@ export const verifyReloadDelivery = defineBrowserCommand(
         await fixturePage.waitForTimeout(500);
         await fixturePage.goto("about:blank");
       }
-      return (await (await fetch(captureUrl)).json()) as unknown[];
+      // The last navigation's keepalive request can still be in flight.
+      const deadline = Date.now() + 5_000;
+      let envelopes: unknown[] = [];
+      do {
+        envelopes = (await (await fetch(captureUrl)).json()) as unknown[];
+        const names = envelopes.map(
+          (envelope) => (envelope as { data: { baseData: { name?: string } } }).data.baseData.name,
+        );
+        if (
+          Object.entries(expected).every(
+            ([name, count]) => names.filter((value) => value === name).length >= count,
+          )
+        ) {
+          return envelopes;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      } while (Date.now() < deadline);
+      return envelopes;
     } finally {
       await fixtureContext.close();
     }

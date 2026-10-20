@@ -131,7 +131,10 @@ it("delivers telemetry left unsent by the previous page once after a same-tab re
   fixtureUrl.searchParams.set("throttle", "true");
   const captureUrl = `${new URL(ingestionEndpoint).origin}/captured?runId=${encodeURIComponent(runId)}`;
 
-  const envelopes = await commands.verifyReloadDelivery(fixtureUrl.href, reloadUrl, captureUrl);
+  const envelopes = await commands.verifyReloadDelivery(fixtureUrl.href, reloadUrl, captureUrl, {
+    "throttled-before-reload": 1,
+    "navigation-away": 3,
+  });
   const names = envelopes.map(
     (envelope) => (envelope as { data: { baseData: { name?: string } } }).data.baseData.name,
   );

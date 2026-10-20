@@ -8,6 +8,8 @@ import {
 } from "./context/contextProcessors.js";
 import { createSession } from "./session/createSession.js";
 import { createUserContext } from "./user/createUserContext.js";
+import { createKeyValueStorage } from "./storage/keyValueStorage.js";
+import { createSessionBufferStorage, sessionBufferStorage } from "./exporter/sessionBuffer.js";
 import type { LogRecordProcessor } from "@opentelemetry/sdk-logs";
 import { BrowserBatchLogRecordProcessor } from "./browserBatchLogRecordProcessor.js";
 import { BatchSpanProcessor, type SpanProcessor } from "@opentelemetry/sdk-trace-base";
@@ -35,6 +37,7 @@ import {
 import { startTelemetryInstance, type TelemetryInstance } from "./routing/telemetryInstance.js";
 import { ApplicationInsightsSampler, isTraceSampled, PageOperationSampler } from "./sampling.js";
 import { AzureMonitorSamplingLogRecordProcessor } from "./samplingLogRecordProcessor.js";
+import { DEFAULT_QUERY_STRINGS_TO_REDACT } from "./shared/urlRedaction.js";
 import type {
   MicrosoftOpenTelemetryBrowser,
   MicrosoftOpenTelemetryBrowserOptions,
@@ -96,16 +99,59 @@ function createOwnedInstrumentations(
 export async function useMicrosoftOpenTelemetry(
   options: MicrosoftOpenTelemetryBrowserOptions = {},
 ): Promise<MicrosoftOpenTelemetryBrowser> {
+  const redactedQueryParams: readonly string[] = [
+    ...DEFAULT_QUERY_STRINGS_TO_REDACT,
+    ...(options.redactQueryParams ?? []),
+  ];
+  if (
+    options.storage !== undefined &&
+    (typeof options.storage !== "object" ||
+      options.storage === null ||
+      Array.isArray(options.storage))
+  ) {
+    throw new TypeError("storage must be a non-null, non-array object.");
+  }
+  const { enabled: storageEnabled = true, namePrefix = "" } = options.storage ?? {};
+  if (typeof storageEnabled !== "boolean" || typeof namePrefix !== "string") {
+    throw new TypeError("storage.enabled must be a boolean and storage.namePrefix a string.");
+  }
   const session =
-    options.session?.enabled !== false ? createSession(options.session ?? {}) : undefined;
+    options.session?.enabled !== false
+      ? createSession(
+          {
+            persist: storageEnabled ? options.session?.persist : false,
+            inactivityTimeout: options.session?.inactivityTimeout,
+            maxDuration: options.session?.maxDuration,
+          },
+          createKeyValueStorage(
+            "localStorage",
+            "Session storage unavailable; using an in-memory session.",
+            namePrefix,
+          ),
+        )
+      : undefined;
   getSharedRegistry();
   const samplingPercentage = options.samplingPercentage ?? 100;
   const sampler =
     options.samplingPercentage === undefined
       ? new PageOperationSampler()
       : new ApplicationInsightsSampler(options.samplingPercentage);
-  const userContext = createUserContext(options.userContext?.enabled);
+  const userContext = createUserContext(
+    options.userContext?.enabled,
+    createKeyValueStorage(
+      "localStorage",
+      "User storage unavailable; anonymous ID disabled.",
+      namePrefix,
+    ),
+    storageEnabled,
+  );
   const azureMonitor = options.azureMonitor ? { ...options.azureMonitor } : undefined;
+  if (azureMonitor) {
+    sessionBufferStorage.set(
+      azureMonitor,
+      storageEnabled ? createSessionBufferStorage(namePrefix) : null,
+    );
+  }
   let spanProcessors: SpanProcessor[] | undefined = options.spanProcessors?.slice();
   let logRecordProcessors: LogRecordProcessor[] | undefined = options.logRecordProcessors?.slice();
   const ownedProcessors: (SpanProcessor | LogRecordProcessor)[] = [];
@@ -114,19 +160,28 @@ export async function useMicrosoftOpenTelemetry(
     ...options.traces,
     propagators: options.traces.propagators?.slice(),
   };
+  const pageViewOptions = options.pageView ?? {};
+  // Preserve legacy replacement semantics unless the additive, instance-wide option is used.
+  const pageView = {
+    ...pageViewOptions,
+    redactedQueryParams:
+      options.redactQueryParams === undefined
+        ? pageViewOptions.redactedQueryParams?.slice()
+        : [...redactedQueryParams, ...(pageViewOptions.redactedQueryParams ?? [])],
+  };
   // While another instance supplies page correlation, page views adopt its operation.
   const correlationState: { current?: PageViewCorrelation } = {};
   const owned = createOwnedInstrumentations(
-    options,
+    { ...options, pageView },
     () => getPageOperation(correlationState.current),
     samplingPercentage,
   );
-  const pageView = owned[0];
-  const correlation = pageView
+  const pageViewInstrumentation = owned[0];
+  const correlation = pageViewInstrumentation
     ? new PageViewCorrelation(
-        () => pageView.getOperationContext(),
-        pageView.pageViews,
-        (traceId) => pageView.getOperationName(traceId),
+        () => pageViewInstrumentation.getOperationContext(),
+        pageViewInstrumentation.pageViews,
+        (traceId) => pageViewInstrumentation.getOperationName(traceId),
       )
     : undefined;
   correlationState.current = correlation;
@@ -159,7 +214,7 @@ export async function useMicrosoftOpenTelemetry(
   const flushForUnload = (): void => {
     if (stopping || unloadFlushPromise) return;
     beginUnloading();
-    pageView?.settleForUnload();
+    pageViewInstrumentation?.settleForUnload();
     const operation = flushProcessors()
       .catch((error: unknown) => {
         reportError("Telemetry unload flush failed", error);
@@ -307,6 +362,7 @@ export async function useMicrosoftOpenTelemetry(
       diag.warn("Trace context options ignored; page context already registered");
     }
     const instanceOptions = {
+      redactedQueryParams,
       // Spread last: the caller's attributes win.
       resourceAttributes: {
         [ATTR_TELEMETRY_DISTRO_NAME]: "@microsoft/opentelemetry-browser",

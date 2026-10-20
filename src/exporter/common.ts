@@ -25,7 +25,6 @@ import { AZURE_MONITOR_SAMPLE_RATE } from "../sampling.js";
 import { MaxPropertyLengths } from "./constants.js";
 
 let unloadingCount = 0;
-const unloadingListeners = new Set<() => void>();
 let textDecoder: TextDecoder | undefined;
 let textEncoder: TextEncoder | undefined;
 
@@ -35,13 +34,6 @@ export function isUnloading(): boolean {
 
 export function beginUnloading(): void {
   unloadingCount++;
-  for (const listener of unloadingListeners) listener();
-}
-
-/** Calls `listener` whenever an unload flush begins; returns an unsubscribe function. */
-export function onBeginUnloading(listener: () => void): () => void {
-  unloadingListeners.add(listener);
-  return () => unloadingListeners.delete(listener);
 }
 
 export function endUnloading(): void {

@@ -57,6 +57,11 @@ export interface SendRequest {
   readonly retry?: boolean;
   /** Called once an unload request is handed to the browser by keepalive fetch or beacon. */
   readonly onDispatch?: () => void;
+  /**
+   * Called after each 206 response of a retried request with the envelopes that are still
+   * retriable, or an empty array when none remain.
+   */
+  readonly onPartial?: (envelopes: readonly AzureMonitorEnvelope[]) => void;
 }
 
 export interface SenderResult {
@@ -157,6 +162,7 @@ export class Sender {
         ),
       );
       const retryRequest = getRetryRequest(currentRequest, result, breezeErrors);
+      if (result.statusCode === 206) request.onPartial?.(retryRequest?.envelopes ?? []);
       this.#rememberThrottleDeadline(result);
       if (!retryRequest || attempt >= MAX_SEND_ATTEMPTS) {
         return permanentErrors.length === 0 ? result : { ...result, permanentErrors };

@@ -82,11 +82,12 @@ export function createUserContext(
     "localStorage",
     "User storage unavailable; anonymous ID disabled.",
   ),
+  storageEnabled = true,
 ): {
   context: MicrosoftOpenTelemetryBrowserUserContext;
   provider: UserContextProvider;
 } {
-  let persistenceEnabled = initialEnabled !== false;
+  let persistenceEnabled = storageEnabled && initialEnabled !== false;
   let anonymousIdentityEnabled = persistenceEnabled;
   let authenticatedPersistenceEnabled = persistenceEnabled;
   let persistedIdentityMayExist = false;
@@ -223,6 +224,7 @@ export function createUserContext(
     clearAuthenticatedUserContext() {
       authenticatedUserId = undefined;
       accountId = undefined;
+      if (!storageEnabled) return;
       if (!persistenceEnabled) {
         clearPersistedAuthenticatedContext();
       } else if (!persist()) {
@@ -234,6 +236,7 @@ export function createUserContext(
       }
     },
     setEnabled(newEnabled) {
+      if (!storageEnabled) return;
       if (newEnabled) {
         persistenceEnabled = true;
         authenticatedPersistenceEnabled = true;

@@ -8,9 +8,16 @@ All notable changes to this package are documented in this file.
 
 - Buffer unsent Azure Monitor telemetry in `sessionStorage` and send it first, once, on the next
   page load in the same tab. Covers requests in flight at navigation, envelopes that do not fit the
-  unload beacon, and retriable failures. Records are isolated per connection string and exporter,
-  bounded to 512 KiB of characters per exporter and one hour, and tolerate unavailable or full
-  storage by logging a warning.
+  unload beacon, and retriable failures, keeping only outstanding envelopes after partial
+  responses. Records are released to the next document only on `pagehide`, are isolated per
+  connection string and exporter, and are bounded to 512 KiB of characters per exporter and one
+  hour. Unavailable or full storage only logs a warning, and `storage.enabled: false` disables the
+  buffer.
+- Add per-instance browser storage controls to initialization and the CDN loader: `storage.enabled:
+false` blocks SDK-managed storage access, including later identity-control calls, while keeping
+  sessions and authenticated identity in memory. Use `storage.namePrefix` to scope session and user
+  storage keys. Disabling storage
+  does not erase stored data or stop telemetry collection.
 - Measure actual CDN response-body sizes with `npm run perf -- --cdn` and in merged-PR performance
   runs. Preserve existing build and browser measurements, compare encoded responses with identity bytes, and report
   missing artifacts or unsupported encodings without fabricated sizes.
@@ -69,6 +76,11 @@ All notable changes to this package are documented in this file.
 
 ### Fixed
 
+- Redact URL credentials and sensitive signing and OAuth parameters on captured fetch/XHR HTTP
+  dependency URLs without changing requests. Add `redactQueryParams` settings for additional
+  query-string and fragment parameters on these URLs and page-view URLs/referrers, including CDN
+  loader configuration. Existing page-view replacement settings remain supported. Exceptions,
+  log bodies, span names/status and arbitrary attributes are not scanned.
 - Preserve asynchronously detected resource attributes when initializing trace and log pipelines.
 - Detect OS version from high-entropy client hints
 - Map resource `service.version` to the Azure Monitor `ai.application.ver` tag.

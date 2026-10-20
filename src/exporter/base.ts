@@ -14,7 +14,7 @@ import {
 import { Sender, type SenderResultType } from "./sender.js";
 import { createInternalSdkStats, type InternalSdkStats } from "./sdkStats.js";
 import { getInternalSdkStatsConfiguration } from "./sdkStatsConfiguration.js";
-import { SessionBuffer } from "./sessionBuffer.js";
+import { SessionBuffer, sessionBufferStorage } from "./sessionBuffer.js";
 import type { AzureMonitorBaseData, AzureMonitorEnvelope } from "./telemetryModels.js";
 
 const CONTENT_TYPE = "application/json";
@@ -43,7 +43,7 @@ export class AzureMonitorExportClient {
   readonly #pending = new Set<Promise<void>>();
   #stopped = false;
   readonly #stats: InternalSdkStats;
-  readonly #buffer: SessionBuffer;
+  readonly #buffer: SessionBuffer | undefined;
 
   public constructor(options: AzureMonitorOptions) {
     const { instrumentationKey, ingestionEndpoint } = parseConnectionString(
@@ -60,10 +60,15 @@ export class AzureMonitorExportClient {
       disableBeacon: options.disableBeacon,
       stats: this.#stats,
     });
-    // Unsent telemetry is mirrored in sessionStorage; leftovers from the previous page load in
-    // this tab go out before any new telemetry. Storage failures only log a warning.
-    this.#buffer = new SessionBuffer(`${instrumentationKey}|${ingestionEndpoint}`);
-    for (const [id, body] of this.#buffer.adopt()) {
+    // Unsent telemetry is mirrored in sessionStorage unless `storage.enabled` is false; leftovers
+    // from the previous page load in this tab go out before any new telemetry. Storage failures
+    // only log a warning.
+    const storage = sessionBufferStorage.get(options);
+    this.#buffer =
+      storage === null
+        ? undefined
+        : new SessionBuffer(`${instrumentationKey}|${ingestionEndpoint}`, storage);
+    for (const [id, body] of this.#buffer?.adopt() ?? []) {
       this.#track(
         this.#send(body, JSON.parse(body) as AzureMonitorEnvelope[], false, id).then(noop, noop),
       );
@@ -98,7 +103,7 @@ export class AzureMonitorExportClient {
     }
     const { requests, dropped, error } = batchResult;
     // Envelopes that cannot fit the unload beacon wait for the next page load.
-    if (dropped.length > 0) this.#buffer.add(JSON.stringify(dropped));
+    if (dropped.length > 0) this.#buffer?.add(JSON.stringify(dropped));
     if (error) {
       callback({ code: ExportResultCode.FAILED, error });
       return;
@@ -137,15 +142,19 @@ export class AzureMonitorExportClient {
   /**
    * Sends one serialized batch, buffering it until it is delivered or permanently rejected.
    * Unload requests leave the buffer when the browser accepts them, since their responses may
-   * never be observed.
+   * never be observed. After a partial response, only the outstanding retriable envelopes stay
+   * buffered.
    */
   #send(
     body: string,
     envelopes: readonly AzureMonitorEnvelope[],
     unloading: boolean,
-    id = this.#buffer.add(body),
+    id = this.#buffer?.add(body),
   ): Promise<SenderResultType> {
-    const settle = (keep: boolean): void => this.#buffer.settle(id, body, keep);
+    let outstanding = body;
+    const settle = (keep: boolean): void => {
+      if (id !== undefined) this.#buffer?.settle(id, outstanding, keep);
+    };
     return this.#sender
       .send({
         body: new TextEncoder().encode(body),
@@ -153,14 +162,17 @@ export class AzureMonitorExportClient {
         envelopes,
         unloading,
         onDispatch: () => settle(false),
+        onPartial: (rest) => {
+          if (rest.length > 0) outstanding = JSON.stringify(rest);
+          settle(rest.length > 0);
+        },
       })
       .then(
         (result) => {
-          settle(
-            result.transport === "fetch" &&
-              result.statusCode !== 206 &&
-              isRetriable(result.statusCode),
-          );
+          // Partial responses were already settled through `onPartial`.
+          if (result.transport === "beacon" || result.statusCode !== 206) {
+            settle(result.transport === "fetch" && isRetriable(result.statusCode));
+          }
           return result;
         },
         (error: unknown) => {
@@ -188,7 +200,7 @@ export class AzureMonitorExportClient {
     try {
       await this.#stats.shutdown(pending);
     } finally {
-      this.#buffer.dispose();
+      this.#buffer?.dispose();
     }
   }
 }

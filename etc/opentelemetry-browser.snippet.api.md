@@ -28,6 +28,7 @@ export interface SdkLoaderConfig {
         readonly softNavigationSettleTimeoutMs?: number;
         readonly useNavigationApiIfAvailable?: boolean;
     };
+    readonly redactQueryParams?: readonly string[];
     readonly reportLoadFailure?: boolean;
     readonly resourceAttributes?: {
         readonly [key: string]: string | number | boolean;
@@ -40,6 +41,10 @@ export interface SdkLoaderConfig {
         readonly maxDuration?: number;
     };
     readonly src?: string;
+    readonly storage?: {
+        readonly enabled?: boolean;
+        readonly namePrefix?: string;
+    };
     readonly userContext?: {
         readonly enabled?: boolean;
     };

@@ -80,10 +80,15 @@ export interface MicrosoftOpenTelemetryBrowserOptions {
     instrumentations?: readonly BrowserInstrumentation[];
     logRecordProcessors?: LogRecordProcessor[];
     pageView?: PageViewInstrumentationConfig;
+    redactQueryParams?: readonly string[];
     resource?: Resource;
     samplingPercentage?: number;
     session?: MicrosoftOpenTelemetryBrowserSessionOptions;
     spanProcessors?: SpanProcessor[];
+    storage?: {
+        enabled?: boolean;
+        namePrefix?: string;
+    };
     traces?: MicrosoftOpenTelemetryBrowserTraceOptions;
     userContext?: {
         enabled?: boolean;

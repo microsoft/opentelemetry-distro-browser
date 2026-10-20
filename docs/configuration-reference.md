@@ -18,6 +18,7 @@ side effects. Initialize only in client-side code, before importing application 
 | `resource`            | OpenTelemetry `Resource`                      | SDK defaults. Supplied attributes merge over defaults; use `service.name` and `service.version` to identify the application. Attributes resolve once; the resource schema URL is not carried through. |
 | `samplingPercentage`  | `number`                                      | Omitted: parent-based always-on trace sampling and no percentage sampling of Azure Monitor logs. See [sampling](#sampling).                                                                           |
 | `session`             | `MicrosoftOpenTelemetryBrowserSessionOptions` | Enabled and persisted, with 30-minute inactivity expiry and 24-hour maximum lifetime.                                                                                                                 |
+| `storage`             | `{ enabled?: boolean; namePrefix?: string }`  | Enabled, with unprefixed keys. See [browser storage](#browser-storage).                                                                                                                               |
 | `userContext`         | `{ enabled?: boolean }`                       | Enabled: managed anonymous identity and authenticated identity set through the handle persist in same-origin storage.                                                                                 |
 | `traces`              | `MicrosoftOpenTelemetryBrowserTraceOptions`   | Synchronous context tracking, W3C Trace Context and Baggage propagation.                                                                                                                              |
 | `spanProcessors`      | `SpanProcessor[]`                             | Additional trace processors. Azure Monitor prepends its default when configured, unless `[]` disables traces. Without Azure Monitor, only supplied processors export.                                 |
@@ -27,25 +28,27 @@ side effects. Initialize only in client-side code, before importing application 
 
 ### Azure Monitor destination
 
-| Option                                     | Type               | Default and behavior                                                                                                                                                                                                     |
-| ------------------------------------------ | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `azureMonitor.connectionString`            | `string`, required | Application Insights connection string with a valid UUID `InstrumentationKey`. Supports explicit ingestion endpoints and cloud suffixes.                                                                                 |
-| `azureMonitor.disableBeacon`               | `boolean`          | `false`. Set to `true` to disable the `sendBeacon` fallback when an unload keepalive request cannot be queued. This may reduce delivery when the page closes.                                                            |
+| Option                          | Type               | Default and behavior                                                                                                                                          |
+| ------------------------------- | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `azureMonitor.connectionString` | `string`, required | Application Insights connection string with a valid UUID `InstrumentationKey`. Supports explicit ingestion endpoints and cloud suffixes.                      |
+| `azureMonitor.disableBeacon`    | `boolean`          | `false`. Set to `true` to disable the `sendBeacon` fallback when an unload keepalive request cannot be queued. This may reduce delivery when the page closes. |
 
 Endpoints require HTTPS except for localhost or loopback IPs. Invalid endpoints warn and fall back
 to suffix-derived or public-cloud endpoints; an invalid/missing instrumentation key fails startup.
 Connection strings identify a destination and do not grant read access to the resource. They are
 public browser configuration, not secrets. Built-in Entra ID token authentication is not supported.
 
-Unsent Azure Monitor telemetry is always buffered in `sessionStorage` and sent first by the next
-page load in the same tab. The buffer covers telemetry that is in flight when the page goes away, does not
-fit the unload beacon, or fails with a retriable error. Records are keyed by connection string and
+Unsent Azure Monitor telemetry is buffered in `sessionStorage` and sent first by the next page load
+in the same tab. The buffer covers telemetry that is in flight when the page goes away, does not
+fit the unload beacon, or fails with a retriable error; after a partial response only the
+outstanding retriable envelopes stay buffered. Records are keyed by connection string and
 exporter, kept until ingestion accepts or permanently rejects them or the browser takes an unload
-request, and adopted only once after the page that wrote them is hidden or unloaded. Each exporter
-keeps at most 512 KiB of characters and drops items older than one hour; unavailable or full storage
-only logs a diagnostic warning. Requests interrupted after ingestion received them can be sent
-again. Custom span and log processors are not buffered, and the buffer does not survive closing
-the tab.
+request, and adopted only once after the page that wrote them fires `pagehide`, so hidden but
+live pages and same-origin frames never send each other's telemetry. Each exporter keeps at most
+512 KiB of characters and drops items older than one hour; unavailable or full storage only logs
+a diagnostic warning. `storage.enabled: false` disables the buffer and `storage.namePrefix`
+prefixes its keys. Requests interrupted after ingestion received them can be sent again. Custom
+span and log processors are not buffered, and the buffer does not survive closing the tab.
 
 When Azure Monitor is configured, its processor is added before non-empty custom processor lists
 for each signal. They are independent processor branches, not a chain: filtering within the Azure
@@ -80,6 +83,35 @@ prevent emission to custom log processors. There is no `traces.sampler` option.
 
 ## Session and identity
 
+### Browser storage
+
+| Option               | Type      | Default | Behavior                                                                                                                                                                                                    |
+| -------------------- | --------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `storage.enabled`    | `boolean` | `true`  | `false` blocks all SDK-managed browser storage access for this handle, including later identity-control calls and the unsent telemetry buffer. Sessions use memory; managed anonymous identity is disabled. |
+| `storage.namePrefix` | `string`  | `""`    | Literal prefix for `opentelemetry-session`, `opentelemetry-user` and unsent telemetry buffer keys. For example, `"shop-"` produces `shop-opentelemetry-session` and `shop-opentelemetry-user`.              |
+
+Settings are captured at initialization and apply independently to each handle. A prefix isolates
+stored sessions and identities for applications on the same origin; it is not a security boundary.
+No data is migrated or removed from other prefixes. The default empty prefix preserves existing data.
+
+Like Application Insights JavaScript, browser persistence is enabled by default. Unlike its
+`isStorageUseDisabled` global helper, `storage.enabled` is instance-scoped so one application cannot
+change another handle's policy. Setting it to `false` takes precedence over `session.persist` and
+`userContext.enabled`; `userContext.setEnabled()` then has no effect. Authenticated identity can
+still be set and cleared in memory. Disabling storage does not erase existing data, disable telemetry
+collection or stop network requests. Custom processors/exporters must enforce their own storage policy.
+
+Sessions and identities use localStorage; unsent Azure Monitor telemetry uses sessionStorage. No
+cookies are created. Application Insights `cookieCfg` and cookie domain/path settings are separate
+cookie controls, not Web Storage settings. Its `enableSessionStorageBuffer` corresponds to the
+unsent telemetry buffer described under Azure Monitor, which is always on here unless
+`storage.enabled` is false.
+
+Implementation references: Application Insights JavaScript's
+[cookie manager](https://github.com/microsoft/ApplicationInsights-JS/blob/main/shared/AppInsightsCore/src/core/CookieMgr.ts),
+[Web Storage helpers](https://github.com/microsoft/ApplicationInsights-JS/blob/main/shared/AppInsightsCore/src/utils/StorageHelperFuncs.ts)
+and [send buffer](https://github.com/microsoft/ApplicationInsights-JS/blob/main/channels/applicationinsights-channel-js/src/SendBuffer.ts).
+
 ### Session options
 
 | Option                      | Type              | Default | Behavior                                                                              |
@@ -106,7 +138,7 @@ they start and logs when emitted; later identity changes are not retroactive.
 | `userContext.clearAuthenticatedUserContext()`                 | Clears this handle's authenticated identity and stored authentication. Anonymous identity may remain.                                                        |
 | `userContext.setEnabled(enabled)`                             | Changes identity persistence and anonymous-ID enrichment, without clearing current in-memory authenticated identity. Disabling also removes stored identity. |
 
-Storage is shared within the origin, but each active handle keeps its own state. Update every
+Storage is shared within the origin and configured prefix, but each active handle keeps its own state. Update every
 active handle on sign-out. Scripts in the origin can read stored identity; do not use raw personal
 information, tokens or secrets as IDs. Persistence writes/removals can throw: handle failures when
 setting identity, changing persistence or signing out. These controls remain usable after shutdown.
@@ -116,16 +148,18 @@ For no managed session or identity storage access at initialization:
 ```typescript
 const telemetry = await useMicrosoftOpenTelemetry({
   azureMonitor: { connectionString },
-  session: { enabled: false },
-  userContext: { enabled: false },
+  storage: { enabled: false },
 });
 ```
 
-For memory-only session correlation, use `session: { persist: false }` instead. The two storage
-controls are independent and do not disable telemetry collection. If consent must precede any
+This retains memory-only session correlation. To disable managed sessions too, add
+`session: { enabled: false }`. For only memory-only sessions while preserving user persistence,
+use `session: { persist: false }`. If consent must precede any
 collection or network activity, defer initialization itself until consent is granted. Disabling
 storage at startup does not erase previously stored values; identity removal is an explicit
-`userContext.setEnabled(false)` operation.
+`userContext.setEnabled(false)` operation while browser storage is allowed. To grant persistence
+after starting with `storage.enabled: false`, shut down that handle and initialize a new one with
+storage enabled. The SDK does not replay storage operations from the disabled period.
 
 ## Page-view options
 
@@ -228,19 +262,19 @@ unsent is retried by the next page load in the same tab through the `sessionStor
 `getSdkLoaderScript()` is exported from the ESM-only `@microsoft/opentelemetry-browser/snippet` entry.
 It generates a script; it does not itself initialize telemetry in the current page.
 
-| Option                                                                                                                   | Default and behavior                                                                                                         |
-| ------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------- |
-| `connectionString`                                                                                                       | Required non-empty string; becomes `cfg.azureMonitor.connectionString`.                                                      |
-| `src`                                                                                                                    | This package version's immutable CDN IIFE URL. Custom URLs must expose `Microsoft.OpenTelemetry` as a classic script global. |
-| `crossOrigin`                                                                                                            | `"anonymous"`. Applied to the injected script.                                                                               |
-| `integrity`                                                                                                              | Unset. Supply integrity metadata for the exact version and artifact.                                                         |
-| `loadDelay`                                                                                                              | Immediate injection. A nonnegative delay in milliseconds adds nonblocking delayed loading.                                   |
-| `cdnFallback`                                                                                                            | `false`. Retry backup Azure Monitor CDN hosts; requires a recognized CDN source URL.                                         |
-| `reportLoadFailure`                                                                                                      | `false`. Report an `SDKLoadFailed` exception after bundle load attempts fail.                                                |
+| Option                                                                       | Default and behavior                                                                                                         |
+| ---------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `connectionString`                                                           | Required non-empty string; becomes `cfg.azureMonitor.connectionString`.                                                      |
+| `src`                                                                        | This package version's immutable CDN IIFE URL. Custom URLs must expose `Microsoft.OpenTelemetry` as a classic script global. |
+| `crossOrigin`                                                                | `"anonymous"`. Applied to the injected script.                                                                               |
+| `integrity`                                                                  | Unset. Supply integrity metadata for the exact version and artifact.                                                         |
+| `loadDelay`                                                                  | Immediate injection. A nonnegative delay in milliseconds adds nonblocking delayed loading.                                   |
+| `cdnFallback`                                                                | `false`. Retry backup Azure Monitor CDN hosts; requires a recognized CDN source URL.                                         |
+| `reportLoadFailure`                                                          | `false`. Report an `SDKLoadFailed` exception after bundle load attempts fail.                                                |
 | `samplingPercentage`, `azureMonitor.disableBeacon`, `session`, `userContext` | Same meanings as initialization options above.                                                                               |
-| `pageView`                                                                                                               | Data-only settings: `enabled`, `redactedQueryParams`, `softNavigationSettleTimeoutMs`, `useNavigationApiIfAvailable`.        |
-| `instrumentationOptions`                                                                                                 | JSON-only helper settings. Omitted: fetch/XHR defaults.                                                                      |
-| `resourceAttributes`                                                                                                     | String, number or boolean attributes converted into a resource by the bundle.                                                |
+| `pageView`                                                                   | Data-only settings: `enabled`, `redactedQueryParams`, `softNavigationSettleTimeoutMs`, `useNavigationApiIfAvailable`.        |
+| `instrumentationOptions`                                                     | JSON-only helper settings. Omitted: fetch/XHR defaults.                                                                      |
+| `resourceAttributes`                                                         | String, number or boolean attributes converted into a resource by the bundle.                                                |
 
 The generator accepts JSON-serializable settings, not functions or regular expressions. Processors,
 exporters, context managers, propagators and resource detectors require npm-based initialization.

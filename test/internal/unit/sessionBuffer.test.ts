@@ -12,6 +12,7 @@ import {
   MAX_SESSION_BUFFER_LENGTH,
   SESSION_BUFFER_KEY_PREFIX,
   SessionBuffer,
+  sessionBufferStorage,
 } from "../../../src/exporter/sessionBuffer.js";
 import { spanToEnvelope } from "../../../src/exporter/spanUtils.js";
 import type { AzureMonitorEnvelope } from "../../../src/exporter/telemetryModels.js";
@@ -50,8 +51,23 @@ function loadPage(): void {
 
 /** Simulates `pagehide`, which releases buffered telemetry to the next document. */
 function hidePage(): void {
-  beginUnloading();
-  endUnloading();
+  window.dispatchEvent(new PageTransitionEvent("pagehide", { persisted: true }));
+}
+
+/** Simulates a back/forward cache restore of the hidden document. */
+function restorePage(): void {
+  window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true }));
+}
+
+function breezeResponse(errors: Array<{ index: number; statusCode: number }>, headers = {}) {
+  return new Response(
+    JSON.stringify({
+      itemsReceived: 3,
+      itemsAccepted: 3 - errors.length,
+      errors: errors.map((error) => ({ ...error, message: "error" })),
+    }),
+    { status: 206, headers },
+  );
 }
 
 function createClient(options: Partial<AzureMonitorOptions> = {}): AzureMonitorExportClient {
@@ -189,6 +205,7 @@ describe("Azure Monitor sessionStorage buffer", () => {
       tags: { large: "x".repeat(MAX_BEACON_BODY_SIZE * 0.6) },
     });
     let result: ExportResult | undefined;
+    hidePage();
     beginUnloading();
     try {
       client.export([large("sent"), large("dropped")], (value) => (result = value));
@@ -213,6 +230,7 @@ describe("Azure Monitor sessionStorage buffer", () => {
       tags: { large: "x".repeat(MAX_BEACON_BODY_SIZE) },
     };
     let result: ExportResult | undefined;
+    hidePage();
     beginUnloading();
     try {
       client.export([oversized], (value) => (result = value));
@@ -240,17 +258,100 @@ describe("Azure Monitor sessionStorage buffer", () => {
     expect(bufferKeys()).toHaveLength(1);
   });
 
-  it("reclaims a hidden page's telemetry on its next update once visible", async () => {
-    let visibility: DocumentVisibilityState = "hidden";
-    vi.spyOn(document, "visibilityState", "get").mockImplementation(() => visibility);
+  it("does not release a hidden but live page's telemetry", async () => {
+    vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+    stubFetch(hang);
+    const client = createClient();
+    void exportAsync(client, [envelope("live")]);
+    await vi.waitFor(() => expect(bufferKeys()).toHaveLength(1));
+    // Visibility flushes run as unloads, but the document stays alive.
+    beginUnloading();
+    endUnloading();
+    expect(testSessionStorage.getItem(bufferKeys()[0])).toMatch(/^\[0,/);
+
+    loadPage();
+    const fetch = stubFetch();
+    await createClient().forceFlush();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("drops telemetry another document adopted when restored from the back/forward cache", async () => {
+    stubFetch(hang);
+    const original = exportAsync(createClient(), [envelope("handed off")]);
+    await vi.waitFor(() => expect(bufferKeys()).toHaveLength(1));
+    hidePage();
+
+    loadPage();
+    const fetch = stubFetch();
+    await createClient().forceFlush();
+    expect(sentNames(fetch)).toEqual([["handed off"]]);
+
+    restorePage();
+    // The original request now fails retriably, but the adopting document already delivered it.
+    for (const resolve of hanging.splice(0)) {
+      resolve(new Response("", { status: 503, headers: { "retry-after": "86400" } }));
+    }
+    await expect(original).resolves.toMatchObject({ code: ExportResultCode.FAILED });
+    expect(bufferKeys()).toEqual([]);
+  });
+
+  it("reclaims its telemetry when restored before another document adopts it", () => {
     const buffer = new SessionBuffer("destination");
-    buffer.add('[{"name":"hidden"}]');
+    buffer.add('[{"name":"kept"}]');
+    hidePage();
     expect(testSessionStorage.getItem(bufferKeys()[0])).toMatch(/^\[1,/);
 
-    visibility = "visible";
-    buffer.add('[{"name":"visible"}]');
+    restorePage();
     expect(testSessionStorage.getItem(bufferKeys()[0])).toMatch(/^\[0,/);
     buffer.dispose();
+  });
+
+  it("buffers only outstanding retriable envelopes after a partial response", async () => {
+    // Retry-After beyond the retry-wait budget fails the retry without waiting.
+    stubFetch(() =>
+      breezeResponse(
+        [
+          { index: 1, statusCode: 503 },
+          { index: 2, statusCode: 400 },
+        ],
+        { "retry-after": "86400" },
+      ),
+    );
+    await expect(
+      exportAsync(createClient(), [envelope("accepted"), envelope("retriable"), envelope("bad")]),
+    ).resolves.toMatchObject({ code: ExportResultCode.FAILED });
+    hidePage();
+
+    loadPage();
+    const fetch = stubFetch();
+    await createClient().forceFlush();
+    expect(sentNames(fetch)).toEqual([["retriable"]]);
+  });
+
+  it("removes a partially accepted batch once its retry succeeds", async () => {
+    const fetch = stubFetch();
+    fetch.mockResolvedValueOnce(
+      breezeResponse([{ index: 1, statusCode: 503 }], { "retry-after": "0" }),
+    );
+    await expect(
+      exportAsync(createClient(), [envelope("accepted"), envelope("retried")]),
+    ).resolves.toEqual({ code: ExportResultCode.SUCCESS });
+    expect(sentNames(fetch)).toEqual([["accepted", "retried"], ["retried"]]);
+    expect(bufferKeys()).toEqual([]);
+  });
+
+  it("does not access sessionStorage when storage is disabled", async () => {
+    const options = { connectionString: connectionString() };
+    sessionBufferStorage.set(options, null);
+    const getter = vi.fn(() => testSessionStorage);
+    Object.defineProperty(window, "sessionStorage", { configurable: true, get: getter });
+    stubFetch(() => new Response("", { status: 503, headers: { "retry-after": "86400" } }));
+    const client = new AzureMonitorExportClient(options);
+    clients.push(client);
+    await exportAsync(client, [envelope()]);
+    hidePage();
+    await client.shutdown();
+    expect(getter).not.toHaveBeenCalled();
   });
 
   it("keeps telemetry for different connection strings apart and adopts it once", async () => {

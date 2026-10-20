@@ -58,11 +58,11 @@ in each Node job's check summary and uploads all three files as build artifacts.
 
 Every executable published entry point has absolute minified, gzip and Brotli budgets:
 
-| Entry point          |  Minified |     Gzip |   Brotli |
-| -------------------- | --------: | -------: | -------: |
-| `.`                  | 124.75 kB | 39.25 kB | 34.75 kB |
-| `./instrumentations` |     64 kB |    24 kB |    22 kB |
-| `./snippet`          |      6 kB |  2.75 kB |   2.5 kB |
+| Entry point          |  Minified |     Gzip |  Brotli |
+| -------------------- | --------: | -------: | ------: |
+| `.`                  | 127.25 kB | 40.25 kB | 35.5 kB |
+| `./instrumentations` |     64 kB |    24 kB |   22 kB |
+| `./snippet`          |   6.25 kB |  2.75 kB |  2.5 kB |
 
 The generated JSON and Markdown reports show the measured values, ceilings and result for each
 entry point. During alpha releases, violations are report-only so the baselines can stabilize.
@@ -76,7 +76,7 @@ including alpha:
 
 | Artifact                                                   | Minified |  Gzip |  Brotli |
 | ---------------------------------------------------------- | -------: | ----: | ------: |
-| `opentelemetry-browser.{iife,umd}.min.js`                  | 165.5 kB | 51 kB | 44.5 kB |
+| `opentelemetry-browser.{iife,umd}.min.js`                  |   168 kB | 52 kB | 45.5 kB |
 | `opentelemetry-browser-instrumentations.{iife,umd}.min.js` |    63 kB | 19 kB |   17 kB |
 
 The browser bundles contain only ES2022 syntax. `npm run test:build` parses every emitted UMD and
