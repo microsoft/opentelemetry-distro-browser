@@ -10,6 +10,7 @@ import { StartupQueue } from "../shared/startupQueue.js";
 import type { AzureMonitorOptions } from "./base.js";
 import { AzureMonitorLogRecordExporter } from "./log.js";
 import { AzureMonitorSpanExporter } from "./trace.js";
+import { sessionBufferStorage } from "./sessionBuffer.js";
 
 /** Creates only the Azure Monitor branches; custom processors never pass through this queue. */
 export function createAzureMonitorProcessors(
@@ -29,6 +30,11 @@ export function createAzureMonitorProcessors(
 
   function initialize(connectionString: string): void {
     const resolved = { ...options, connectionString };
+    // Storage policy is keyed by options identity; preserve it when resolving the destination.
+    const storage = sessionBufferStorage.get(options);
+    if (storage !== undefined) {
+      sessionBufferStorage.set(resolved, storage);
+    }
     if (tracesEnabled) {
       const exporter = new AzureMonitorSpanExporter(resolved);
       exporters.push(exporter);
