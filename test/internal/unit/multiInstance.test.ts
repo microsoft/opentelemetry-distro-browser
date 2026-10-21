@@ -14,9 +14,10 @@ import {
 } from "@opentelemetry/api";
 import { createNoopLogger, logs, type LoggerProvider } from "@opentelemetry/api-logs";
 import { resourceFromAttributes } from "@opentelemetry/resources";
+import type { ReadWriteLogRecord } from "@opentelemetry/sdk-logs";
 import { BasicTracerProvider } from "@opentelemetry/sdk-trace-base";
 import { StackContextManager } from "@opentelemetry/sdk-trace-web";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { logToEnvelope } from "../../../src/exporter/logUtils.js";
 import { spanToEnvelope } from "../../../src/exporter/spanUtils.js";
 import {
@@ -680,4 +681,321 @@ it("registers context and propagation on retry after propagator construction fai
 
   expect(active).toHaveBeenCalled();
   expect(propagation.fields()).toEqual(["traceparent", "tracestate", "baggage"]);
+});
+
+describe("page visit time through useMicrosoftOpenTelemetry", () => {
+  let storage: Storage;
+  let savedVisits: Map<string, string>;
+  let originalUrl: string;
+  let originalState: unknown;
+  let now: number;
+
+  function visitKeys(): string[] {
+    return Array.from({ length: storage.length }, (_, index) => storage.key(index) ?? "").filter(
+      (key) => key.startsWith("otel.pageVisit."),
+    );
+  }
+
+  beforeEach(() => {
+    originalUrl = location.href;
+    originalState = history.state;
+    storage = sessionStorage;
+    savedVisits = new Map(visitKeys().map((key) => [key, storage.getItem(key)!]));
+    for (const key of savedVisits.keys()) storage.removeItem(key);
+    now = performance.timeOrigin + 1_000;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    vi.spyOn(performance, "getEntriesByType").mockReturnValue([
+      {
+        startTime: 0,
+        connectEnd: 20,
+        requestStart: 30,
+        responseStart: 80,
+        responseEnd: 110,
+        loadEventEnd: 170,
+        type: "navigate",
+      } as PerformanceNavigationTiming,
+    ]);
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null));
+  });
+
+  afterEach(async () => {
+    // Stop listeners, settle timers and pending Azure startup queues before restoring browser state.
+    const results = await Promise.allSettled([...handles].map((handle) => handle.shutdown()));
+    handles.clear();
+    try {
+      expect(globalThis.fetch).not.toHaveBeenCalled();
+      for (const result of results) {
+        if (result.status === "rejected") throw result.reason;
+      }
+    } finally {
+      vi.restoreAllMocks();
+      history.replaceState(originalState, "", originalUrl);
+      for (const key of visitKeys()) storage.removeItem(key);
+      for (const [key, value] of savedVisits) storage.setItem(key, value);
+    }
+  });
+
+  async function startVisits(name: string, options: MicrosoftOpenTelemetryBrowserOptions = {}) {
+    const records: ReadWriteLogRecord[] = [];
+    const handle = await useMicrosoftOpenTelemetry({
+      ...options,
+      session: { enabled: false },
+      userContext: { enabled: false },
+      spanProcessors: [],
+      logRecordProcessors: [
+        {
+          onEmit: (record) => {
+            records.push(record);
+          },
+          async forceFlush() {},
+          async shutdown() {},
+        },
+      ],
+      pageView: {
+        routeResolver: () => `${name}:${location.pathname}`,
+        useNavigationApiIfAvailable: false,
+        ...options.pageView,
+      },
+    });
+    handles.add(handle);
+    return {
+      handle,
+      records,
+      visits: () => records.filter((record) => record.eventName === "browser.page_visit"),
+    };
+  }
+
+  it.each([undefined, false])(
+    "does not access sessionStorage or report visits when autoTrackPageVisitTime is %s",
+    async (autoTrackPageVisitTime) => {
+      const access = vi.spyOn(window, "sessionStorage", "get");
+      const instance = await startVisits("disabled", {
+        pageView: {
+          ...(autoTrackPageVisitTime === undefined ? {} : { autoTrackPageVisitTime }),
+        },
+      });
+
+      now = performance.timeOrigin + 5_000;
+      history.pushState(null, "", "/visit-disabled");
+      window.dispatchEvent(new PageTransitionEvent("pagehide"));
+      await instance.handle.forceFlush();
+      await instance.handle.shutdown();
+
+      expect(instance.records.map((record) => record.eventName)).toEqual([
+        "browser.page_view",
+        "browser.page_view",
+      ]);
+      expect(instance.visits()).toEqual([]);
+      expect(access).not.toHaveBeenCalled();
+      expect(visitKeys()).toEqual([]);
+    },
+  );
+
+  it("keeps SPA visits isolated without persistence when storage is disabled", async () => {
+    const sentinelKey = "otel.pageVisit.disabled-sentinel";
+    storage.setItem(sentinelKey, "existing visit");
+    const access = vi.spyOn(window, "sessionStorage", "get");
+    const initialPath = location.pathname;
+    const alpha = await startVisits("alpha", {
+      storage: { enabled: false, namePrefix: "visit-alpha-" },
+      pageView: { autoTrackPageVisitTime: true },
+    });
+    const beta = await startVisits("beta", {
+      storage: { enabled: false, namePrefix: "visit-beta-" },
+      pageView: { autoTrackPageVisitTime: true },
+    });
+    expect(alpha.visits()).toEqual([]);
+    expect(beta.visits()).toEqual([]);
+
+    now = performance.timeOrigin + 5_000;
+    history.pushState(null, "", "/visit-memory-one");
+    now = performance.timeOrigin + 8_000;
+    history.pushState(null, "", "/visit-memory-two");
+
+    for (const [name, instance] of [
+      ["alpha", alpha],
+      ["beta", beta],
+    ] as const) {
+      expect(instance.visits()).toMatchObject([
+        {
+          attributes: {
+            "browser.page_view.name": `${name}:${initialPath}`,
+            "url.full": originalUrl,
+            "browser.page_visit.duration": 5_000,
+          },
+        },
+        {
+          attributes: {
+            "browser.page_view.name": `${name}:/visit-memory-one`,
+            "url.full": new URL("/visit-memory-one", originalUrl).href,
+            "browser.page_visit.duration": 3_000,
+          },
+        },
+      ]);
+      await instance.handle.shutdown();
+      expect(instance.visits()).toHaveLength(2);
+    }
+    expect(access).not.toHaveBeenCalled();
+    expect(visitKeys()).toEqual([sentinelKey]);
+    expect(storage.getItem(sentinelKey)).toBe("existing visit");
+  });
+
+  it.each(["custom processors", "pending connection string"])(
+    "persists distinct instance namespaces without cross-reading or reporting (%s)",
+    async (destination) => {
+      // Never resolve: custom processors remain live, but no Azure exporter can send or persist.
+      const azureMonitor =
+        destination === "pending connection string"
+          ? { connectionString: new Promise<string>(() => {}) }
+          : undefined;
+      const reads = vi.spyOn(storage, "getItem");
+      const initialPath = location.pathname;
+      const alpha = await startVisits("alpha", {
+        azureMonitor,
+        storage: { namePrefix: "visit-alpha-" },
+        pageView: { autoTrackPageVisitTime: true },
+      });
+      expect(visitKeys()).toHaveLength(1);
+      const alphaKey = visitKeys()[0]!;
+      expect(alphaKey).toContain("visit-alpha-");
+      expect(reads).toHaveBeenCalledExactlyOnceWith(alphaKey);
+      const alphaSaved = storage.getItem(alphaKey)!;
+      expect(JSON.parse(alphaSaved)).toMatchObject({
+        name: `alpha:${initialPath}`,
+        url: originalUrl,
+        startTimeUnixMs: performance.timeOrigin,
+      });
+      reads.mockClear();
+
+      const beta = await startVisits("beta", {
+        azureMonitor,
+        storage: { namePrefix: "visit-beta-" },
+        pageView: { autoTrackPageVisitTime: true },
+      });
+      expect(visitKeys()).toHaveLength(2);
+      const betaKey = visitKeys().find((key) => key !== alphaKey)!;
+      expect(betaKey).toContain("visit-beta-");
+      expect(reads).toHaveBeenCalledExactlyOnceWith(betaKey);
+      expect(storage.getItem(alphaKey)).toBe(alphaSaved);
+      expect(JSON.parse(storage.getItem(betaKey)!)).toMatchObject({
+        name: `beta:${initialPath}`,
+        url: originalUrl,
+        startTimeUnixMs: performance.timeOrigin,
+      });
+      expect(alpha.visits()).toEqual([]);
+      expect(beta.visits()).toEqual([]);
+
+      now = performance.timeOrigin + 5_000;
+      history.pushState(null, "", "/visit-persisted-one");
+      for (const [name, instance, key] of [
+        ["alpha", alpha, alphaKey],
+        ["beta", beta, betaKey],
+      ] as const) {
+        const initial = instance.records.find(
+          (record) => record.eventName === "browser.page_view",
+        )!;
+        expect(instance.visits()).toMatchObject([
+          {
+            spanContext: { traceId: initial.attributes["browser.page_view.id"] },
+            attributes: {
+              "browser.page_view.id": initial.attributes["browser.page_view.id"],
+              "browser.page_view.name": `${name}:${initialPath}`,
+              "url.full": originalUrl,
+              "browser.page_visit.duration": 5_000,
+            },
+          },
+        ]);
+        expect(JSON.parse(storage.getItem(key)!)).toMatchObject({
+          name: `${name}:/visit-persisted-one`,
+          url: new URL("/visit-persisted-one", originalUrl).href,
+          startTimeUnixMs: now,
+        });
+      }
+
+      const alphaCurrent = storage.getItem(alphaKey);
+      reads.mockClear();
+      await beta.handle.shutdown();
+      expect(reads).toHaveBeenCalledExactlyOnceWith(betaKey);
+      expect(beta.visits()).toHaveLength(1);
+      expect(storage.getItem(betaKey)).toBeNull();
+      expect(storage.getItem(alphaKey)).toBe(alphaCurrent);
+
+      now = performance.timeOrigin + 8_000;
+      history.pushState(null, "", "/visit-persisted-two");
+      expect(alpha.visits()).toHaveLength(2);
+      expect(alpha.visits()[1].attributes).toMatchObject({
+        "browser.page_view.name": "alpha:/visit-persisted-one",
+        "url.full": new URL("/visit-persisted-one", originalUrl).href,
+        "browser.page_visit.duration": 3_000,
+      });
+      expect(beta.visits()).toHaveLength(1);
+      await alpha.handle.shutdown();
+      expect(alpha.visits()).toHaveLength(2);
+      expect(visitKeys()).toEqual([]);
+    },
+  );
+
+  it.each([undefined, ""])(
+    "keeps async destinations in memory without a nonempty namePrefix (%s)",
+    async (namePrefix) => {
+      const access = vi.spyOn(window, "sessionStorage", "get");
+      const initialPath = location.pathname;
+      const instance = await startVisits("async", {
+        azureMonitor: { connectionString: new Promise<string>(() => {}) },
+        ...(namePrefix === undefined ? {} : { storage: { namePrefix } }),
+        pageView: { autoTrackPageVisitTime: true },
+      });
+      expect(instance.visits()).toEqual([]);
+
+      now = performance.timeOrigin + 5_000;
+      history.pushState(null, "", "/visit-async-one");
+      now = performance.timeOrigin + 8_000;
+      history.pushState(null, "", "/visit-async-two");
+      await instance.handle.forceFlush();
+      await instance.handle.shutdown();
+
+      expect(instance.visits()).toMatchObject([
+        {
+          attributes: {
+            "browser.page_view.name": `async:${initialPath}`,
+            "url.full": originalUrl,
+            "browser.page_visit.duration": 5_000,
+          },
+        },
+        {
+          attributes: {
+            "browser.page_view.name": "async:/visit-async-one",
+            "url.full": new URL("/visit-async-one", originalUrl).href,
+            "browser.page_visit.duration": 3_000,
+          },
+        },
+      ]);
+      expect(access).not.toHaveBeenCalled();
+      expect(visitKeys()).toEqual([]);
+    },
+  );
+
+  it("drops the unfinished visit on shutdown and ignores subsequent navigation", async () => {
+    const instance = await startVisits("shutdown", {
+      storage: { namePrefix: "visit-shutdown-" },
+      pageView: { autoTrackPageVisitTime: true },
+    });
+    now = performance.timeOrigin + 5_000;
+    history.pushState(null, "", "/visit-before-shutdown");
+    expect(instance.visits()).toHaveLength(1);
+    expect(visitKeys()).toHaveLength(1);
+
+    now = performance.timeOrigin + 20_000;
+    const emitted = instance.records.length;
+    await instance.handle.shutdown();
+    await instance.handle.shutdown();
+    expect(instance.records).toHaveLength(emitted);
+    expect(instance.visits()).toHaveLength(1);
+    expect(visitKeys()).toEqual([]);
+
+    history.pushState(null, "", "/visit-after-shutdown");
+    window.dispatchEvent(new PageTransitionEvent("pagehide"));
+    expect(instance.records).toHaveLength(emitted);
+    expect(visitKeys()).toEqual([]);
+  });
 });

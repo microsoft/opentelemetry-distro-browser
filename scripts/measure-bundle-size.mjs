@@ -18,9 +18,9 @@ const packageName = packageJson.name;
 
 export const entryPointBudgets = {
   ".": {
-    rawBytes: 130.5 * 1024,
-    gzipBytes: 41.25 * 1024,
-    brotliBytes: 36.5 * 1024,
+    rawBytes: 133 * 1024,
+    gzipBytes: 42 * 1024,
+    brotliBytes: 37.25 * 1024,
   },
   "./instrumentations": {
     rawBytes: 64 * 1024,
@@ -38,9 +38,9 @@ export const entryPointBudgets = {
 
 // The SDK browser bundle also carries every instrumentation, because CDN users cannot add them later.
 const sdkBrowserBundleBudget = {
-  rawBytes: 171.5 * 1024,
-  gzipBytes: 53 * 1024,
-  brotliBytes: 46.25 * 1024,
+  rawBytes: 174 * 1024,
+  gzipBytes: 53.75 * 1024,
+  brotliBytes: 47 * 1024,
 };
 const instrumentationsBrowserBundleBudget = {
   rawBytes: 63 * 1024,

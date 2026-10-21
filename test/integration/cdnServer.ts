@@ -48,6 +48,11 @@ export default async function setup(project: TestProject): Promise<() => Promise
   const pageServer = createServer(async (request, response) => {
     try {
       const url = new URL(request.url ?? "/", "http://localhost");
+      const pageVisit = /^\/page-visit\/(first|second|spa)\.html$/.test(url.pathname);
+      if (request.method === "GET" && pageVisit) {
+        await writePageVisitPage(response, cdnOrigin, url);
+        return;
+      }
       if (request.method !== "GET" || url.pathname !== "/snippet.html") {
         response.writeHead(404).end();
         return;
@@ -62,6 +67,102 @@ export default async function setup(project: TestProject): Promise<() => Promise
   return async () => {
     await Promise.all([close(cdnServer), close(pageServer)]);
   };
+}
+
+/** Plain documents load the emitted IIFE directly, without Vite or source imports. */
+async function writePageVisitPage(
+  response: ServerResponse,
+  cdnOrigin: string,
+  url: URL,
+): Promise<void> {
+  const parameters = url.searchParams;
+  const ingestionEndpoint = required(parameters, "ingestionEndpoint");
+  const namePrefix = required(parameters, "namePrefix");
+  const artifact = parameters.get("artifact") === "@js" ? "@js" : "@min.js";
+  const spa = url.pathname.endsWith("/spa.html");
+  const pageName = spa
+    ? "SPA start"
+    : url.pathname.endsWith("/first.html")
+      ? "First document"
+      : "Second document";
+  const { version } = JSON.parse(await readFile(resolve(root, "package.json"), "utf8")) as {
+    version: string;
+  };
+  const manifest = JSON.parse(
+    await readFile(
+      resolve(cdnDirectory, `opentelemetry-browser.${version}.integrity.json`),
+      "utf8",
+    ),
+  ) as { ext: Record<string, { file: string }> };
+  const options = {
+    azureMonitor: {
+      connectionString:
+        "InstrumentationKey=00000000-0000-0000-0000-000000000000;" +
+        `IngestionEndpoint=${ingestionEndpoint}`,
+    },
+    instrumentations: [],
+    session: { enabled: false },
+    userContext: { enabled: false },
+    storage: { namePrefix },
+    pageView: {
+      ...(parameters.get("autoTrackPageVisitTime") === "true" && {
+        autoTrackPageVisitTime: true,
+      }),
+      softNavigationSettleTimeoutMs: 250,
+    },
+  };
+  const application = `(async function () {
+  const originalFetch = globalThis.fetch.bind(globalThis);
+  globalThis.fetch = (url, init) => url === ${JSON.stringify(SDK_STATS_ENDPOINT)}
+    ? Promise.resolve(new Response(null)) : originalFetch(url, init);
+  const observedPages = new Set();
+  const options = ${JSON.stringify(options).replaceAll("<", "\\u003c")};
+  options.pageView.applyCustomLogRecordData = (record) => {
+    observedPages.add(record.attributes["browser.page_view.name"]);
+  };
+  async function waitForPage(name) {
+    const deadline = Date.now() + 10000;
+    while (!observedPages.has(name)) {
+      if (Date.now() >= deadline) throw new Error("Page view did not settle: " + name);
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+  }
+  const telemetry = await window.Microsoft.OpenTelemetry.useMicrosoftOpenTelemetry(options);
+  await waitForPage(${JSON.stringify(pageName)});
+  await telemetry.forceFlush();
+  if (${spa}) {
+    for (const [hash, name] of [["products", "SPA products"], ["checkout", "SPA checkout"]]) {
+      const route = new URL(location.href);
+      route.hash = hash;
+      history.pushState(null, "", route.href);
+      // Routers update titles after changing the URL, before the page view settles.
+      document.title = name;
+      await waitForPage(name);
+      await telemetry.forceFlush();
+    }
+  }
+  document.body.dataset.ready = "true";
+  document.body.dataset.state = "ready";
+})().catch((error) => {
+  document.body.dataset.state = "failed: " + error.message;
+});`;
+
+  response.writeHead(200, {
+    "content-type": "text/html; charset=utf-8",
+    "cache-control": "no-store",
+  });
+  response.end(`<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>${pageName}</title>
+    <script src="${cdnOrigin}/${manifest.ext[artifact].file}" crossorigin="anonymous"></script>
+  </head>
+  <body>
+    <script>${application}</script>
+  </body>
+</html>
+`);
 }
 
 async function writeSnippetPage(

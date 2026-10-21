@@ -16,6 +16,7 @@ import { beginUnloading, endUnloading } from "./exporter/common.js";
 import type { AzureMonitorLogRecordExporter } from "./exporter/log.js";
 import type { AzureMonitorSpanExporter } from "./exporter/trace.js";
 import { createAzureMonitorProcessors } from "./exporter/createAzureMonitorProcessors.js";
+import { parseConnectionString } from "./exporter/connectionStringParser.js";
 import { PageViewInstrumentation } from "./instrumentation/pageView/index.js";
 import { PageViewCorrelation } from "./instrumentation/pageView/pageViewCorrelation.js";
 import {
@@ -68,9 +69,37 @@ function createOwnedInstrumentations(
   const owned: PageViewInstrumentation[] = [];
   const pageView = options.pageView ?? {};
   if (pageView.enabled !== false) {
+    let visitStorageKey: string | undefined;
+    if (pageView.autoTrackPageVisitTime) {
+      const destination =
+        typeof options.azureMonitor?.connectionString === "string"
+          ? parseConnectionString(options.azureMonitor.connectionString)
+          : undefined;
+      const namespace = JSON.stringify([
+        options.storage?.namePrefix ?? "",
+        destination?.instrumentationKey,
+        destination?.ingestionEndpoint,
+      ]);
+      const slots = (getSharedRegistry().pageVisitSlots ??= new Map<string, number>());
+      const slot = slots.get(namespace) ?? 0;
+      slots.set(namespace, slot + 1);
+      visitStorageKey = `otel.pageVisit.${namespace}.${slot}`;
+    }
     owned.push(
       new PageViewInstrumentation(
-        { ...pageView, enabled: false, sharedOperation },
+        {
+          ...pageView,
+          enabled: false,
+          sharedOperation,
+          visitStorageKey,
+          visitStorage:
+            options.storage?.enabled === false ||
+            (options.azureMonitor &&
+              typeof options.azureMonitor.connectionString !== "string" &&
+              !options.storage?.namePrefix)
+              ? null
+              : undefined,
+        },
         options.traces?.contextManager?.active() ?? context.active(),
         (traceId) => isTraceSampled(traceId, samplingPercentage()),
       ),

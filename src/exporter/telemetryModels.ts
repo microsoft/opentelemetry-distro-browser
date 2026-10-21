@@ -81,6 +81,9 @@ export interface MetricData extends EnvelopeData {
     readonly name: string;
     readonly kind: 0;
     readonly value: number;
+    readonly count?: number;
+    readonly min?: number;
+    readonly max?: number;
   }[];
 }
 

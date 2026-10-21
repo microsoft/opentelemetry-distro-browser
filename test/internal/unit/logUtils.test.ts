@@ -357,6 +357,150 @@ describe("Azure Monitor log envelope mapping", () => {
     );
   });
 
+  it.each([0, 12_345.5])(
+    "maps a page visit of %s milliseconds to a separate PageVisitTime metric",
+    (duration) => {
+      const previousSpanContext = {
+        ...spanContext,
+        traceId: "11111111111111111111111111111111",
+        spanId: "2222222222222222",
+      };
+      const record = makeLog({
+        eventName: "browser.page_visit",
+        spanContext: previousSpanContext,
+        body: "Current page",
+        attributes: {
+          "browser.page_visit.duration": duration,
+          "browser.page_view.name": "Previous page",
+          "browser.page_view.id": "previous-page-id",
+          "url.full": "https://example.test/previous?token=REDACTED",
+          "session.id": "visit-session",
+          "enduser.pseudo.id": "anonymous-user",
+          "enduser.id": "authenticated-user",
+          "user.account.id": "account-1",
+          [AZURE_MONITOR_SAMPLE_RATE]: 25,
+          custom: "kept",
+          itemCount: 3,
+        },
+      });
+      const originalAttributes = { ...record.attributes };
+      const envelopes = logToEnvelopes(record, instrumentationKey);
+
+      expect(envelopes).toHaveLength(1);
+      const [envelope] = envelopes;
+      expect(envelope.name).toBe("Microsoft.ApplicationInsights.Metric");
+      expect(envelope.iKey).toBe(instrumentationKey);
+      expect(envelope.sampleRate).toBe(25);
+      expect(envelope.tags).toMatchObject({
+        "ai.operation.id": previousSpanContext.traceId,
+        "ai.operation.parentId": previousSpanContext.spanId,
+        "ai.session.id": "visit-session",
+        "ai.user.id": "anonymous-user",
+        "ai.user.authUserId": "authenticated-user",
+        "ai.user.accountId": "account-1",
+        "ai.cloud.role": "browser-store",
+      });
+      expect(envelope.data).toEqual({
+        baseType: "MetricData",
+        baseData: {
+          ver: 2,
+          metrics: [
+            {
+              name: "PageVisitTime",
+              kind: 0,
+              value: duration,
+              count: 1,
+              min: duration,
+              max: duration,
+            },
+          ],
+          properties: {
+            PageName: "Previous page",
+            PageUrl: "https://example.test/previous?token=REDACTED",
+            custom: "kept",
+          },
+          measurements: { itemCount: 3 },
+        },
+      });
+      expect(record.attributes).toEqual(originalAttributes);
+    },
+  );
+
+  it.each([undefined, "", 0, false, ["https://example.test/previous"]])(
+    "omits a page visit PageUrl for an absent, empty, or malformed URL (%j)",
+    (url) => {
+      const envelope = logToEnvelope(
+        makeLog({
+          eventName: "browser.page_visit",
+          attributes: {
+            "browser.page_visit.duration": 100,
+            "browser.page_view.name": "Previous page",
+            "url.full": url,
+          },
+        }),
+        instrumentationKey,
+      );
+
+      expect(envelope.data.baseType).toBe("MetricData");
+      expect(envelope.data.baseData.properties).toEqual({ PageName: "Previous page" });
+      expect(envelope.data.baseData.measurements).toBeUndefined();
+    },
+  );
+
+  it.each([undefined, -1, NaN, Infinity, -Infinity, "100", false, [100]])(
+    "falls back to a custom event for malformed page visit duration %j",
+    (duration) => {
+      const envelope = logToEnvelope(
+        makeLog({
+          eventName: "browser.page_visit",
+          attributes: {
+            "browser.page_visit.duration": duration,
+            "browser.page_view.name": "Previous page",
+            "browser.page_view.id": "previous-page-id",
+            "url.full": "https://example.test/previous",
+            custom: "kept",
+            itemCount: 3,
+          },
+        }),
+        instrumentationKey,
+      );
+
+      expect(envelope.name).toBe("Microsoft.ApplicationInsights.Event");
+      expect(envelope.data).toEqual({
+        baseType: "EventData",
+        baseData: {
+          ver: 2,
+          name: "browser.page_visit",
+          properties: { custom: "kept" },
+          measurements: { itemCount: 3 },
+        },
+      });
+    },
+  );
+
+  it("preserves page visit attributes on unrelated custom events", () => {
+    const envelope = logToEnvelope(
+      makeLog({
+        eventName: "custom.event",
+        attributes: {
+          "browser.page_visit.duration": 100,
+          "browser.page_view.name": "Previous page",
+          "browser.page_view.id": "previous-page-id",
+          "url.full": "https://example.test/previous",
+        },
+      }),
+      instrumentationKey,
+    );
+
+    expect(envelope.data.baseType).toBe("EventData");
+    expect(envelope.data.baseData.measurements).toEqual({ "browser.page_visit.duration": 100 });
+    expect(envelope.data.baseData.properties).toEqual({
+      "browser.page_view.name": "Previous page",
+      "browser.page_view.id": "previous-page-id",
+      "url.full": "https://example.test/previous",
+    });
+  });
+
   it("maps exception semantic attributes and severity", () => {
     const envelope = logToEnvelope(
       makeLog({

@@ -21,6 +21,7 @@ interface SharedRegistry {
   unloadSubscribers?: Set<() => void>;
   removeUnloadListeners?: () => void;
   browserPatches?: BrowserPatchState;
+  pageVisitSlots?: Map<string, number>;
   pending?: { signal: "trace" | "logs"; rollback: () => void }[];
 }
 
