@@ -11,7 +11,6 @@ import { createKeyValueStorage } from "./storage/keyValueStorage.js";
 import { createSessionBufferStorage, sessionBufferStorage } from "./exporter/sessionBuffer.js";
 import { createCookieUserContext } from "./user/createCookieUserContext.js";
 import { createCookieManager } from "./storage/cookieManager.js";
-import { createLocalStorageKeyValueStorage } from "./storage/keyValueStorage.js";
 import type { LogRecordProcessor } from "@opentelemetry/sdk-logs";
 import type { SpanProcessor } from "@opentelemetry/sdk-trace-base";
 import { beginUnloading, endUnloading } from "./exporter/common.js";
@@ -196,7 +195,7 @@ export async function useMicrosoftOpenTelemetry(
   const cookies = createCookieManager(options.cookieCfg);
   const sessionStorage = storageEnabled
     ? createKeyValueStorage(
-      "localStorage",
+        "localStorage",
         "Session storage unavailable; using an in-memory session.",
         namePrefix,
       )
