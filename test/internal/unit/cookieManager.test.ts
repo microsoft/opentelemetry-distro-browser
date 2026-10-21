@@ -56,8 +56,10 @@ it("formats session and persistent cookies and deletes the configured domain/pat
   expect(delCookie.mock.calls.at(-1)?.[1]).toContain("path=/other");
 });
 
-it("uses the configured domain and path for actual cookie deletion", () => {
-  const manager = createCookieManager({ domain: location.hostname, path: "/" });
+it("uses the configured path for actual host-only cookie deletion", () => {
+  // Domain=localhost is not portable across browser engines. Explicit domain formatting and
+  // matching deletion scope are covered by the hook-based test above.
+  const manager = createCookieManager({ path: "/" });
   manager.set("otel-cookie-manager-test", "identity");
   expect(manager.get("otel-cookie-manager-test")).toBe("identity");
   expect(manager.purge("otel-cookie-manager-test")).toBe(true);
