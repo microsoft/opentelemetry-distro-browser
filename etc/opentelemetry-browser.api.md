@@ -81,6 +81,7 @@ export interface MicrosoftOpenTelemetryBrowser {
     readonly configSync?: MicrosoftOpenTelemetryBrowserConfigurationSync;
     forceFlush(): Promise<void>;
     readonly instrumentations: MicrosoftOpenTelemetryBrowserInstrumentations;
+    getCookieMgr(): MicrosoftOpenTelemetryBrowserCookieManager;
     shutdown(): Promise<void>;
     updateCfg(patch: MicrosoftOpenTelemetryBrowserConfigurationUpdate, mergeExisting?: boolean): Promise<MicrosoftOpenTelemetryBrowserConfigurationUpdateResult>;
     readonly userContext: MicrosoftOpenTelemetryBrowserUserContext;
@@ -150,12 +151,36 @@ export interface MicrosoftOpenTelemetryBrowserInstrumentations {
 }
 
 // @public
+export interface MicrosoftOpenTelemetryBrowserCookieConfig {
+    blockedCookies?: readonly string[];
+    delCookie?: (name: string, value: string) => void;
+    disableCookieDefer?: boolean;
+    domain?: string;
+    enabled?: boolean;
+    getCookie?: (name: string) => string;
+    ignoreCookies?: readonly string[];
+    path?: string;
+    setCookie?: (name: string, value: string) => void;
+}
+
+// @public
+export interface MicrosoftOpenTelemetryBrowserCookieManager {
+    del(name: string, path?: string): boolean;
+    get(name: string): string;
+    isEnabled(): boolean;
+    purge(name: string, path?: string): boolean;
+    set(name: string, value: string, maxAgeSec?: number, domain?: string, path?: string): boolean;
+    setEnabled(enabled: boolean): void;
+}
+
+// @public
 export interface MicrosoftOpenTelemetryBrowserOptions {
     azureMonitor?: AzureMonitorOptions<string | Promise<string>>;
     expCfg?: MicrosoftOpenTelemetryBrowserExceptionOptions;
     extensionConfig?: {
         AppInsightsCfgSyncPlugin?: MicrosoftOpenTelemetryBrowserConfigurationSyncOptions;
     };
+    cookieCfg?: MicrosoftOpenTelemetryBrowserCookieConfig;
     instrumentations?: readonly BrowserInstrumentation[];
     logRecordProcessors?: LogRecordProcessor[];
     pageView?: PageViewInstrumentationConfig;
@@ -193,7 +218,7 @@ export interface MicrosoftOpenTelemetryBrowserTraceOptions {
 // @public
 export interface MicrosoftOpenTelemetryBrowserUserContext {
     clearAuthenticatedUserContext(): void;
-    setAuthenticatedUserContext(userId: string, accountId?: string): void;
+    setAuthenticatedUserContext(userId: string, accountId?: string, storeInCookie?: boolean): void;
     setEnabled(enabled: boolean): void;
 }
 

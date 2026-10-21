@@ -92,6 +92,13 @@ false` blocks SDK-managed storage access, including later identity-control calls
   the JavaScript distribution. Attributes that log record processors add in `onEmit` now reach Azure
   Monitor when `samplingPercentage` is set. Document processors as the replacement for Application
   Insights telemetry initializers and `getPlugin`.
+- Default to Application Insights-aligned cookie-first persistence: one-year anonymous identity
+  cookies, session cookies refreshed at most every 60 seconds on activity, and localStorage session
+  backup on unload/shutdown with restoration when the cookie is missing. Authenticated identity is
+  memory-only unless the third `setAuthenticatedUserContext` argument is `true`, opting into a
+  separate browser-session cookie.
+- Cookie operations defer by default while disabled; re-enabling
+  replays the latest formatted operation per name without recalculating its expiry.
 
 ## 0.1.0-beta.1 - 2026-10-15
 
