@@ -53,8 +53,11 @@ beforeEach(() => {
   clearCookies();
   previousSession = localStorage.getItem(storageKey);
   localStorage.removeItem(storageKey);
+  // Real browser cookie expiry is not controlled by fake timers. Keep generated Expires
+  // dates out of the past instead of starting the fake clock in January 1970.
+  const now = Date.now();
   vi.useFakeTimers();
-  vi.setSystemTime(1_000_000);
+  vi.setSystemTime(now);
   vi.mocked(startTelemetryInstance).mockClear();
 });
 
@@ -288,7 +291,6 @@ it.each([30 * 60_000 - 1, 30 * 60_000, 30 * 60_000 + 1])(
 it.each([24 * 60 * 60_000 - 1, 24 * 60 * 60_000, 24 * 60 * 60_000 + 1])(
   "enforces the default maximum lifetime when restoring recent activity (%i ms)",
   async (age) => {
-    vi.setSystemTime(age + 1_000_000);
     localStorage.setItem(
       storageKey,
       JSON.stringify({
@@ -629,7 +631,6 @@ it.each(["span", "log"])(
 it.each([1799_999, 1800_000])(
   "uses creation time to conservatively expire legacy sessions without activity timestamps (%i ms)",
   async (age) => {
-    vi.setSystemTime(10_000_000);
     localStorage.setItem(
       storageKey,
       JSON.stringify({
@@ -833,10 +834,26 @@ it.each([
   { id: "", startTimestamp: 1000 },
   { id: "invalid", startTimestamp: -1 },
   { id: "invalid", startTimestamp: null },
-  { id: "invalid", startTimestamp: 1_000_001 },
   { id: "invalid", startTimestamp: 1_000_000, lastActivityTimestamp: 999_999 },
 ])("replaces an invalid persisted session (%j) before emitting telemetry", async (stored) => {
   localStorage.setItem(storageKey, JSON.stringify(stored));
+  const warn = vi.spyOn(diag, "warn").mockImplementation(() => {});
+  const { emit } = await initialize();
+  const id = emit();
+  expect(id).toMatch(/^[0-9a-f]{32}$/);
+  expect(readSessionCookie()).toEqual({
+    id,
+    startTimestamp: Date.now(),
+    lastActivityTimestamp: Date.now(),
+  });
+  expect(warn).toHaveBeenCalledExactlyOnceWith("Invalid stored session; creating a new session.");
+});
+
+it("rejects a persisted session whose creation timestamp is in the future", async () => {
+  localStorage.setItem(
+    storageKey,
+    JSON.stringify({ id: "future-session", startTimestamp: Date.now() + 1 }),
+  );
   const warn = vi.spyOn(diag, "warn").mockImplementation(() => {});
   const { emit } = await initialize();
   const id = emit();
