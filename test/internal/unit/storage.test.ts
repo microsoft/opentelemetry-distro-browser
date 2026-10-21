@@ -120,7 +120,7 @@ it.each(["string", "promise"] as const)(
             : Promise.resolve(AZURE_MONITOR_CONNECTION_STRING),
       },
       cookieCfg: { enabled: false, disableCookieDefer: true },
-    session: { persist: true, inactivityTimeout: 0.001 },
+      session: { persist: true, inactivityTimeout: 0.001 },
       userContext: { enabled: true },
     });
     const first = emit()["session.id"];
@@ -132,14 +132,14 @@ it.each(["string", "promise"] as const)(
     handle.userContext.clearAuthenticatedUserContext();
     expect(emit()["user.id"]).toBeUndefined();
     expect(cookieWrite).not.toHaveBeenCalled();
-  handle.userContext.setEnabled(false);
+    handle.userContext.setEnabled(false);
     // Explicit identity removal uses purge, which intentionally bypasses disabled cookies.
-  expect(cookieWrite.mock.calls).toEqual([
-    ["opentelemetry-user=; expires=Thu, 01 Jan 1970 00:00:01 GMT; max-age=0; path=/"],
-    ["opentelemetry-auth-user=; expires=Thu, 01 Jan 1970 00:00:01 GMT; max-age=0; path=/"],
-  ]);
-  cookieWrite.mockClear();
-  clock.mockReturnValue(now + 1000);
+    expect(cookieWrite.mock.calls).toEqual([
+      ["opentelemetry-user=; expires=Thu, 01 Jan 1970 00:00:01 GMT; max-age=0; path=/"],
+      ["opentelemetry-auth-user=; expires=Thu, 01 Jan 1970 00:00:01 GMT; max-age=0; path=/"],
+    ]);
+    cookieWrite.mockClear();
+    clock.mockReturnValue(now + 1000);
     expect(emit()["session.id"]).not.toBe(first);
     await handle.forceFlush().catch(() => {});
     expect(fetch).toHaveBeenCalled();
