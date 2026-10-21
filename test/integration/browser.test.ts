@@ -114,6 +114,9 @@ it.each(["index.js", "index.min.js"])(
     } finally {
       await telemetry.shutdown();
     }
+  },
+);
+
 async function initializeCookieConsumer(
   file: string,
   options: MicrosoftOpenTelemetryBrowserOptions,

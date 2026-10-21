@@ -21,7 +21,7 @@ const keys = ["opentelemetry-session", "opentelemetry-user"];
 const saved = new Map<string, string | null>();
 
 function clearCookies() {
-  for (const prefix of ["", "app-a-", "app-b-"]) {
+  for (const prefix of ["", "app-a-", "app-b-", "shop-"]) {
     for (const key of [...keys, "opentelemetry-auth-user"]) {
       document.cookie = `${prefix}${key}=; max-age=0; path=/`;
     }
