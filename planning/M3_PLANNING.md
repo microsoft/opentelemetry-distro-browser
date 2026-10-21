@@ -44,7 +44,8 @@ release are owned by [M4](M4_PLANNING.md).
 | In-page debug tooling | An optional package that shows emitted and sent telemetry in the page during development, and optionally records SDK timings as `performance` marks and measures. | `applicationinsights-debugplugin-js`, `chrome-debug-extension`, `applicationinsights-perfmarkmeasure-js` | Not started |
 
 React Native, the 1DS channel and the Application Insights Light SKU are out of scope. Legacy
-Application Insights `track*` APIs remain out of the core package; [M4](M4_PLANNING.md) owns
+Application Insights `track*` APIs are not supported, in the core package or a separate package,
+the same as the other Microsoft OpenTelemetry distributions; [M4](M4_PLANNING.md) owns
 coexistence with and migration from ApplicationInsights-JS. Sending to several destinations, which
 ApplicationInsights-JS does with `tee-channel-js`, is already covered by configuring more than one
 span or log record processor.

@@ -30,16 +30,17 @@ Status: not started.
 ## Migration from ApplicationInsights-JS
 
 GA means existing Application Insights JavaScript customers can move to the distribution without
-losing data or experiences. Compared against ApplicationInsights-JS 3.4.5.
+losing data or experiences. Compared against ApplicationInsights-JS 3.4.5. The distribution does not
+provide `track*` APIs or a `track*` compatibility package, the same as the other Microsoft
+OpenTelemetry distributions; applications move to the OpenTelemetry APIs.
 
 | Item | M4 outcome | Status |
 | --- | --- | --- |
-| Configuration mapping | Map every `IConfig` and `IConfiguration` option to its distribution option, or document why it is not supported. | Not started |
+| Configuration mapping | Document the distribution option, or the OpenTelemetry way to get the same result, for the ApplicationInsights-JS settings most customers use. This is not a one-to-one mapping of every option: start small and add settings only when customers need them. | Not started |
 | API migration guide | Show the OpenTelemetry replacement for each `track*` call, `setAuthenticatedUserContext`, `flush`, `unload`, `addTelemetryInitializer` and `getPlugin`. `trackMetric` has no replacement until metrics export ships, and there is no manual page-view timing API equivalent to `startTrackPage` and `stopTrackPage`. | Not started |
 | User and session continuity | Reuse the existing `ai_user` and `ai_session` values on first load so returning visitors keep their user and session IDs and the Users and Sessions counts do not reset at cutover. | Not started |
 | Coexistence on one page | Run alongside ApplicationInsights-JS 2.x and 3.x, loaded through the snippet or npm, without duplicate `fetch` and XHR collection, double `traceparent` injection, duplicate page views or broken correlation. | Not started |
 | Snippet conversion | Convert an ApplicationInsights-JS snippet configuration to the distribution loader's JSON settings. | Not started |
 | Side-by-side data comparison | Send both SDKs from one application to one resource, compare `pageViews`, `dependencies`, `exceptions`, `customEvents` and `browserTimings` field by field, and publish the known differences. | Not started |
-| `track*` compatibility package | Decide whether an optional package provides `track*` methods over the OpenTelemetry APIs. The core package stays free of them. | Not started |
 | Frameworks and Click Analytics | Migration paths for the React and Angular plugins and Click Analytics, keeping Click Analytics event names and fields. Depends on the M3 packages. | Not started |
 | Migration documentation | A migration guide on Microsoft Learn and a support statement for ApplicationInsights-JS. | Not started |
