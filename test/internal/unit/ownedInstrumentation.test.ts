@@ -42,6 +42,12 @@ const storageKey = "opentelemetry-session";
 let previousSession: string | null;
 let sdk: MicrosoftOpenTelemetryBrowser | undefined;
 
+function clearIdentityCookies(): void {
+  for (const name of ["opentelemetry-session", "opentelemetry-user", "opentelemetry-auth-user"]) {
+    document.cookie = `${name}=; max-age=0; path=/`;
+  }
+}
+
 /** Resolves after the browser has painted and the main thread has gone idle. */
 async function settle(): Promise<void> {
   await new Promise<void>((resolve) => {
@@ -58,6 +64,7 @@ function pageViewCount(processor: RecordingProcessor): number {
 }
 
 beforeEach(() => {
+  clearIdentityCookies();
   if (location.href !== originalUrl) {
     history.replaceState(null, "", originalUrl);
   }
@@ -73,6 +80,7 @@ afterEach(async () => {
   context.disable();
   diag.disable();
   vi.restoreAllMocks();
+  clearIdentityCookies();
   if (location.href !== originalUrl) {
     history.replaceState(null, "", originalUrl);
   }
