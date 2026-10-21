@@ -7,9 +7,11 @@ import {
   BrowserContextSpanProcessor,
 } from "./context/contextProcessors.js";
 import { createSession } from "./session/createSession.js";
-import { createUserContext } from "./user/createUserContext.js";
 import { createKeyValueStorage } from "./storage/keyValueStorage.js";
 import { createSessionBufferStorage, sessionBufferStorage } from "./exporter/sessionBuffer.js";
+import { createCookieUserContext } from "./user/createCookieUserContext.js";
+import { createCookieManager } from "./storage/cookieManager.js";
+import { createLocalStorageKeyValueStorage } from "./storage/keyValueStorage.js";
 import type { LogRecordProcessor } from "@opentelemetry/sdk-logs";
 import type { SpanProcessor } from "@opentelemetry/sdk-trace-base";
 import { beginUnloading, endUnloading } from "./exporter/common.js";
@@ -120,33 +122,34 @@ export async function useMicrosoftOpenTelemetry(
   if (typeof storageEnabled !== "boolean" || typeof namePrefix !== "string") {
     throw new TypeError("storage.enabled must be a boolean and storage.namePrefix a string.");
   }
+  if (!/^[!#$%&'*+\-.^_`|~0-9A-Za-z]*$/.test(namePrefix)) {
+    throw new TypeError("storage.namePrefix must contain only cookie-name token characters.");
+  }
+  const cookies = createCookieManager(options.cookieCfg);
+  const sessionStorage = storageEnabled
+    ? createKeyValueStorage(
+      "localStorage",
+        "Session storage unavailable; using an in-memory session.",
+        namePrefix,
+      )
+    : null;
   const session =
     options.session?.enabled !== false
       ? createSession(
           {
-            persist: storageEnabled ? options.session?.persist : false,
+            persist: options.session?.persist,
             inactivityTimeout: options.session?.inactivityTimeout,
             maxDuration: options.session?.maxDuration,
           },
-          createKeyValueStorage(
-            "localStorage",
-            "Session storage unavailable; using an in-memory session.",
-            namePrefix,
-          ),
+          sessionStorage,
+          cookies,
+          `${namePrefix}opentelemetry-session`,
         )
       : undefined;
   getSharedRegistry();
   const readSamplingPercentage = () => configuration.snapshot().samplingPercentage;
   const sampler = new RuntimeSampler(readSamplingPercentage);
-  const userContext = createUserContext(
-    options.userContext?.enabled,
-    createKeyValueStorage(
-      "localStorage",
-      "User storage unavailable; anonymous ID disabled.",
-      namePrefix,
-    ),
-    storageEnabled,
-  );
+  let userContext!: ReturnType<typeof createCookieUserContext>;
   const azureMonitor = options.azureMonitor ? { ...options.azureMonitor } : undefined;
   if (azureMonitor) {
     sessionBufferStorage.set(
@@ -199,7 +202,9 @@ export async function useMicrosoftOpenTelemetry(
     getSessionId: () => (stopping ? null : (session?.getSessionId() ?? null)),
   };
   const contextProvider = {
-    ...userContext.provider,
+    getAnonymousUserId: () => userContext.provider.getAnonymousUserId(),
+    getAuthenticatedUserId: () => userContext.provider.getAuthenticatedUserId(),
+    getAccountId: () => userContext.provider.getAccountId(),
     ...sessionProvider,
     getOperationName: (traceId: string | undefined) =>
       getPageOperation(correlationState.current)
@@ -216,6 +221,7 @@ export async function useMicrosoftOpenTelemetry(
   let releaseInstrumentations: (() => void) | undefined;
   const flushForUnload = (): void => {
     if (stopping || unloadFlushPromise) return;
+    session?.backup();
     beginUnloading();
     pageViewInstrumentation?.settleForUnload();
     const operation = flushProcessors()
@@ -268,7 +274,9 @@ export async function useMicrosoftOpenTelemetry(
           void correlation?.shutdown();
         },
         () => removeUnloadSubscription?.(),
+        () => session?.backup(),
         () => session?.shutdown(),
+        () => cookies.shutdown(),
       ]) {
         try {
           cleanup();
@@ -326,13 +334,6 @@ export async function useMicrosoftOpenTelemetry(
     return shutdownPromise;
   }
 
-  const handle: MicrosoftOpenTelemetryBrowser = {
-    forceFlush,
-    shutdown,
-    userContext: userContext.context,
-    updateCfg: (patch, mergeExisting) => configuration.updateCfg(patch, mergeExisting),
-  };
-
   try {
     if (azureMonitor) {
       const { span, log, stop, startDiagnostics } = createAzureMonitorProcessors(
@@ -354,6 +355,11 @@ export async function useMicrosoftOpenTelemetry(
       }
     }
     const noDestination = !azureMonitor && !spanProcessors && !logRecordProcessors;
+    // Validate destinations before persisting identity. A new user invalidates the previous
+    // user's session backup so deleting cookies cannot silently restore their old session.
+    userContext = createCookieUserContext(options.userContext?.enabled, cookies, namePrefix, () => {
+      session?.discardBackup();
+    });
     await session?.start();
     spanProcessors ??= [];
     logRecordProcessors ??= [];
@@ -415,5 +421,11 @@ export async function useMicrosoftOpenTelemetry(
     throw error;
   }
 
-  return handle;
+  return {
+    forceFlush,
+    shutdown,
+    userContext: userContext.context,
+    getCookieMgr: () => cookies,
+    updateCfg: (patch, mergeExisting) => configuration.updateCfg(patch, mergeExisting),
+  };
 }

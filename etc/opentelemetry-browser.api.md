@@ -72,6 +72,7 @@ export interface BrowserInstrumentation {
 // @public
 export interface MicrosoftOpenTelemetryBrowser {
     forceFlush(): Promise<void>;
+    getCookieMgr(): MicrosoftOpenTelemetryBrowserCookieManager;
     shutdown(): Promise<void>;
     updateCfg(patch: MicrosoftOpenTelemetryBrowserConfigurationUpdate, mergeExisting?: boolean): Promise<MicrosoftOpenTelemetryBrowserConfigurationUpdateResult>;
     readonly userContext: MicrosoftOpenTelemetryBrowserUserContext;
@@ -91,8 +92,32 @@ export interface MicrosoftOpenTelemetryBrowserConfigurationUpdateResult {
 }
 
 // @public
+export interface MicrosoftOpenTelemetryBrowserCookieConfig {
+    blockedCookies?: readonly string[];
+    delCookie?: (name: string, value: string) => void;
+    disableCookieDefer?: boolean;
+    domain?: string;
+    enabled?: boolean;
+    getCookie?: (name: string) => string;
+    ignoreCookies?: readonly string[];
+    path?: string;
+    setCookie?: (name: string, value: string) => void;
+}
+
+// @public
+export interface MicrosoftOpenTelemetryBrowserCookieManager {
+    del(name: string, path?: string): boolean;
+    get(name: string): string;
+    isEnabled(): boolean;
+    purge(name: string, path?: string): boolean;
+    set(name: string, value: string, maxAgeSec?: number, domain?: string, path?: string): boolean;
+    setEnabled(enabled: boolean): void;
+}
+
+// @public
 export interface MicrosoftOpenTelemetryBrowserOptions {
     azureMonitor?: AzureMonitorOptions<string | Promise<string>>;
+    cookieCfg?: MicrosoftOpenTelemetryBrowserCookieConfig;
     instrumentations?: readonly BrowserInstrumentation[];
     logRecordProcessors?: LogRecordProcessor[];
     pageView?: PageViewInstrumentationConfig;
@@ -128,7 +153,7 @@ export interface MicrosoftOpenTelemetryBrowserTraceOptions {
 // @public
 export interface MicrosoftOpenTelemetryBrowserUserContext {
     clearAuthenticatedUserContext(): void;
-    setAuthenticatedUserContext(userId: string, accountId?: string): void;
+    setAuthenticatedUserContext(userId: string, accountId?: string, storeInCookie?: boolean): void;
     setEnabled(enabled: boolean): void;
 }
 
