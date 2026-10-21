@@ -25,6 +25,8 @@ export { AzureMonitorSpanExporter } from "./exporter/trace.js";
 export type {
   BrowserInstrumentation,
   MicrosoftOpenTelemetryBrowser,
+  MicrosoftOpenTelemetryBrowserCookieConfig,
+  MicrosoftOpenTelemetryBrowserCookieManager,
   MicrosoftOpenTelemetryBrowserOptions,
   MicrosoftOpenTelemetryBrowserSessionOptions,
   MicrosoftOpenTelemetryBrowserTraceOptions,

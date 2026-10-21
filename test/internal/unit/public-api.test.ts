@@ -17,6 +17,8 @@ import {
   type MicrosoftOpenTelemetryBrowser,
   type MicrosoftOpenTelemetryBrowserConfigurationUpdate,
   type MicrosoftOpenTelemetryBrowserConfigurationUpdateResult,
+  type MicrosoftOpenTelemetryBrowserCookieConfig,
+  type MicrosoftOpenTelemetryBrowserCookieManager,
   type MicrosoftOpenTelemetryBrowserOptions,
   type MicrosoftOpenTelemetryBrowserSessionOptions,
   type MicrosoftOpenTelemetryBrowserTraceOptions,
@@ -41,6 +43,7 @@ it("exposes distro-owned configuration and lifecycle contracts", () => {
     | "pageView"
     | "session"
     | "storage"
+    | "cookieCfg"
     | "userContext"
     | "traces"
     | "redactQueryParams"
@@ -69,6 +72,12 @@ it("exposes distro-owned configuration and lifecycle contracts", () => {
   expectTypeOf<MicrosoftOpenTelemetryBrowserOptions["storage"]>().toEqualTypeOf<
     { enabled?: boolean; namePrefix?: string } | undefined
   >();
+  expectTypeOf<MicrosoftOpenTelemetryBrowserOptions["cookieCfg"]>().toEqualTypeOf<
+    MicrosoftOpenTelemetryBrowserCookieConfig | undefined
+  >();
+  expectTypeOf<
+    MicrosoftOpenTelemetryBrowser["getCookieMgr"]
+  >().returns.toEqualTypeOf<MicrosoftOpenTelemetryBrowserCookieManager>();
   expectTypeOf<keyof MicrosoftOpenTelemetryBrowserSessionOptions>().toEqualTypeOf<
     "enabled" | "persist" | "inactivityTimeout" | "maxDuration"
   >();

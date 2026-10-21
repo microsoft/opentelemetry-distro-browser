@@ -100,6 +100,7 @@ describe("distribution-owned instrumentation", () => {
     const pushState = history.pushState;
     const pending = useMicrosoftOpenTelemetry({
       session: { enabled: true },
+      userContext: { enabled: false },
       spanProcessors: [],
       logRecordProcessors: processors,
       pageView,
