@@ -61,11 +61,11 @@ in each Node job's check summary and uploads all three files as build artifacts.
 
 Every executable published entry point has absolute minified, gzip and Brotli budgets:
 
-| Entry point          |  Minified |     Gzip |  Brotli |
-| -------------------- | --------: | -------: | ------: |
-| `.`                  | 130.50 kB | 41.25 kB | 36.5 kB |
-| `./instrumentations` |     64 kB |    24 kB |   22 kB |
-| `./snippet`          |   6.25 kB |  2.75 kB |  2.5 kB |
+| Entry point          | Minified |     Gzip |  Brotli |
+| -------------------- | -------: | -------: | ------: |
+| `.`                  |   133 kB | 42.25 kB | 37.5 kB |
+| `./instrumentations` |    64 kB |    24 kB |   22 kB |
+| `./snippet`          |  6.75 kB |     3 kB |  2.5 kB |
 
 The generated JSON and Markdown reports show the measured values, ceilings and result for each
 entry point. During alpha releases, violations are report-only so the baselines can stabilize.
