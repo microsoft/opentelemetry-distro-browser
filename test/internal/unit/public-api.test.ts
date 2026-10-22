@@ -121,7 +121,7 @@ it("exposes distro-owned configuration and lifecycle contracts", () => {
 
 it("exposes only sampling updates on the runtime configuration API", () => {
   expectTypeOf<keyof MicrosoftOpenTelemetryBrowser>().toEqualTypeOf<
-    "updateCfg" | "userContext" | "forceFlush" | "shutdown"
+    "updateCfg" | "userContext" | "forceFlush" | "shutdown" | "getCookieMgr"
   >();
   expectTypeOf<
     keyof MicrosoftOpenTelemetryBrowserConfigurationUpdate
