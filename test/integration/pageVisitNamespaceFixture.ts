@@ -32,6 +32,7 @@ async function start(): Promise<void> {
     `InstrumentationKey=${parameters.get("instrumentationKey") ?? "00000000-0000-0000-0000-000000000000"};` +
     `IngestionEndpoint=${location.origin}/page-visit-namespace-ingestion/${parameters.get("destination") ?? "default"}`;
   const records: RecordedLog[] = [];
+  let pageStart: number | undefined;
   let onPageView: (() => void) | undefined;
   const nextPageView = () =>
     new Promise<void>((resolve) => {
@@ -58,7 +59,12 @@ async function start(): Promise<void> {
             attributes: { ...record.attributes },
             traceId: record.spanContext?.traceId,
           });
-          if (record.eventName === "browser.page_view") onPageView?.();
+          if (record.eventName === "browser.page_view") {
+            // Use the initial page view's captured timestamp, not repeated privacy-rounded
+            // timeOrigin reads, which can differ within one document in WebKit.
+            pageStart ??= record.hrTime[0] * 1_000 + record.hrTime[1] / 1_000_000;
+            onPageView?.();
+          }
         },
         async forceFlush() {},
         async shutdown() {},
@@ -80,7 +86,7 @@ async function start(): Promise<void> {
           .sort()
           .map((key) => [key, sessionStorage.getItem(key)!]),
       ),
-      pageStart: performance.timeOrigin,
+      pageStart: pageStart!,
     }),
     async navigate() {
       const settled = nextPageView();
