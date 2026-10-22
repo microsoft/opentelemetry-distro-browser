@@ -188,7 +188,7 @@ it("exposes distro-owned configuration and lifecycle contracts", () => {
 
 it("exposes sampling, session lifetime and unload beacon runtime updates", () => {
   expectTypeOf<keyof MicrosoftOpenTelemetryBrowser>().toEqualTypeOf<
-    "updateCfg" | "instrumentations" | "userContext" | "forceFlush" | "shutdown" | "configSync"
+    "updateCfg" | "instrumentations" | "userContext" | "forceFlush" | "shutdown" | "configSync" | "getCookieMgr"
   >();
   expectTypeOf<keyof MicrosoftOpenTelemetryBrowserConfigurationUpdate>().toEqualTypeOf<
     | "samplingPercentage"
