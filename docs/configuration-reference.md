@@ -499,15 +499,17 @@ replace a lifetime through either spelling.
 Managed `session.id` fills only an absent value: a non-empty string supplied on the record or
 resource takes precedence. Azure Monitor prefers a valid record-level ID over the resource ID.
 Sessions use the prefixed `opentelemetry-session` cookie as the primary store. Activity refreshes
-the cookie at most once every 60 seconds; new sessions force a write. Cookie lifetime is bounded
-by the remaining maximum duration and inactivity window; `maxDuration: 0` uses a browser-session
-cookie while managed inactivity expiry still applies.
+the cookie at most once every 60 seconds, except a positive startup inactivity window of 60 seconds
+or less persists each distinct activity timestamp. New sessions force a write, and rejected writes
+do not delay a later retry. Cookie lifetime is bounded by the remaining maximum duration and
+inactivity window; `maxDuration: 0` uses a browser-session cookie while managed inactivity expiry
+still applies.
 
 When Web Storage is enabled, the latest session is backed up to localStorage on unload and
 shutdown, not on each activity update. A missing cookie can restore a valid, unexpired backup,
 including when cookies are disabled. A present malformed cookie does not fall back to the backup.
 If neither backend is available, session correlation stays in memory.
-When user context and cookie access are enabled, a missing or invalid anonymous-user cookie
+When user context and anonymous-cookie reads are enabled, a missing or invalid anonymous-user cookie
 invalidates the old session backup before restoration. Clearing user cookies therefore starts a
 new managed session instead of reconnecting it to the previous identity's backup.
 

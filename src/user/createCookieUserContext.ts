@@ -43,25 +43,32 @@ function own(value: object | undefined, key: string): unknown {
     : undefined;
 }
 
-/** Creates cookie-backed identity without reading or writing Web Storage. */
+/**
+ * Creates cookie-backed identity without reading or writing Web Storage.
+ * The caller supplies anonymous-cookie read permission from validated, snapshotted policy.
+ */
 export function createCookieUserContext(
   initialEnabled: boolean | undefined,
   cookies: MicrosoftOpenTelemetryBrowserCookieManager,
   namePrefix = "",
   onNewUser?: () => void,
+  canReadAnonymousCookie = true,
 ): {
   context: MicrosoftOpenTelemetryBrowserUserContext;
   provider: UserContextProvider;
+  shutdown(): void;
 } {
   const anonymousCookie = `${namePrefix}opentelemetry-user`;
   const authenticatedCookie = `${namePrefix}opentelemetry-auth-user`;
   let enabled = initialEnabled !== false;
+  let stopped = false;
   let anonymousIdentity: AnonymousIdentity | undefined;
   let anonymousIdentityEnabled = false;
   let newUserNotified = false;
   let authenticatedUserId: string | undefined;
   let accountId: string | undefined;
   let storeAuthentication = false;
+  let removeAuthentication = false;
 
   function attempt(operation: () => boolean): boolean {
     try {
@@ -72,6 +79,7 @@ export function createCookieUserContext(
   }
 
   function saveAnonymous(): void {
+    if (stopped) return;
     anonymousIdentity ??= {
       anonymousId: generateAnonymousId(),
       acquisitionTimestamp: Date.now(),
@@ -82,7 +90,12 @@ export function createCookieUserContext(
   }
 
   function saveAuthentication(): void {
-    if (!enabled || !storeAuthentication || authenticatedUserId === undefined) return;
+    if (stopped || !enabled) return;
+    if (removeAuthentication) {
+      removeAuthentication = !attempt(() => cookies.del(authenticatedCookie));
+      return;
+    }
+    if (!storeAuthentication || authenticatedUserId === undefined) return;
     if (
       !attempt(() =>
         cookies.set(
@@ -92,7 +105,7 @@ export function createCookieUserContext(
       )
     ) {
       // Do not leave a previous login available for restoration after a failed replacement.
-      attempt(() => cookies.del(authenticatedCookie));
+      if (!stopped) attempt(() => cookies.del(authenticatedCookie));
     }
   }
 
@@ -109,7 +122,14 @@ export function createCookieUserContext(
       anonymousIdentity = { anonymousId: id, acquisitionTimestamp: acquired };
       anonymousIdentityEnabled = true;
     } else {
-      if (enabled && !newUserNotified && onNewUser && attempt(() => cookies.isEnabled())) {
+      if (
+        enabled &&
+        !stopped &&
+        canReadAnonymousCookie &&
+        !newUserNotified &&
+        onNewUser &&
+        attempt(() => cookies.isEnabled())
+      ) {
         newUserNotified = true;
         attempt(() => {
           onNewUser();
@@ -153,18 +173,20 @@ export function createCookieUserContext(
       authenticatedUserId = userId;
       accountId = newAccountId;
       storeAuthentication = storeInCookie === true;
-      if (!enabled) return;
-      if (storeAuthentication) saveAuthentication();
-      else attempt(() => cookies.del(authenticatedCookie));
+      // A memory-only login supersedes any saved login, even when persistence is disabled.
+      removeAuthentication = !storeAuthentication;
+      saveAuthentication();
     },
     clearAuthenticatedUserContext() {
       authenticatedUserId = undefined;
       accountId = undefined;
       storeAuthentication = false;
+      removeAuthentication = false;
       // del, rather than purge, honors the cookie manager's deferred-cleanup policy.
       attempt(() => cookies.del(authenticatedCookie));
     },
     setEnabled(newEnabled) {
+      if (stopped && newEnabled) return;
       enabled = newEnabled;
       if (enabled) {
         try {
@@ -177,7 +199,7 @@ export function createCookieUserContext(
         anonymousIdentityEnabled = false;
         // Purge also cancels deferred writes, even when the physical deletion fails.
         attempt(() => cookies.purge(anonymousCookie));
-        attempt(() => cookies.purge(authenticatedCookie));
+        if (attempt(() => cookies.purge(authenticatedCookie))) removeAuthentication = false;
       }
     },
   };
@@ -186,6 +208,7 @@ export function createCookieUserContext(
     context,
     provider: {
       getAnonymousUserId() {
+        if (stopped) return undefined;
         if (enabled && !anonymousIdentityEnabled && attempt(() => cookies.isEnabled())) {
           try {
             // Recover after runtime cookie enablement without replaying authentication.
@@ -198,6 +221,10 @@ export function createCookieUserContext(
       },
       getAuthenticatedUserId: () => authenticatedUserId,
       getAccountId: () => accountId,
+    },
+    shutdown() {
+      stopped = true;
+      anonymousIdentityEnabled = false;
     },
   };
 }

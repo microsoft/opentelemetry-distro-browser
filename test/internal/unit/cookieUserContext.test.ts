@@ -4,7 +4,9 @@
 import { diag } from "@opentelemetry/api";
 import { afterEach, expect, it, vi } from "vitest";
 import { createCookieManager } from "../../../src/storage/cookieManager.js";
+import { createSession } from "../../../src/session/createSession.js";
 import type { MicrosoftOpenTelemetryBrowserCookieManager } from "../../../src/types.js";
+import { useMicrosoftOpenTelemetry } from "../../../src/useMicrosoftOpenTelemetry.js";
 import { createCookieUserContext } from "../../../src/user/createCookieUserContext.js";
 
 const anonymousCookie = "opentelemetry-user";
@@ -37,6 +39,25 @@ function fakeManager() {
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+});
+
+it("does not restore a previous login after an oversized cookie replacement", () => {
+  const prefix = "oversized-auth-test-";
+  const cookies = createCookieManager();
+  try {
+    const first = createCookieUserContext(true, cookies, prefix);
+    first.context.setAuthenticatedUserContext("previous-user", "previous-account", true);
+    expect(cookies.get(`${prefix}${authenticatedCookie}`)).not.toBe("");
+    const replacement = "雪".repeat(1000);
+    first.context.setAuthenticatedUserContext(replacement, "new-account", true);
+    expect(first.provider.getAuthenticatedUserId()).toBe(replacement);
+    const restored = createCookieUserContext(true, cookies, prefix);
+    expect(restored.provider.getAuthenticatedUserId()).toBeUndefined();
+    expect(restored.provider.getAccountId()).toBeUndefined();
+  } finally {
+    cookies.purge(`${prefix}${anonymousCookie}`);
+    cookies.purge(`${prefix}${authenticatedCookie}`);
+  }
 });
 
 it.each([undefined, true])("creates a year-long anonymous cookie when enabled is %s", (enabled) => {
@@ -178,6 +199,43 @@ it("does not implicitly persist a memory-only login set while context is disable
   context.setAuthenticatedUserContext("user");
   context.setEnabled(true);
   expect(values.has(authenticatedCookie)).toBe(false);
+});
+
+it.each([false, true])(
+  "clears a superseded persisted login on live enable after a disabled memory-only login (deferred: %s)",
+  (deferred) => {
+    const values = new Map([[authenticatedCookie, encode({ authenticatedUserId: "old-user" })]]);
+    const delCookie = vi.fn((name: string) => values.delete(name));
+    const cookies = createCookieManager({
+      enabled: !deferred,
+      getCookie: (name) => values.get(name) ?? "",
+      setCookie: (name, value) => values.set(name, value.split(";")[0]!),
+      delCookie,
+    });
+    const { context, provider } = createCookieUserContext(false, cookies);
+    context.setAuthenticatedUserContext("new-user");
+    expect(delCookie).not.toHaveBeenCalled();
+    expect(values.has(authenticatedCookie)).toBe(true);
+    context.setEnabled(true);
+    cookies.setEnabled(true);
+    expect(values.has(authenticatedCookie)).toBe(false);
+    expect(provider.getAuthenticatedUserId()).toBe("new-user");
+    expect(
+      createCookieUserContext(true, cookies).provider.getAuthenticatedUserId(),
+    ).toBeUndefined();
+    values.set(authenticatedCookie, encode({ authenticatedUserId: "other-user" }));
+    context.setEnabled(true);
+    expect(decode(values.get(authenticatedCookie)!)).toEqual({ authenticatedUserId: "other-user" });
+  },
+);
+
+it("does not delete another handle's login when enabling without an authentication change", () => {
+  const { cookies, values } = fakeManager();
+  const { context } = createCookieUserContext(false, cookies);
+  values.set(authenticatedCookie, encode({ authenticatedUserId: "other-user" }));
+  context.setEnabled(true);
+  expect(decode(values.get(authenticatedCookie)!)).toEqual({ authenticatedUserId: "other-user" });
+  expect(cookies.del).not.toHaveBeenCalled();
 });
 
 it.each([false, true])(
@@ -387,6 +445,94 @@ it("clears persisted authentication after cookie-manager shutdown without resumi
 });
 
 it.each([false, true])(
+  "does not let stale identity controls remove a persisted login after SDK shutdown (newer instance: %s)",
+  async (newerInstance) => {
+    const values = new Map<string, string>();
+    const getCookie = vi.fn((name: string) => values.get(name) ?? "");
+    const setCookie = vi.fn((name: string, value: string) =>
+      values.set(name, value.split(";")[0]!),
+    );
+    const delCookie = vi.fn((name: string) => values.delete(name));
+    const initialize = () =>
+      useMicrosoftOpenTelemetry({
+        cookieCfg: { getCookie, setCookie, delCookie },
+        session: { enabled: false },
+        pageView: { enabled: false },
+        spanProcessors: [],
+        logRecordProcessors: [],
+      });
+    const first = await initialize();
+    let second: Awaited<ReturnType<typeof initialize>> | undefined;
+    try {
+      first.userContext.setAuthenticatedUserContext("old-user", "old-account", true);
+      await first.shutdown();
+      if (newerInstance) {
+        second = await initialize();
+        second.userContext.setAuthenticatedUserContext("new-user", "new-account", true);
+      }
+      const persisted = new Map(values);
+      getCookie.mockClear();
+      setCookie.mockClear();
+      delCookie.mockClear();
+      first.userContext.setEnabled(true);
+      first.userContext.setAuthenticatedUserContext("stale-user", undefined, true);
+      first.userContext.setAuthenticatedUserContext("stale-memory-user");
+      expect(values).toEqual(persisted);
+      expect(getCookie).not.toHaveBeenCalled();
+      expect(setCookie).not.toHaveBeenCalled();
+      expect(delCookie).not.toHaveBeenCalled();
+
+      // Explicit logout and purge remain intentional even on a stopped handle.
+      first.userContext.clearAuthenticatedUserContext();
+      expect(values.has(authenticatedCookie)).toBe(false);
+      first.userContext.setEnabled(false);
+      expect(values.has(anonymousCookie)).toBe(false);
+      expect(delCookie.mock.calls.map(([name]) => name)).toEqual([
+        authenticatedCookie,
+        anonymousCookie,
+        authenticatedCookie,
+      ]);
+    } finally {
+      await first.shutdown();
+      await second?.shutdown();
+    }
+  },
+);
+
+it.each(["persisted", "memory-only"])(
+  "does not replay a disabled %s authentication change through a stale handle",
+  async (storage) => {
+    const values = new Map([[authenticatedCookie, encode({ authenticatedUserId: "old-user" })]]);
+    const delCookie = vi.fn((name: string) => values.delete(name));
+    const handle = await useMicrosoftOpenTelemetry({
+      cookieCfg: {
+        getCookie: (name) => values.get(name) ?? "",
+        setCookie: (name, value) => values.set(name, value.split(";")[0]!),
+        delCookie,
+      },
+      userContext: { enabled: false },
+      session: { enabled: false },
+      pageView: { enabled: false },
+      spanProcessors: [],
+      logRecordProcessors: [],
+    });
+    try {
+      handle.userContext.setAuthenticatedUserContext(
+        "new-user",
+        undefined,
+        storage === "persisted",
+      );
+      await handle.shutdown();
+      handle.userContext.setEnabled(true);
+      expect(decode(values.get(authenticatedCookie)!)).toEqual({ authenticatedUserId: "old-user" });
+      expect(delCookie).not.toHaveBeenCalled();
+    } finally {
+      await handle.shutdown();
+    }
+  },
+);
+
+it.each([false, true])(
   "recovers anonymous enrichment on telemetry after cookie enablement (existing cookie: %s) without auth replay",
   (existing) => {
     const { values } = fakeManager();
@@ -441,6 +587,65 @@ it("does not notify a new user for an existing valid anonymous cookie", () => {
   expect(provider.getAnonymousUserId()).toBe("existing-user");
   expect(onNewUser).not.toHaveBeenCalled();
   expect(cookies.set).not.toHaveBeenCalled();
+});
+
+it.each(["", "app-"])(
+  "retains the session backup when anonymous and session cookies are ignored (prefix=%j)",
+  async (prefix) => {
+    const sessionCookie = `${prefix}opentelemetry-session`;
+    const values = new Map<string, string>();
+    const cookieValues = new Map<string, string>();
+    const now = Date.now();
+    const backup = JSON.stringify({
+      id: "existing-session",
+      startTimestamp: now,
+      lastActivityTimestamp: now,
+    });
+    values.set("opentelemetry-session", backup);
+    const storage = {
+      getItem: (name: string) => ({ success: true as const, value: values.get(name) ?? null }),
+      setItem: (name: string, value: string) => {
+        values.set(name, value);
+        return true;
+      },
+      removeItem: vi.fn((name: string) => values.delete(name)),
+    };
+    for (let reload = 0; reload < 2; reload++) {
+      const cookies = createCookieManager({
+        ignoreCookies: [`${prefix}${anonymousCookie}`, sessionCookie],
+        getCookie: (name) => cookieValues.get(name) ?? "",
+        setCookie: (name, value) => cookieValues.set(name, value),
+      });
+      const session = createSession({}, storage, cookies, sessionCookie);
+      const onNewUser = vi.fn(() => session.discardBackup());
+      // Internal permission comes from the same validated snapshot as the cookie manager.
+      createCookieUserContext(true, cookies, prefix, onNewUser, false);
+      try {
+        await session.start();
+        expect(session.getSessionId()).toBe("existing-session");
+        expect(onNewUser).not.toHaveBeenCalled();
+        expect(storage.removeItem).not.toHaveBeenCalled();
+        expect(values.get("opentelemetry-session")).toBe(backup);
+        expect(cookieValues.size).toBe(0);
+      } finally {
+        session.shutdown();
+        cookies.shutdown();
+      }
+    }
+  },
+);
+
+it("still detects a missing anonymous cookie when writes are blocked but reads are permitted", () => {
+  const cookies = createCookieManager({
+    blockedCookies: [anonymousCookie],
+    getCookie: () => "",
+    setCookie: vi.fn(),
+  });
+  const onNewUser = vi.fn();
+  const { provider } = createCookieUserContext(true, cookies, "", onNewUser, true);
+  expect(onNewUser).toHaveBeenCalledExactlyOnceWith();
+  expect(provider.getAnonymousUserId()).toBeUndefined();
+  expect(onNewUser).toHaveBeenCalledTimes(1);
 });
 
 it.each(["disabled", "unavailable", "throws"])(

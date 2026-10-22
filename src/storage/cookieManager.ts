@@ -16,7 +16,10 @@ import type {
  */
 export function createCookieManager(
   config?: MicrosoftOpenTelemetryBrowserCookieConfig,
-): MicrosoftOpenTelemetryBrowserCookieManager & { shutdown(): void } {
+): MicrosoftOpenTelemetryBrowserCookieManager & {
+  canRead(name: string): boolean;
+  shutdown(): void;
+} {
   if (
     config !== undefined &&
     (config === null || typeof config !== "object" || Array.isArray(config))
@@ -125,6 +128,8 @@ export function createCookieManager(
   }
 
   return {
+    // Internal policy query: availability is checked separately, without re-reading caller config.
+    canRead: (name) => !ignored.has(name),
     isEnabled: () =>
       enabled &&
       !stopped &&
@@ -187,6 +192,9 @@ export function createCookieManager(
           formatted += "; secure; SameSite=None";
         }
         formatted += attributes(domain || settings.domain, path || settings.path || "/");
+        // Browsers silently reject oversized cookies. Report failure before accepting/deferring
+        // one so identity replacement can remove a previously persisted login.
+        if (new TextEncoder().encode(`${name}=${formatted}`).byteLength > 4096) return false;
         return store(name, value.trim(), formatted, false);
       }, false);
     },
