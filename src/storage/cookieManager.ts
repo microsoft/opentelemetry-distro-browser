@@ -18,6 +18,9 @@ export function createCookieManager(
   config?: MicrosoftOpenTelemetryBrowserCookieConfig,
 ): MicrosoftOpenTelemetryBrowserCookieManager & {
   canRead(name: string): boolean;
+  setReplayFailureHandler(
+    handler: ((name: string, removeSuperseded: () => boolean) => void) | undefined,
+  ): void;
   shutdown(): void;
 } {
   if (
@@ -65,10 +68,15 @@ export function createCookieManager(
 
   const ignored = new Set(settings.ignoreCookies);
   const blocked = new Set(settings.blockedCookies);
-  const pending = new Map<string, { value: string; formatted: string; remove: boolean }>();
+  const pending = new Map<
+    string,
+    { value: string; formatted: string; remove: boolean; scope?: string }
+  >();
   let enabled = settings.enabled !== false;
   let everEnabled = enabled;
   let stopped = false;
+  let replaying = false;
+  let replayFailureHandler: ((name: string, removeSuperseded: () => boolean) => void) | undefined;
 
   function attempt<T>(operation: () => T, fallback: T): T {
     try {
@@ -97,9 +105,9 @@ export function createCookieManager(
     return `${domain ? `; domain=${domain}` : ""}; path=${path}`;
   }
 
-  function deletion(path?: string): string {
+  function deletion(scope = attributes(settings.domain, settings.path || "/")): string {
     const secure = typeof location !== "undefined" && location.protocol === "https:";
-    return `; expires=Thu, 01 Jan 1970 00:00:01 GMT; max-age=0${secure ? "; secure" : ""}${attributes(settings.domain, path || settings.path || "/")}`;
+    return `; expires=Thu, 01 Jan 1970 00:00:01 GMT; max-age=0${secure ? "; secure" : ""}${scope}`;
   }
 
   function validPrefixScope(name: string, path?: string, domain?: string): boolean {
@@ -118,18 +126,33 @@ export function createCookieManager(
     );
   }
 
-  function store(name: string, value: string, formatted: string, remove: boolean): boolean {
-    if (enabled) return write(name, formatted, remove);
+  function store(
+    name: string,
+    value: string,
+    formatted: string,
+    remove: boolean,
+    scope?: string,
+  ): boolean {
+    if (enabled) {
+      // A newer explicit operation supersedes even an in-flight or failed replay.
+      pending.delete(name);
+      return write(name, formatted, remove);
+    }
     if (settings.disableCookieDefer) return false;
     // Delete before re-inserting so flush order also reflects the latest operation per name.
     pending.delete(name);
-    pending.set(name, { value, formatted, remove });
+    pending.set(name, { value, formatted, remove, scope });
     return true;
   }
 
   return {
     // Internal policy query: availability is checked separately, without re-reading caller config.
     canRead: (name) => !ignored.has(name),
+    // Internal coordination only: generic cookie failures do not authorize destructive cleanup.
+    // Identity may opt in using an exact-scope delete that preserves the pending replacement.
+    setReplayFailureHandler(handler) {
+      if (!stopped) replayFailureHandler = handler;
+    },
     isEnabled: () =>
       enabled &&
       !stopped &&
@@ -143,12 +166,29 @@ export function createCookieManager(
       if (stopped || typeof value !== "boolean") return;
       enabled = value;
       everEnabled ||= value;
-      if (enabled) {
-        const operations = Array.from(pending);
-        pending.clear();
-        for (const [name, operation] of operations) {
-          if (stopped || !enabled) break;
-          write(name, operation.formatted, operation.remove);
+      if (enabled && !replaying) {
+        replaying = true;
+        try {
+          // Snapshot for a bounded pass; keep failures and unattempted operations for recovery.
+          for (const [name, operation] of Array.from(pending)) {
+            if (stopped || !enabled) break;
+            if (pending.get(name) !== operation) continue;
+            const success = write(name, operation.formatted, operation.remove);
+            // Hooks (including diagnostics) can re-enter, replace, purge, or stop the manager.
+            if (pending.get(name) !== operation) continue;
+            if (success) pending.delete(name);
+            else if (!operation.remove && !stopped && enabled) {
+              attempt(() => {
+                replayFailureHandler?.(name, () => {
+                  if (stopped || !enabled || pending.get(name) !== operation) return false;
+                  return write(name, deletion(operation.scope), true);
+                });
+                return true;
+              }, false);
+            }
+          }
+        } finally {
+          replaying = false;
         }
       }
     },
@@ -191,30 +231,33 @@ export function createCookieManager(
         if (typeof location !== "undefined" && location.protocol === "https:") {
           formatted += "; secure; SameSite=None";
         }
-        formatted += attributes(domain || settings.domain, path || settings.path || "/");
+        const scope = attributes(domain || settings.domain, path || settings.path || "/");
+        formatted += scope;
         // Browsers silently reject oversized cookies. Report failure before accepting/deferring
         // one so identity replacement can remove a previously persisted login.
         if (new TextEncoder().encode(`${name}=${formatted}`).byteLength > 4096) return false;
-        return store(name, value.trim(), formatted, false);
+        return store(name, value.trim(), formatted, false, scope);
       }, false);
     },
     del(name, path) {
       if (stopped && !everEnabled) return false;
       if (!validScope(name, path) || !validPrefixScope(name, path)) return false;
       // Shutdown discards deferred operations, but explicit cleanup must remain available.
-      if (stopped) return write(name, deletion(path), true);
-      return store(name, "", deletion(path), true);
+      const formatted = deletion(attributes(settings.domain, path || settings.path || "/"));
+      if (stopped) return write(name, formatted, true);
+      return store(name, "", formatted, true);
     },
     purge(name, path) {
       // Cleanup bypasses enabled, ignored/blocked lists and shutdown, and cannot resurrect a write.
       pending.delete(name);
       if (!validScope(name, path) || !validPrefixScope(name, path)) return false;
-      return write(name, deletion(path), true);
+      return write(name, deletion(attributes(settings.domain, path || settings.path || "/")), true);
     },
     shutdown() {
       stopped = true;
       enabled = false;
       pending.clear();
+      replayFailureHandler = undefined;
     },
   };
 }

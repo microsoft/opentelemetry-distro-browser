@@ -5,6 +5,7 @@ import { diag } from "@opentelemetry/api";
 import { afterEach, expect, it, vi } from "vitest";
 import { createCookieManager } from "../../../src/storage/cookieManager.js";
 import type { MicrosoftOpenTelemetryBrowserCookieConfig } from "../../../src/types.js";
+import { createCookieUserContext } from "../../../src/user/createCookieUserContext.js";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -154,6 +155,266 @@ it("formats expiry at enqueue rather than extending it on enable", () => {
   now.mockReturnValue(Date.UTC(2026, 0, 2));
   manager.setEnabled(true);
   expect(setCookie.mock.calls[0]?.[1]).toContain("expires=Thu, 01 Jan 2026 00:01:00 GMT");
+});
+
+it("retains failed deferred writes and deletes for a later enable without generic cleanup", () => {
+  const setCookie = vi.fn((): void => {
+    throw new Error("denied");
+  });
+  const delCookie = vi.fn((): void => {
+    throw new Error("denied");
+  });
+  const manager = createCookieManager({ enabled: false, setCookie, delCookie });
+  manager.set("replace", "new", 60);
+  manager.del("remove");
+  manager.setEnabled(true);
+  expect(setCookie).toHaveBeenCalledTimes(1);
+  expect(delCookie.mock.calls).toEqual([["remove", expect.any(String)]]);
+  manager.setEnabled(false);
+  expect(manager.get("replace")).toBe("new");
+  const formatted = setCookie.mock.calls[0];
+  setCookie.mockImplementation(() => {});
+  delCookie.mockImplementation(() => {});
+  manager.setEnabled(true);
+  expect(setCookie).toHaveBeenCalledTimes(2);
+  expect(setCookie.mock.calls[1]).toEqual(formatted);
+  expect(delCookie).toHaveBeenCalledTimes(2);
+  manager.setEnabled(true);
+  expect(setCookie).toHaveBeenCalledTimes(2);
+  expect(delCookie).toHaveBeenCalledTimes(2);
+});
+
+it("does not restore superseded authentication after a deferred replacement hook throws", () => {
+  const name = "opentelemetry-auth-user";
+  const values = new Map<string, string>();
+  let fail = false;
+  const cookies = createCookieManager({
+    getCookie: (key) => values.get(key) ?? "",
+    setCookie(key, value) {
+      if (fail && key === name) throw new Error("denied");
+      values.set(key, value.split(";")[0]!);
+    },
+    delCookie: (key) => values.delete(key),
+  });
+  // Mirror the initializer's internal identity policy, not a generic cookie-manager policy.
+  cookies.setReplayFailureHandler((key, removeSuperseded) => {
+    if (key === name) removeSuperseded();
+  });
+  const first = createCookieUserContext(true, cookies);
+  first.context.setAuthenticatedUserContext("A", "account-A", true);
+  cookies.setEnabled(false);
+  first.context.setAuthenticatedUserContext("B", "account-B", true);
+  fail = true;
+  cookies.setEnabled(true);
+  expect(first.provider.getAuthenticatedUserId()).toBe("B");
+  const restored = createCookieUserContext(true, cookies);
+  expect(restored.provider.getAuthenticatedUserId()).toBeUndefined();
+  expect(restored.provider.getAccountId()).toBeUndefined();
+  fail = false;
+  cookies.setEnabled(true);
+  const recovered = createCookieUserContext(true, cookies);
+  expect(recovered.provider.getAuthenticatedUserId()).toBe("B");
+  expect(recovered.provider.getAccountId()).toBe("account-B");
+});
+
+it.each([false, true])(
+  "keeps a failed replacement retry even when scoped cleanup fails=%s",
+  (initialCleanupFails) => {
+    const name = "auth";
+    let stored = "old";
+    let fail = true;
+    let cleanupFails = initialCleanupFails;
+    const setCookie = vi.fn((_name: string, value: string) => {
+      if (fail) throw new Error("write denied");
+      stored = value.split(";")[0]!;
+    });
+    const delCookie = vi.fn(() => {
+      if (cleanupFails) throw new Error("delete denied");
+      stored = "";
+    });
+    const manager = createCookieManager({
+      enabled: false,
+      domain: "default.test",
+      path: "/default",
+      setCookie,
+      delCookie,
+    });
+    const cleanupResults: boolean[] = [];
+    manager.setReplayFailureHandler((_key, removeSuperseded) => {
+      cleanupResults.push(removeSuperseded());
+    });
+    manager.set(name, "new", undefined, "override.test", "/override");
+    manager.setEnabled(true);
+    expect(stored).toBe(cleanupFails ? "old" : "");
+    expect(cleanupResults).toEqual([!cleanupFails]);
+    expect(delCookie).toHaveBeenCalledExactlyOnceWith(
+      name,
+      `; expires=Thu, 01 Jan 1970 00:00:01 GMT; max-age=0${location.protocol === "https:" ? "; secure" : ""}; domain=override.test; path=/override`,
+    );
+    if (cleanupFails) {
+      cleanupFails = false;
+      manager.setEnabled(true);
+      expect(stored).toBe("");
+      expect(cleanupResults).toEqual([false, true]);
+    }
+    fail = false;
+    manager.setEnabled(true);
+    expect(stored).toBe("new");
+    expect(setCookie).toHaveBeenCalledTimes(initialCleanupFails ? 3 : 2);
+    expect(delCookie).toHaveBeenCalledTimes(initialCleanupFails ? 2 : 1);
+  },
+);
+
+it("uses the accepted Host cookie scope rather than the default path for failed replay cleanup", () => {
+  const delCookie = vi.fn();
+  const manager = createCookieManager({
+    enabled: false,
+    path: "/default",
+    setCookie: () => {
+      throw new Error("denied");
+    },
+    delCookie,
+  });
+  manager.setReplayFailureHandler((_name, removeSuperseded) => removeSuperseded());
+  expect(manager.set("__Host-auth", "new", undefined, undefined, "/")).toBe(true);
+  manager.setEnabled(true);
+  expect(delCookie).toHaveBeenCalledWith("__Host-auth", expect.stringMatching(/; path=\/$/));
+});
+
+it("contains failure-handler errors, notifies only failed writes, and retains retries", () => {
+  const fail = (): void => {
+    throw new Error("denied");
+  };
+  const setCookie = vi.fn(fail);
+  const delCookie = vi.fn(fail);
+  const manager = createCookieManager({ enabled: false, setCookie, delCookie });
+  const handler = vi.fn(fail);
+  manager.setReplayFailureHandler(handler);
+  manager.set("replace", "new");
+  manager.del("remove");
+  expect(() => manager.setEnabled(true)).not.toThrow();
+  expect(handler).toHaveBeenCalledExactlyOnceWith("replace", expect.any(Function));
+  manager.setReplayFailureHandler(undefined);
+  setCookie.mockImplementation(() => {});
+  delCookie.mockImplementation(() => {});
+  manager.setEnabled(true);
+  expect(setCookie).toHaveBeenCalledTimes(2);
+  expect(delCookie).toHaveBeenCalledTimes(2);
+  expect(handler).toHaveBeenCalledTimes(1);
+});
+
+it.each(["set", "del", "purge", "defer", "shutdown"] as const)(
+  "does not clean up or resurrect a failed replay superseded by reentrant %s",
+  (action) => {
+    const delCookie = vi.fn();
+    const setCookie = vi.fn((_name: string, value: string) => {
+      if (!value.startsWith("old;")) return;
+      if (action === "defer") manager.setEnabled(false);
+      if (action === "set" || action === "defer") manager.set("name", "new");
+      else if (action === "del") manager.del("name");
+      else if (action === "purge") manager.purge("name");
+      else manager.shutdown();
+      throw new Error("old write denied");
+    });
+    const manager = createCookieManager({ enabled: false, setCookie, delCookie });
+    const handler = vi.fn((_name: string, removeSuperseded: () => boolean) => removeSuperseded());
+    manager.setReplayFailureHandler(handler);
+    manager.set("name", "old");
+    manager.setEnabled(true);
+    expect(handler).not.toHaveBeenCalled();
+    manager.setEnabled(true);
+    expect(setCookie.mock.calls.map(([, value]) => value.split(";")[0])).toEqual(
+      action === "set" || action === "defer" ? ["old", "new"] : ["old"],
+    );
+    expect(delCookie).toHaveBeenCalledTimes(action === "del" || action === "purge" ? 1 : 0);
+  },
+);
+
+it.each(["set", "del", "purge", "shutdown"] as const)(
+  "invalidates scoped cleanup when a failure handler performs a newer %s",
+  (action) => {
+    const delCookie = vi.fn();
+    const setCookie = vi.fn((_name: string, value: string) => {
+      if (value.startsWith("old;")) throw new Error("denied");
+    });
+    const manager = createCookieManager({ enabled: false, setCookie, delCookie });
+    const cleanupResults: boolean[] = [];
+    manager.setReplayFailureHandler((_name, removeSuperseded) => {
+      if (action === "set") manager.set("name", "new");
+      else if (action === "del") manager.del("name");
+      else if (action === "purge") manager.purge("name");
+      else manager.shutdown();
+      cleanupResults.push(removeSuperseded());
+    });
+    manager.set("name", "old");
+    manager.setEnabled(true);
+    manager.setEnabled(true);
+    expect(cleanupResults).toEqual([false]);
+    expect(setCookie).toHaveBeenCalledTimes(action === "set" ? 2 : 1);
+    expect(delCookie).toHaveBeenCalledTimes(action === "del" || action === "purge" ? 1 : 0);
+  },
+);
+
+it("does not resurrect a replacement when its failed cleanup writes a newer value", () => {
+  const setCookie = vi.fn((_name: string, value: string) => {
+    if (value.startsWith("old;")) throw new Error("write denied");
+  });
+  const manager = createCookieManager({
+    enabled: false,
+    setCookie,
+    delCookie: () => {
+      manager.set("name", "new");
+      throw new Error("delete denied");
+    },
+  });
+  const cleanupResults: boolean[] = [];
+  manager.setReplayFailureHandler((_name, removeSuperseded) => {
+    cleanupResults.push(removeSuperseded());
+  });
+  manager.set("name", "old");
+  manager.setEnabled(true);
+  manager.setEnabled(true);
+  expect(cleanupResults).toEqual([false]);
+  expect(setCookie.mock.calls.map(([, value]) => value.split(";")[0])).toEqual(["old", "new"]);
+});
+
+it("bounds nested enables and retains unattempted operations after a hook disables replay", () => {
+  let fail = true;
+  const setCookie = vi.fn((name: string) => {
+    manager.setEnabled(true);
+    if (fail && name === "first") {
+      manager.setEnabled(false);
+      throw new Error("denied");
+    }
+  });
+  const manager = createCookieManager({ enabled: false, setCookie });
+  manager.set("first", "one");
+  manager.set("second", "two");
+  manager.setEnabled(true);
+  expect(setCookie.mock.calls.map(([name]) => name)).toEqual(["first"]);
+  expect(manager.get("first")).toBe("one");
+  expect(manager.get("second")).toBe("two");
+  fail = false;
+  manager.setEnabled(true);
+  expect(setCookie.mock.calls.map(([name]) => name)).toEqual(["first", "first", "second"]);
+});
+
+it("skips a snapshot operation replaced by another replay hook", () => {
+  const setCookie = vi.fn((name: string, _value: string) => {
+    if (name === "first") {
+      manager.setEnabled(false);
+      manager.set("second", "new");
+      manager.setEnabled(true);
+    }
+  });
+  const manager = createCookieManager({ enabled: false, setCookie });
+  manager.set("first", "one");
+  manager.set("second", "old");
+  manager.setEnabled(true);
+  expect(setCookie.mock.calls.map(([name]) => name)).toEqual(["first"]);
+  manager.setEnabled(true);
+  expect(setCookie.mock.calls.map(([name]) => name)).toEqual(["first", "second"]);
+  expect(setCookie.mock.calls[1]?.[1]).toMatch(/^new;/);
 });
 
 it("can disable deferral completely", () => {
