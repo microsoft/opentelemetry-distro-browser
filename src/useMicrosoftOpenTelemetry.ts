@@ -268,6 +268,7 @@ export async function useMicrosoftOpenTelemetry(
       stopAzureMonitorStartup?.();
       const errors: unknown[] = [];
       for (const cleanup of [
+        () => userContext?.shutdown(),
         () => instance?.detach(),
         () => {
           void correlation?.shutdown();
@@ -356,9 +357,13 @@ export async function useMicrosoftOpenTelemetry(
     const noDestination = !azureMonitor && !spanProcessors && !logRecordProcessors;
     // Validate destinations before persisting identity. A new user invalidates the previous
     // user's session backup so deleting cookies cannot silently restore their old session.
-    userContext = createCookieUserContext(options.userContext?.enabled, cookies, namePrefix, () => {
-      session?.discardBackup();
-    });
+    userContext = createCookieUserContext(
+      options.userContext?.enabled,
+      cookies,
+      namePrefix,
+      () => session?.discardBackup(),
+      cookies.canRead(`${namePrefix}opentelemetry-user`),
+    );
     await session?.start();
     spanProcessors ??= [];
     logRecordProcessors ??= [];

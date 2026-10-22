@@ -77,12 +77,14 @@ export function createSession(
       !force &&
       lastCookieWrite !== undefined &&
       now >= lastCookieWrite &&
-      now - lastCookieWrite < 60_000
+      (now === lastCookieWrite ||
+        ((inactivityTimeout === 0 || inactivityTimeout > 60) && now - lastCookieWrite < 60_000))
     ) {
       return;
     }
-    // Track attempts as well as deferred writes. Never bypass cookie policy via Web Storage.
-    lastCookieWrite = now;
+    // Short inactivity windows need each activity persisted to survive reloads.
+    // A rejected renewal must not inherit the previous session's accepted-write throttle.
+    lastCookieWrite = undefined;
     const maxAge =
       maxDuration === 0
         ? undefined
@@ -96,7 +98,10 @@ export function createSession(
             ),
           );
     try {
-      cookies.set(cookieName, encodeURIComponent(serialize(session)), maxAge);
+      // Accepted deferred writes count too; never bypass cookie policy via Web Storage.
+      if (cookies.set(cookieName, encodeURIComponent(serialize(session)), maxAge)) {
+        lastCookieWrite = now;
+      }
     } catch {
       // Custom managers may throw; persistence must not interrupt telemetry.
     }

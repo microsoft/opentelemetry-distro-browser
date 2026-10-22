@@ -32,6 +32,32 @@ function fakeBackends() {
   return { cookies, storage, values };
 }
 
+function expiringCookieBackend() {
+  const values = new Map<string, { value: string; expiresAt?: number }>();
+  return {
+    getCookie(name: string) {
+      const cookie = values.get(name);
+      if (cookie?.expiresAt !== undefined && Date.now() >= cookie.expiresAt) {
+        values.delete(name);
+        return "";
+      }
+      return cookie?.value ?? "";
+    },
+    setCookie: vi.fn((name: string, formatted: string) => {
+      const maxAge = /; max-age=(-?\d+)/.exec(formatted)?.[1];
+      values.set(name, {
+        value: formatted.split(";")[0]!,
+        expiresAt: maxAge === undefined ? undefined : Date.now() + Number(maxAge) * 1000,
+      });
+    }),
+    closeBrowserSession() {
+      for (const [name, cookie] of values) {
+        if (cookie.expiresAt === undefined) values.delete(name);
+      }
+    },
+  };
+}
+
 beforeEach(() => {
   vi.useFakeTimers();
   vi.setSystemTime(1_000_000);
@@ -182,6 +208,218 @@ it("throttles refreshes at 60 seconds while preserving latest activity and remai
   );
   expect(decode(values.get(key)!)).toHaveProperty("lastActivityTimestamp", start + 60_000);
   expect(storage.setItem).not.toHaveBeenCalled();
+});
+
+it.each([
+  { inactivityTimeout: 10, activity: [5000, 10_000], reload: 15_000 },
+  { inactivityTimeout: 60, activity: [30_000, 59_000], reload: 89_000 },
+])(
+  "preserves active $inactivityTimeout-second inactivity windows across reloads without Web Storage",
+  async ({ inactivityTimeout, activity, reload }) => {
+    const local = vi.spyOn(window, "localStorage", "get");
+    const backend = expiringCookieBackend();
+    const cookies = createCookieManager(backend);
+    const options = { inactivityTimeout };
+    const first = createSession(options, null, cookies);
+    const start = Date.now();
+    await first.start();
+    const id = first.getSessionId();
+    for (const elapsed of activity) {
+      vi.setSystemTime(start + elapsed);
+      expect(first.getSessionId()).toBe(id);
+    }
+    first.shutdown();
+    vi.setSystemTime(start + reload);
+    const reloaded = createSession(options, null, cookies);
+    await reloaded.start();
+    expect(reloaded.getSessionId()).toBe(id);
+    vi.setSystemTime(Date.now() + inactivityTimeout * 1000);
+    expect(reloaded.getSessionId()).not.toBe(id);
+    reloaded.shutdown();
+    cookies.shutdown();
+    expect(local).not.toHaveBeenCalled();
+  },
+);
+
+it.each([0, 10])(
+  "retains browser-session cookie semantics with maxDuration=0 and inactivity=%s",
+  async (inactivityTimeout) => {
+    const backend = expiringCookieBackend();
+    const cookies = createCookieManager(backend);
+    const options = { maxDuration: 0, inactivityTimeout };
+    const first = createSession(options, null, cookies);
+    const start = Date.now();
+    await first.start();
+    const id = first.getSessionId();
+    for (const elapsed of [5000, 10_000]) {
+      vi.setSystemTime(start + elapsed);
+      expect(first.getSessionId()).toBe(id);
+    }
+    first.shutdown();
+    vi.setSystemTime(start + 15_000);
+    const reloaded = createSession(options, null, cookies);
+    await reloaded.start();
+    expect(reloaded.getSessionId()).toBe(id);
+    vi.setSystemTime(
+      Date.now() + (inactivityTimeout ? inactivityTimeout * 1000 : 25 * 60 * 60_000),
+    );
+    const current = reloaded.getSessionId();
+    if (inactivityTimeout) expect(current).not.toBe(id);
+    else expect(current).toBe(id);
+    reloaded.shutdown();
+    for (const [, formatted] of backend.setCookie.mock.calls) {
+      expect(formatted).not.toMatch(/; (?:max-age|expires)=/);
+    }
+    backend.closeBrowserSession();
+    const reopened = createSession(options, null, cookies);
+    await reopened.start();
+    expect(reopened.getSessionId()).not.toBe(current);
+    reopened.shutdown();
+    cookies.shutdown();
+  },
+);
+
+it.each([{}, { inactivityTimeout: 0 }])(
+  "preserves default 60-second coalescing with options %j",
+  async (options) => {
+    const { cookies } = fakeBackends();
+    const session = createSession(options, null, cookies);
+    const start = Date.now();
+    await session.start();
+    const id = session.getSessionId();
+    for (const elapsed of [1, 30_000, 59_999]) {
+      vi.setSystemTime(start + elapsed);
+      expect(session.getSessionId()).toBe(id);
+    }
+    expect(cookies.set).toHaveBeenCalledTimes(1);
+    vi.setSystemTime(start + 60_000);
+    expect(session.getSessionId()).toBe(id);
+    expect(cookies.set).toHaveBeenCalledTimes(2);
+    session.shutdown();
+  },
+);
+
+it.each(["reject", "throw"])(
+  "retries a %s without throttling the first accepted write",
+  async (failure) => {
+    const { cookies, values } = fakeBackends();
+    cookies.set.mockImplementation(() => {
+      if (failure === "throw") throw new Error("unavailable");
+      return false;
+    });
+    const session = createSession({}, null, cookies);
+    await session.start();
+    const start = Date.now();
+    const id = session.getSessionId();
+    cookies.set.mockClear().mockImplementation((name, value) => {
+      values.set(name, value);
+      return true;
+    });
+    vi.setSystemTime(start + 1);
+    expect(session.getSessionId()).toBe(id);
+    expect(cookies.set).toHaveBeenCalledTimes(1);
+    expect(decode(values.get(key)!)).toEqual({
+      id,
+      startTimestamp: start,
+      lastActivityTimestamp: start + 1,
+    });
+    vi.setSystemTime(start + 30_000);
+    expect(session.getSessionId()).toBe(id);
+    expect(cookies.set).toHaveBeenCalledTimes(1);
+    session.shutdown();
+  },
+);
+
+it.each(["reject", "throw"])(
+  "does not inherit an old session's throttle after a forced renewal write %s",
+  async (failure) => {
+    const { cookies, values } = fakeBackends();
+    const session = createSession({ maxDuration: 30 }, null, cookies);
+    await session.start();
+    const start = Date.now();
+    const id = session.getSessionId();
+    cookies.set.mockImplementationOnce(() => {
+      if (failure === "throw") throw new Error("unavailable");
+      return false;
+    });
+    vi.setSystemTime(start + 30_000);
+    const renewed = session.getSessionId();
+    expect(renewed).not.toBe(id);
+    expect(decode(values.get(key)!)).toHaveProperty("id", id);
+    vi.setSystemTime(start + 30_001);
+    expect(session.getSessionId()).toBe(renewed);
+    expect(decode(values.get(key)!)).toHaveProperty("id", renewed);
+    session.shutdown();
+  },
+);
+
+it("writes on the first activity after enabling cookies with deferral disabled", async () => {
+  const backend = expiringCookieBackend();
+  const cookies = createCookieManager({ ...backend, enabled: false, disableCookieDefer: true });
+  const session = createSession({}, null, cookies);
+  await session.start();
+  const start = Date.now();
+  const id = session.getSessionId();
+  vi.setSystemTime(start + 5000);
+  expect(session.getSessionId()).toBe(id);
+  expect(backend.setCookie).not.toHaveBeenCalled();
+  cookies.setEnabled(true);
+  expect(backend.setCookie).not.toHaveBeenCalled();
+  expect(session.getSessionId()).toBe(id);
+  expect(backend.setCookie).toHaveBeenCalledTimes(1);
+  expect(decode(cookies.get(key))).toEqual({
+    id,
+    startTimestamp: start,
+    lastActivityTimestamp: start + 5000,
+  });
+  session.getSessionId();
+  expect(backend.setCookie).toHaveBeenCalledTimes(1);
+  session.shutdown();
+  cookies.shutdown();
+});
+
+it("retries a failed real cookie-manager hook on the next activity", async () => {
+  const backend = expiringCookieBackend();
+  const setCookie = vi.fn<(name: string, value: string) => void>(() => {
+    throw new Error("unavailable");
+  });
+  const cookies = createCookieManager({ ...backend, setCookie });
+  const session = createSession({}, null, cookies);
+  await session.start();
+  const id = session.getSessionId();
+  setCookie.mockImplementation(backend.setCookie);
+  vi.setSystemTime(Date.now() + 1);
+  expect(session.getSessionId()).toBe(id);
+  expect(decode(cookies.get(key))).toHaveProperty("id", id);
+  session.shutdown();
+  cookies.shutdown();
+});
+
+it("coalesces accepted deferred writes before and after cookie enablement", async () => {
+  const backend = expiringCookieBackend();
+  const cookies = createCookieManager({ ...backend, enabled: false });
+  const set = vi.spyOn(cookies, "set");
+  const session = createSession({}, null, cookies);
+  const start = Date.now();
+  await session.start();
+  const id = session.getSessionId();
+  vi.setSystemTime(start + 30_000);
+  expect(session.getSessionId()).toBe(id);
+  expect(set).toHaveBeenCalledTimes(1);
+  expect(backend.setCookie).not.toHaveBeenCalled();
+  expect(decode(cookies.get(key))).toHaveProperty("lastActivityTimestamp", start);
+  cookies.setEnabled(true);
+  expect(backend.setCookie).toHaveBeenCalledTimes(1);
+  vi.setSystemTime(start + 59_999);
+  expect(session.getSessionId()).toBe(id);
+  expect(set).toHaveBeenCalledTimes(1);
+  vi.setSystemTime(start + 60_000);
+  expect(session.getSessionId()).toBe(id);
+  expect(set).toHaveBeenCalledTimes(2);
+  expect(backend.setCookie).toHaveBeenCalledTimes(2);
+  expect(decode(cookies.get(key))).toHaveProperty("lastActivityTimestamp", start + 60_000);
+  session.shutdown();
+  cookies.shutdown();
 });
 
 it.each(["inactivityTimeout", "maxDuration"] as const)(
