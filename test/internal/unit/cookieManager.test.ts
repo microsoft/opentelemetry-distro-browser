@@ -78,6 +78,33 @@ it("avoids cookie support probes when disabled without any hooks", () => {
   expect(write).not.toHaveBeenCalled();
 });
 
+it.each([false, true])(
+  "rejects oversized UTF-8 cookies before writing or deferring (enabled=%s)",
+  (enabled) => {
+    const setCookie = vi.fn();
+    const manager = createCookieManager({ enabled, setCookie });
+    expect(manager.set("name", "a".repeat(4083))).toBe(true);
+    expect(manager.set("name", "a".repeat(4084))).toBe(false);
+    expect(manager.set("other", "雪".repeat(1400))).toBe(false);
+    expect(
+      manager.set("large-attributes", "a".repeat(4050), undefined, "example.test", "/long-path"),
+    ).toBe(false);
+    manager.setEnabled(true);
+    expect(setCookie).toHaveBeenCalledOnce();
+    expect(setCookie.mock.calls[0]?.[0]).toBe("name");
+  },
+);
+
+it("queries snapshotted per-name read permission without cookie access", () => {
+  const ignored = ["ignored"];
+  const manager = createCookieManager({ ignoreCookies: ignored, blockedCookies: ["blocked"] });
+  ignored.length = 0;
+  const read = vi.spyOn(document, "cookie", "get");
+  expect(manager.canRead("ignored")).toBe(false);
+  expect(manager.canRead("blocked")).toBe(true);
+  expect(read).not.toHaveBeenCalled();
+});
+
 it("flushes explicit deletes for ignored and blocked cookies", () => {
   const delCookie = vi.fn();
   const manager = createCookieManager({

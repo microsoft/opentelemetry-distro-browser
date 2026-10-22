@@ -276,6 +276,55 @@ it.each(["", "app-a-"])(
   },
 );
 
+it.each(["", "app-a-"])(
+  "retains and restores the session backup when user and session cookies are ignored (prefix=%j)",
+  async (namePrefix) => {
+    const sessionKey = `${namePrefix}opentelemetry-session`;
+    const userKey = `${namePrefix}opentelemetry-user`;
+    const otherSessionKey = `${namePrefix ? "" : "app-a-"}opentelemetry-session`;
+    const now = Date.now();
+    const previous = {
+      id: "0123456789abcdef0123456789abcdef",
+      startTimestamp: now - 1000,
+      lastActivityTimestamp: now - 500,
+    };
+    const backup = JSON.stringify(previous);
+    const otherBackup = JSON.stringify({ ...previous, id: "fedcba9876543210fedcba9876543210" });
+    preserve(sessionKey, backup);
+    preserve(otherSessionKey, otherBackup);
+    const options = {
+      storage: { namePrefix },
+      cookieCfg: { ignoreCookies: [userKey, sessionKey] },
+    };
+
+    const first = await initialize(options);
+    expect(first.handle.getCookieMgr().isEnabled()).toBe(true);
+    expect(localStorage.getItem(sessionKey)).toBe(backup);
+    const attributes = first.emit();
+    expect(attributes["session.id"]).toBe(previous.id);
+    expect(attributes["enduser.pseudo.id"]).toBeUndefined();
+    expect(localStorage.getItem(sessionKey)).toBe(backup);
+    expect(readCookie(userKey)).toBeNull();
+    expect(readCookie(sessionKey)).toBeNull();
+    await first.handle.shutdown();
+    const savedBackup = localStorage.getItem(sessionKey);
+    expect(JSON.parse(savedBackup!)).toMatchObject({
+      id: previous.id,
+      startTimestamp: previous.startTimestamp,
+    });
+
+    const restored = await initialize(options);
+    expect(localStorage.getItem(sessionKey)).toBe(savedBackup);
+    expect(restored.emit()).toMatchObject(attributes);
+    expect(localStorage.getItem(sessionKey)).toBe(savedBackup);
+    await restored.handle.shutdown();
+    expect(JSON.parse(localStorage.getItem(sessionKey)!).id).toBe(previous.id);
+    expect(localStorage.getItem(otherSessionKey)).toBe(otherBackup);
+    expect(readCookie(userKey)).toBeNull();
+    expect(readCookie(sessionKey)).toBeNull();
+  },
+);
+
 it.each(["trace", "logs"])(
   "rejects an invalid Azure %s destination without browser persistence or cookie hook calls",
   async (signal) => {
