@@ -22,7 +22,7 @@ All notable changes to this package are documented in this file.
   buffer.
 - Support a deferred connection string
 - Add per-instance browser storage controls to initialization and the CDN loader: `storage.enabled:
-  false` blocks SDK-managed storage access, including later identity-control calls, while keeping
+false` blocks SDK-managed storage access, including later identity-control calls, while keeping
   sessions and authenticated identity in memory. Use `storage.namePrefix` to scope session and user
   storage keys. Disabling storage
   does not erase stored data or stop telemetry collection.
