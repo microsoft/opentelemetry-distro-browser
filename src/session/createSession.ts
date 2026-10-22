@@ -85,16 +85,19 @@ export function createSession(
     // Short inactivity windows need each activity persisted to survive reloads.
     // A rejected renewal must not inherit the previous session's accepted-write throttle.
     lastCookieWrite = undefined;
+    // Round cookie retention up to whole seconds; timestamps enforce the exact session deadline.
     const maxAge =
       maxDuration === 0
         ? undefined
-        : Math.max(
-            0,
-            Math.min(
-              maxDuration - (now - session.startTimestamp) / 1000,
-              inactivityTimeout > 0
-                ? inactivityTimeout - (now - lastActivityTimestamp) / 1000
-                : Infinity,
+        : Math.ceil(
+            Math.max(
+              0,
+              Math.min(
+                maxDuration - (now - session.startTimestamp) / 1000,
+                inactivityTimeout > 0
+                  ? inactivityTimeout - (now - lastActivityTimestamp) / 1000
+                  : Infinity,
+              ),
             ),
           );
     try {

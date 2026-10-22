@@ -44,8 +44,10 @@ function own(value: object | undefined, key: string): unknown {
 }
 
 /**
- * Creates cookie-backed identity without reading or writing Web Storage.
+ * Creates cookie-backed identity without accessing Web Storage during construction.
  * The caller supplies anonymous-cookie read permission from validated, snapshotted policy.
+ * Optional legacy cleanup must honor Web Storage permission and this instance's name prefix:
+ * clear retains stored anonymous identity; purge removes the whole record. Never restore it.
  */
 export function createCookieUserContext(
   initialEnabled: boolean | undefined,
@@ -53,6 +55,7 @@ export function createCookieUserContext(
   namePrefix = "",
   onNewUser?: () => void,
   canReadAnonymousCookie = true,
+  onLegacyCleanup?: (action: "clear" | "purge") => void,
 ): {
   context: MicrosoftOpenTelemetryBrowserUserContext;
   provider: UserContextProvider;
@@ -184,6 +187,10 @@ export function createCookieUserContext(
       removeAuthentication = false;
       // del, rather than purge, honors the cookie manager's deferred-cleanup policy.
       attempt(() => cookies.del(authenticatedCookie));
+      attempt(() => {
+        onLegacyCleanup?.("clear");
+        return true;
+      });
     },
     setEnabled(newEnabled) {
       if (stopped && newEnabled) return;
@@ -200,6 +207,10 @@ export function createCookieUserContext(
         // Purge also cancels deferred writes, even when the physical deletion fails.
         attempt(() => cookies.purge(anonymousCookie));
         if (attempt(() => cookies.purge(authenticatedCookie))) removeAuthentication = false;
+        attempt(() => {
+          onLegacyCleanup?.("purge");
+          return true;
+        });
       }
     },
   };

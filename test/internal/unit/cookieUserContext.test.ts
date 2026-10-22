@@ -4,10 +4,13 @@
 import { diag } from "@opentelemetry/api";
 import { afterEach, expect, it, vi } from "vitest";
 import { createCookieManager } from "../../../src/storage/cookieManager.js";
+import { createKeyValueStorage } from "../../../src/storage/keyValueStorage.js";
 import { createSession } from "../../../src/session/createSession.js";
 import type { MicrosoftOpenTelemetryBrowserCookieManager } from "../../../src/types.js";
 import { useMicrosoftOpenTelemetry } from "../../../src/useMicrosoftOpenTelemetry.js";
 import { createCookieUserContext } from "../../../src/user/createCookieUserContext.js";
+import { createUserContext } from "../../../src/user/createUserContext.js";
+import { MemoryStorage } from "../../fixtures/sessionStorageSetup.js";
 
 const anonymousCookie = "opentelemetry-user";
 const authenticatedCookie = "opentelemetry-auth-user";
@@ -40,6 +43,190 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
+
+it.each([false, true])(
+  "invokes legacy cleanup only for explicit logout and disable (initially enabled: %s)",
+  (enabled) => {
+    const { cookies } = fakeManager();
+    const cleanup = vi.fn((_action: "clear" | "purge") => {});
+    const { context, provider, shutdown } = createCookieUserContext(
+      enabled,
+      cookies,
+      "app-",
+      undefined,
+      true,
+      cleanup,
+    );
+    provider.getAnonymousUserId();
+    context.setAuthenticatedUserContext("memory-user", "account");
+    context.setEnabled(true);
+    context.setAuthenticatedUserContext("persisted-user", "account", true);
+    expect(cleanup).not.toHaveBeenCalled();
+
+    context.clearAuthenticatedUserContext();
+    expect(cleanup.mock.calls).toEqual([["clear"]]);
+    context.setEnabled(false);
+    context.setEnabled(false);
+    expect(cleanup.mock.calls).toEqual([["clear"], ["purge"], ["purge"]]);
+
+    cleanup.mockClear();
+    shutdown();
+    context.setEnabled(true);
+    context.setAuthenticatedUserContext("stale-user", undefined, true);
+    provider.getAnonymousUserId();
+    expect(cleanup).not.toHaveBeenCalled();
+    context.clearAuthenticatedUserContext();
+    context.setEnabled(false);
+    expect(cleanup.mock.calls).toEqual([["clear"], ["purge"]]);
+  },
+);
+
+it.each(["clear", "purge"] as const)(
+  "contains legacy %s cleanup failures independently of cookie cleanup failures",
+  (action) => {
+    const { cookies } = fakeManager();
+    const cleanup = vi.fn((_action: "clear" | "purge") => {
+      throw new Error("private legacy identity");
+    });
+    const warn = vi.spyOn(diag, "warn");
+    const { context, provider } = createCookieUserContext(
+      true,
+      cookies,
+      "",
+      undefined,
+      true,
+      cleanup,
+    );
+    context.setAuthenticatedUserContext("user", "account", true);
+    cookies.del.mockImplementation(() => {
+      throw new Error("cookie deletion failed");
+    });
+    cookies.purge.mockImplementation(() => {
+      throw new Error("cookie purge failed");
+    });
+
+    expect(() => {
+      if (action === "clear") context.clearAuthenticatedUserContext();
+      else context.setEnabled(false);
+    }).not.toThrow();
+    expect(cleanup).toHaveBeenCalledExactlyOnceWith(action);
+    if (action === "clear") {
+      expect(provider.getAuthenticatedUserId()).toBeUndefined();
+      expect(provider.getAccountId()).toBeUndefined();
+      expect(provider.getAnonymousUserId()).toBeDefined();
+      expect(cookies.del).toHaveBeenCalledWith(authenticatedCookie);
+    } else {
+      expect(provider.getAnonymousUserId()).toBeUndefined();
+      expect(provider.getAuthenticatedUserId()).toBe("user");
+      expect(provider.getAccountId()).toBe("account");
+      expect(cookies.purge.mock.calls).toEqual([[anonymousCookie], [authenticatedCookie]]);
+    }
+    expect(warn).not.toHaveBeenCalled();
+  },
+);
+
+it.each([
+  { prefix: "", enabled: false },
+  { prefix: "", enabled: true },
+  { prefix: "app-", enabled: false },
+  { prefix: "app-", enabled: true },
+])("scopes legacy cleanup without restoring identity (%j)", ({ prefix, enabled }) => {
+  const localStorage = new MemoryStorage();
+  const legacy = JSON.stringify({
+    anonymousId: "old-anonymous",
+    authenticatedUserId: "old-user",
+    accountId: "old-account",
+  });
+  const key = `${prefix}${anonymousCookie}`;
+  const otherKey = `${prefix ? "" : "other-"}${anonymousCookie}`;
+  localStorage.setItem(key, legacy);
+  localStorage.setItem(otherKey, legacy);
+  const local = vi.spyOn(window, "localStorage", "get").mockReturnValue(localStorage);
+  const session = vi.spyOn(window, "sessionStorage", "get");
+  const storage = createKeyValueStorage("localStorage", "Legacy cleanup unavailable.", prefix);
+  // The previous provider is a cleanup reference, not a source for cookie-backed identity.
+  const previous = createUserContext(false, storage);
+  const cleanup = vi.fn((action: "clear" | "purge") => {
+    if (action === "clear") previous.context.clearAuthenticatedUserContext();
+    else previous.context.setEnabled(false);
+  });
+  const { cookies } = fakeManager();
+  const { context, provider } = createCookieUserContext(
+    enabled,
+    cookies,
+    prefix,
+    undefined,
+    true,
+    cleanup,
+  );
+  expect(provider.getAnonymousUserId()).not.toBe("old-anonymous");
+  expect(provider.getAuthenticatedUserId()).toBeUndefined();
+  expect(provider.getAccountId()).toBeUndefined();
+  expect(cleanup).not.toHaveBeenCalled();
+  expect(local).not.toHaveBeenCalled();
+  expect(localStorage.getItem(key)).toBe(legacy);
+
+  context.setAuthenticatedUserContext("current-user", "current-account", true);
+  context.clearAuthenticatedUserContext();
+  expect(cleanup).toHaveBeenCalledExactlyOnceWith("clear");
+  expect(local).toHaveBeenCalled();
+  expect(localStorage.getItem(key)).toBe(JSON.stringify({ anonymousId: "old-anonymous" }));
+  expect(provider.getAuthenticatedUserId()).toBeUndefined();
+  expect(provider.getAccountId()).toBeUndefined();
+  context.setEnabled(true);
+  expect(provider.getAnonymousUserId()).not.toBe("old-anonymous");
+  expect(provider.getAuthenticatedUserId()).toBeUndefined();
+  expect(cookies.get(`${prefix}${authenticatedCookie}`)).toBe("");
+  expect(localStorage.getItem(otherKey)).toBe(legacy);
+
+  // Disabling removes the whole old record, but still keeps current authentication in memory.
+  localStorage.setItem(key, legacy);
+  context.setAuthenticatedUserContext("current-user", "current-account", true);
+  context.setEnabled(false);
+  expect(localStorage.getItem(key)).toBeNull();
+  expect(localStorage.getItem(otherKey)).toBe(legacy);
+  expect(provider.getAnonymousUserId()).toBeUndefined();
+  expect(provider.getAuthenticatedUserId()).toBe("current-user");
+  expect(provider.getAccountId()).toBe("current-account");
+  expect(cleanup.mock.calls).toEqual([["clear"], ["purge"]]);
+  expect(session).not.toHaveBeenCalled();
+});
+
+it.each([false, true])(
+  "keeps legacy cleanup free of Web Storage access when permission is denied (initially enabled: %s)",
+  (enabled) => {
+    const local = vi.spyOn(window, "localStorage", "get").mockImplementation(() => {
+      throw new Error("Web Storage must not be accessed");
+    });
+    const session = vi.spyOn(window, "sessionStorage", "get").mockImplementation(() => {
+      throw new Error("Web Storage must not be accessed");
+    });
+    const storage = createKeyValueStorage("localStorage", "Legacy cleanup unavailable.", "app-");
+    const previous = createUserContext(false, storage, false);
+    const cleanup = vi.fn((action: "clear" | "purge") => {
+      if (action === "clear") previous.context.clearAuthenticatedUserContext();
+      else previous.context.setEnabled(false);
+    });
+    const { context, shutdown } = createCookieUserContext(
+      enabled,
+      fakeManager().cookies,
+      "app-",
+      undefined,
+      true,
+      cleanup,
+    );
+    context.setAuthenticatedUserContext("user", "account", true);
+    context.clearAuthenticatedUserContext();
+    context.setEnabled(false);
+    context.setEnabled(true);
+    shutdown();
+    context.clearAuthenticatedUserContext();
+    context.setEnabled(false);
+    expect(cleanup.mock.calls).toEqual([["clear"], ["purge"], ["clear"], ["purge"]]);
+    expect(local).not.toHaveBeenCalled();
+    expect(session).not.toHaveBeenCalled();
+  },
+);
 
 it("does not restore a previous login after an oversized cookie replacement", () => {
   const prefix = "oversized-auth-test-";
