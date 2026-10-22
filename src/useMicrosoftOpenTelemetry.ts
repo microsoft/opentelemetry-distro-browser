@@ -136,8 +136,8 @@ export async function useMicrosoftOpenTelemetry(
         )
       : undefined;
   getSharedRegistry();
-  const samplingPercentage = () => configuration.snapshot().samplingPercentage ?? 100;
-  const sampler = new RuntimeSampler(() => configuration.snapshot().samplingPercentage);
+  const readSamplingPercentage = () => configuration.snapshot().samplingPercentage;
+  const sampler = new RuntimeSampler(readSamplingPercentage);
   const userContext = createUserContext(
     options.userContext?.enabled,
     createKeyValueStorage(
@@ -178,7 +178,7 @@ export async function useMicrosoftOpenTelemetry(
   const owned = createOwnedInstrumentations(
     { ...options, pageView },
     () => getPageOperation(correlationState.current),
-    samplingPercentage,
+    () => readSamplingPercentage() ?? 100,
   );
   const pageViewInstrumentation = owned[0];
   const correlation = pageViewInstrumentation
@@ -339,7 +339,7 @@ export async function useMicrosoftOpenTelemetry(
         azureMonitor,
         spanProcessors?.length !== 0,
         logRecordProcessors?.length !== 0,
-        () => configuration.snapshot().samplingPercentage,
+        readSamplingPercentage,
         azureMonitorExporters,
       );
       stopAzureMonitorStartup = stop;

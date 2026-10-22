@@ -22,15 +22,12 @@ export interface MicrosoftOpenTelemetryBrowserConfigurationUpdateResult {
 }
 
 /** Captures data before queuing, without invoking application getters. */
-function samplingPercentage(patch: MicrosoftOpenTelemetryBrowserConfigurationUpdate): {
-  supplied: boolean;
-  value: number | undefined;
-} {
-  if (
-    !patch ||
-    typeof patch !== "object" ||
-    (Object.getPrototypeOf(patch) !== Object.prototype && Object.getPrototypeOf(patch) !== null)
-  ) {
+function samplingPercentage(
+  patch: MicrosoftOpenTelemetryBrowserConfigurationUpdate,
+): { value: number | undefined } | undefined {
+  const prototype: unknown =
+    patch && typeof patch === "object" ? Object.getPrototypeOf(patch) : undefined;
+  if (prototype !== Object.prototype && prototype !== null) {
     throw new TypeError("Configuration must be a plain object.");
   }
   for (const key of Reflect.ownKeys(patch)) {
@@ -46,10 +43,9 @@ function samplingPercentage(patch: MicrosoftOpenTelemetryBrowserConfigurationUpd
   if (value !== undefined && typeof value !== "number") {
     throw new TypeError("samplingPercentage must be a number.");
   }
-  return {
-    supplied: !!descriptor,
-    value: value === undefined ? undefined : validateSamplingPercentage(value),
-  };
+  if (value !== undefined) validateSamplingPercentage(value);
+  // Descriptors are fresh data objects, so later patch mutations cannot change the captured value.
+  return descriptor as { value: number | undefined } | undefined;
 }
 
 /** Sampling-only instance controller; publication has no external lifecycle side effects. */
@@ -57,7 +53,7 @@ export function createRuntimeConfiguration(
   initial: MicrosoftOpenTelemetryBrowserConfigurationUpdate,
   isStopped: () => boolean,
 ) {
-  let current = Object.freeze({ samplingPercentage: samplingPercentage(initial).value });
+  let current = Object.freeze({ samplingPercentage: samplingPercentage(initial)?.value });
   let revision = 0;
   let queue = Promise.resolve();
 
@@ -82,7 +78,7 @@ export function createRuntimeConfiguration(
       }
       const operation = queue.then(() => {
         if (isStopped()) throw new Error("Telemetry instance is stopped.");
-        const value = update.supplied || !mergeExisting ? update.value : current.samplingPercentage;
+        const value = update || !mergeExisting ? update?.value : current.samplingPercentage;
         const changed = value !== current.samplingPercentage;
         if (changed) {
           current = Object.freeze({ samplingPercentage: value });

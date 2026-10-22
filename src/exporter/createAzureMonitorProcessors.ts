@@ -16,7 +16,7 @@ export function createAzureMonitorProcessors(
   options: AzureMonitorOptions<string | Promise<string>>,
   tracesEnabled: boolean,
   logsEnabled: boolean,
-  samplingPercentage: number | undefined | (() => number | undefined),
+  readSamplingPercentage: () => number | undefined,
   exporters: (AzureMonitorSpanExporter | AzureMonitorLogRecordExporter)[],
 ): {
   span?: SpanProcessor;
@@ -26,8 +26,6 @@ export function createAzureMonitorProcessors(
 } {
   let span: SpanProcessor | undefined;
   let log: AzureMonitorSamplingLogRecordProcessor | undefined;
-  const readSamplingPercentage = () =>
-    typeof samplingPercentage === "function" ? samplingPercentage() : samplingPercentage;
 
   function initialize(connectionString: string): void {
     const resolved = { ...options, connectionString };
