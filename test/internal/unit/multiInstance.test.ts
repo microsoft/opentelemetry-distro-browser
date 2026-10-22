@@ -1046,6 +1046,78 @@ describe("page visit time through useMicrosoftOpenTelemetry", () => {
     expect(visitKeys()).toEqual([visitKey(namePrefix, 0)]);
   });
 
+  it.each(["custom processors", "pending connection string"])(
+    "restores a seeded predecessor after a later instrumentation fails with %s",
+    async (destination) => {
+      const namePrefix = `visit-enable-rollback-${destination}-`;
+      const key = visitKey(namePrefix, 0);
+      const previous = seedVisit(key);
+      const saved = storage.getItem(key);
+      const accepted: ReadWriteLogRecord[] = [];
+      const options: MicrosoftOpenTelemetryBrowserOptions = {
+        storage: { namePrefix },
+        pageView: { autoTrackPageVisitTime: true },
+        // This queue must be discarded on failure, without consuming the persisted visit.
+        ...(destination === "pending connection string"
+          ? { azureMonitor: { connectionString: new Promise<string>(() => {}) } }
+          : {}),
+        logRecordProcessors: [
+          {
+            onEmit: (record) => {
+              accepted.push(record);
+            },
+            async forceFlush() {},
+            async shutdown() {},
+          },
+        ],
+      };
+      const failure = new Error("later instrumentation enable failed");
+
+      await expect(
+        startVisits("failed", {
+          ...options,
+          instrumentations: [
+            {
+              ...createProbe(),
+              enable() {
+                expect(JSON.parse(storage.getItem(key)!)).toMatchObject({
+                  name: `failed:${location.pathname}`,
+                  startTimeUnixMs: performance.timeOrigin,
+                });
+                expect(
+                  accepted.filter((record) => record.eventName === "browser.page_visit"),
+                ).toEqual([]);
+                throw failure;
+              },
+            },
+          ],
+        }),
+      ).rejects.toBe(failure);
+
+      expect(storage.getItem(key)).toBe(saved);
+      expect(accepted.filter((record) => record.eventName === "browser.page_visit")).toEqual([]);
+      expect(getSharedRegistry().pageVisitSlots?.has(visitNamespace(namePrefix))).toBe(false);
+      const retry = await startVisits("retry", options);
+      expect(visitKeys()).toEqual([key]);
+      expect(retry.visits()).toHaveLength(1);
+      expect(retry.visits()).toMatchObject([
+        {
+          spanContext: { traceId: previous.id },
+          attributes: {
+            "browser.page_view.id": previous.id,
+            "browser.page_view.name": previous.name,
+            "url.full": previous.url,
+            "browser.page_visit.duration": 2_000,
+          },
+        },
+      ]);
+      // Synchronous destinations must not receive a duplicate from the failed attempt.
+      expect(accepted.filter((record) => record.eventName === "browser.page_visit")).toHaveLength(
+        1,
+      );
+    },
+  );
+
   it.each(["instrumentation", "processor"])(
     "releases a slot after throwing %s cleanup without overlapping re-entrant startup",
     async (stage) => {

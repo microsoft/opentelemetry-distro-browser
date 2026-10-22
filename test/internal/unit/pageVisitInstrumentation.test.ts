@@ -393,6 +393,88 @@ describe("PageViewInstrumentation", () => {
     });
 
     it.each([false, true])(
+      "reports a restored document sharing the current trace ID (managed startup=%s)",
+      (managed) => {
+        const storage = storageInMemory();
+        const id = "1".repeat(32);
+        storage.setItem(
+          "visit.same-trace",
+          JSON.stringify({
+            id,
+            name: "Previous document",
+            url: "https://example.test/previous",
+            startTimeUnixMs: origin - 4_000,
+          }),
+        );
+        const { instrumentation, provider } = createInstrumentation({
+          autoTrackPageVisitTime: true,
+          generatePageViewId: () => id,
+          visitStorage: storage,
+          visitStorageKey: "visit.same-trace",
+        });
+        if (managed) instrumentation.beginStartup();
+
+        instrumentation.enable();
+
+        expect(instrumentation.pageViews.getCurrentPageView()?.id).toBe(id);
+        expect(visits(provider)).toHaveLength(managed ? 0 : 1);
+        instrumentation.commitStartup();
+        instrumentation.commitStartup();
+        instrumentation.rollbackStartup();
+        expect(visits(provider)).toHaveLength(1);
+        expect(attributesOf(visits(provider)[0] as LogRecord)).toMatchObject({
+          [ATTR_PAGE_VIEW_ID]: id,
+          [ATTR_PAGE_VIEW_NAME]: "Previous document",
+          "browser.page_visit.duration": 4_000,
+        });
+        instrumentation.disable();
+        expect(storage.getItem("visit.same-trace")).toEqual({ success: true, value: null });
+      },
+    );
+
+    it.each(["rollbackStartup", "disable"] as const)(
+      "%s restores an unreported predecessor for a managed startup retry",
+      (cleanup) => {
+        const storage = storageInMemory();
+        const key = "visit.startup-retry";
+        const previous = {
+          id: "1".repeat(32),
+          name: "Previous document",
+          url: "https://example.test/previous",
+          startTimeUnixMs: origin - 4_000,
+        };
+        const saved = JSON.stringify(previous);
+        storage.setItem(key, saved);
+        const config = {
+          autoTrackPageVisitTime: true,
+          visitStorage: storage,
+          visitStorageKey: key,
+        };
+        const first = createInstrumentation(config);
+        first.instrumentation.beginStartup();
+        first.instrumentation.enable();
+        expect(visits(first.provider)).toEqual([]);
+
+        first.instrumentation[cleanup]();
+        first.instrumentation.disable();
+        first.instrumentation.commitStartup();
+
+        expect(visits(first.provider)).toEqual([]);
+        expect(storage.getItem(key)).toEqual({ success: true, value: saved });
+        const retry = createInstrumentation(config);
+        retry.instrumentation.beginStartup();
+        retry.instrumentation.enable();
+        expect(visits(retry.provider)).toEqual([]);
+        retry.instrumentation.commitStartup();
+        expect(visits(retry.provider)).toHaveLength(1);
+        expect(attributesOf(visits(retry.provider)[0] as LogRecord)).toMatchObject({
+          [ATTR_PAGE_VIEW_ID]: previous.id,
+          "browser.page_visit.duration": 4_000,
+        });
+      },
+    );
+
+    it.each([false, true])(
       "resolves and redacts untrusted relative stored URLs before custom sanitization (custom=%s)",
       (custom) => {
         history.replaceState(null, "", "/restore-current");

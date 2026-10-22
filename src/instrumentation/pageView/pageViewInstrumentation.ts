@@ -178,6 +178,7 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
   #historyLength = 0;
   #explicitName: string | undefined;
   #visit: PageVisitTime | undefined;
+  #startupPending = false;
 
   /** Aborted by `disable()` to remove every listener added while enabled. */
   #listeners: AbortController | undefined;
@@ -246,6 +247,24 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
    */
   public settleForUnload(): void {
     this.#settle(DURATION_SOURCE_PAGE_HIDE);
+  }
+
+  /** @internal */
+  public beginStartup(): void {
+    this.#startupPending = true;
+    this.#visit?.beginStartup();
+  }
+
+  /** @internal */
+  public commitStartup(): void {
+    this.#startupPending = false;
+    this.#visit?.commitStartup();
+  }
+
+  /** @internal */
+  public rollbackStartup(): void {
+    this.#startupPending = false;
+    this.#visit?.rollbackStartup();
   }
 
   #currentOperation(): SpanContext {
@@ -359,6 +378,7 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
             "Invalid stored page visit URL; dropping the URL",
           ) ?? "",
       );
+      if (this.#startupPending) this.#visit.beginStartup();
     }
     this.#lastUrl = location.href;
     this.#historyLength = history.length;

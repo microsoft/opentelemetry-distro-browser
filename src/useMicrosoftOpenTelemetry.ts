@@ -72,12 +72,14 @@ function createOwnedInstrumentations(
   if (pageView.enabled !== false) {
     let visitStorageKey: string | undefined;
     if (pageView.autoTrackPageVisitTime) {
+      const namePrefix = options.storage?.namePrefix ?? "";
+      // An explicit prefix identifies the destination even before a deferred string resolves.
       const destination =
-        typeof options.azureMonitor?.connectionString === "string"
+        !namePrefix && typeof options.azureMonitor?.connectionString === "string"
           ? parseConnectionString(options.azureMonitor.connectionString)
           : undefined;
       const namespace = JSON.stringify([
-        options.storage?.namePrefix ?? "",
+        namePrefix,
         destination?.instrumentationKey,
         destination?.ingestionEndpoint,
       ]);
@@ -92,6 +94,8 @@ function createOwnedInstrumentations(
           visitStorageKey,
           visitStorage:
             options.storage?.enabled === false ||
+            // Same-origin frames share sessionStorage, but slot ownership is realm-local.
+            window.parent !== window ||
             (options.azureMonitor &&
               typeof options.azureMonitor.connectionString !== "string" &&
               !options.storage?.namePrefix)
@@ -276,6 +280,9 @@ export async function useMicrosoftOpenTelemetry(
       stopping = true;
       const errors: unknown[] = [];
       for (const cleanup of [
+        () => {
+          if (!initialized) pageViewInstrumentation?.rollbackStartup();
+        },
         () => stopAzureMonitorStartup?.(),
         () => instance?.detach(),
         () => {
@@ -374,6 +381,7 @@ export async function useMicrosoftOpenTelemetry(
       },
     );
     const pageInstrumentation = (pageViewInstrumentation = owned[0]);
+    pageInstrumentation?.beginStartup();
     correlation = pageInstrumentation
       ? new PageViewCorrelation(
           () => pageInstrumentation.getOperationContext(),
@@ -456,6 +464,7 @@ export async function useMicrosoftOpenTelemetry(
     }
     instance.commit();
     initialized = true;
+    pageViewInstrumentation?.commitStartup();
   } catch (error) {
     try {
       await shutdown();

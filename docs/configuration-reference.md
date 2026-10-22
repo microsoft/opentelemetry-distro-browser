@@ -273,13 +273,26 @@ page's name, sanitized URL, page-view ID and elapsed duration; Azure Monitor map
 
 SPA transitions use in-memory state. Full navigations on the same origin in the same tab use
 `sessionStorage` to hand the previous visit to the next instrumented page, respecting
-`storage.enabled` and `storage.namePrefix`. State uses a stable per-destination namespace with
-instance slots. Multiple instances sharing a destination and prefix must initialize in a consistent
-order across pages so their slots match; use distinct `storage.namePrefix` values to isolate them.
+`storage.enabled` and `storage.namePrefix`. With no nonempty prefix, a string connection string
+automatically isolates state by destination. A nonempty `storage.namePrefix` is the entire
+destination identity for page-visit state, for both string and deferred connection strings. Dedicate
+each explicit prefix to one destination and keep it consistent across pages; changing the connection
+string's form does not change the visit namespace. Reusing a prefix for different destinations can
+mix their visits.
+
+Each namespace has instance slots. Multiple instances sharing a namespace must initialize in a
+consistent order across pages so their slots match; use distinct `storage.namePrefix` values to
+isolate them.
 When storage is disabled or unavailable, timing falls back to in-memory SPA transitions only.
 For a deferred Azure Monitor connection string, supply an explicit, destination-specific
 `storage.namePrefix` to enable cross-document persistence before resolution. Without it, timing
 stays in memory so an unknown destination cannot consume another destination's visit.
+
+Child frames always keep page-visit timing in memory, even with an explicit prefix. Same-origin
+frames share their parent's `sessionStorage`, but have independent instance slots; a prefix alone
+cannot establish browsing-context ownership. Child frames therefore neither consume nor overwrite
+the parent's visit state, and do not bridge full-document navigations. Their SPA visits still work.
+This restriction applies to page-visit persistence, not other SDK-managed storage.
 
 No visit log or metric is emitted on `pagehide`, hidden visibility or unload. A final visit with no
 next instrumented page is skipped. On back/forward cache (BFCache) restore, the tracker reads the

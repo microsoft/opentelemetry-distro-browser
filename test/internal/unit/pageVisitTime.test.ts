@@ -123,6 +123,137 @@ describe("PageVisitTime", () => {
     expect(report).toHaveBeenCalledTimes(1);
   });
 
+  it.each([false, true])(
+    "reports separate occurrences with the same trace ID (restored=%s)",
+    (restored) => {
+      const storage = memoryStorage();
+      const report = vi.fn();
+      const tracker = new PageVisitTime(storage, key, report);
+      const initial = page(1, 1_000);
+      const next = { ...initial, name: "Next document", startTimeUnixMs: 8_000 };
+      if (restored) storage.setItem(key, JSON.stringify(visitOf(initial)));
+      else tracker.start(initial);
+
+      tracker.start(next);
+      tracker.start({ ...next, name: "Final next document" });
+
+      expect(report).toHaveBeenCalledExactlyOnceWith(visitOf(initial), 7_000);
+      expect(storage.getItem(key)).toEqual({
+        success: true,
+        value: JSON.stringify({ ...visitOf(next), name: "Final next document" }),
+      });
+      tracker.stop();
+      expect(storage.getItem(key)).toEqual({ success: true, value: null });
+    },
+  );
+
+  it("defers startup visits until commit and clears the transaction before re-entrant reporting", () => {
+    const storage = memoryStorage();
+    const previous = page(1, 1_000);
+    storage.setItem(key, JSON.stringify(visitOf(previous)));
+    const report = vi.fn(() => tracker.commitStartup());
+    const tracker = new PageVisitTime(storage, key, report);
+    tracker.beginStartup();
+    tracker.start(page(2, 2_000));
+    tracker.start(page(3, 5_000));
+    expect(report).not.toHaveBeenCalled();
+
+    tracker.commitStartup();
+    tracker.commitStartup();
+    tracker.rollbackStartup();
+
+    expect(report.mock.calls).toEqual([
+      [visitOf(previous), 1_000],
+      [visitOf(page(2, 2_000)), 3_000],
+    ]);
+    tracker.stop();
+    expect(storage.getItem(key)).toEqual({ success: true, value: null });
+  });
+
+  it.each([false, true])(
+    "restores the unsanitized predecessor after startup rollback (suspended=%s)",
+    (suspended) => {
+      const storage = memoryStorage();
+      const previous = page(1, 1_000);
+      const saved = JSON.stringify(visitOf(previous));
+      storage.setItem(key, saved);
+      const report = vi.fn();
+      const tracker = new PageVisitTime(storage, key, report, (url) => `${url}/sanitized`);
+      tracker.beginStartup();
+      tracker.start(page(2, 2_000));
+      tracker.start(page(3, 3_000));
+      if (suspended) tracker.suspend();
+
+      tracker.rollbackStartup();
+      tracker.rollbackStartup();
+      tracker.stop();
+      tracker.commitStartup();
+
+      expect(report).not.toHaveBeenCalled();
+      expect(storage.getItem(key)).toEqual({ success: true, value: saved });
+      const retry = new PageVisitTime(storage, key, report, (url) => `${url}/sanitized`);
+      retry.beginStartup();
+      retry.start(page(4, 5_000));
+      retry.commitStartup();
+      expect(report).toHaveBeenCalledExactlyOnceWith(
+        { ...visitOf(previous), url: `${previous.url}/sanitized` },
+        4_000,
+      );
+    },
+  );
+
+  it("rolls back an uncommitted startup when stop is called directly", () => {
+    const storage = memoryStorage();
+    const previous = page(1, 1_000);
+    const saved = JSON.stringify(visitOf(previous));
+    storage.setItem(key, saved);
+    const report = vi.fn();
+    const tracker = new PageVisitTime(storage, key, report);
+    tracker.beginStartup();
+    tracker.start(page(2, 2_000));
+
+    tracker.stop();
+    tracker.commitStartup();
+
+    expect(report).not.toHaveBeenCalled();
+    expect(storage.getItem(key)).toEqual({ success: true, value: saved });
+  });
+
+  it("removes a failed startup's successor when there was no predecessor", () => {
+    const storage = memoryStorage();
+    const tracker = new PageVisitTime(storage, key, vi.fn());
+    tracker.beginStartup();
+    tracker.start(page(1, 1_000));
+
+    tracker.rollbackStartup();
+
+    expect(storage.getItem(key)).toEqual({ success: true, value: null });
+  });
+
+  it.each(["stop", "rollbackStartup"] as const)(
+    "%s preserves a newer owner with the same trace ID and a different start",
+    (cleanup) => {
+      const storage = memoryStorage();
+      storage.setItem(key, JSON.stringify(visitOf(page(1, 1_000))));
+      const report = vi.fn();
+      const tracker = new PageVisitTime(storage, key, report);
+      if (cleanup === "rollbackStartup") tracker.beginStartup();
+      const current = page(2, 2_000);
+      tracker.start(current);
+      const newer = { ...visitOf(current), startTimeUnixMs: 3_000 };
+      const saved = JSON.stringify(newer);
+      storage.setItem(key, saved);
+      report.mockClear();
+
+      tracker[cleanup]();
+      tracker.stop();
+      tracker.commitStartup();
+
+      expect(storage.getItem(key)).toEqual({ success: true, value: saved });
+      expect(report).not.toHaveBeenCalled();
+    },
+  );
+
   it.each([
     "not JSON",
     "null",
