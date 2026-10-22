@@ -331,13 +331,28 @@ describe("distribution-owned instrumentation", () => {
     });
     const failure = new Error("session serialization failed");
     const error = vi.spyOn(diag, "error").mockImplementation(() => {});
-    // Cookie refresh is throttled at this timestamp, so only backup serializes the session.
-    const stringify = vi.spyOn(JSON, "stringify").mockImplementationOnce(() => {
+    const failBackup = vi.fn(() => {
       throw failure;
+    });
+    const originalStringify = JSON.stringify;
+    // Cookie refresh is throttled at this timestamp. Fail only session serialization, not
+    // unrelated browser/SDK serialization that can also run during page-hide settlement.
+    const stringify = vi.spyOn(JSON, "stringify").mockImplementation((...args) => {
+      const [value] = args;
+      if (
+        typeof value === "object" &&
+        value !== null &&
+        "id" in value &&
+        "startTimestamp" in value &&
+        "lastActivityTimestamp" in value
+      ) {
+        return failBackup();
+      }
+      return originalStringify(...args);
     });
     try {
       window.dispatchEvent(new Event("pagehide"));
-      expect(stringify).toHaveBeenCalledOnce();
+      expect(failBackup).toHaveBeenCalledOnce();
     } finally {
       stringify.mockRestore();
     }
