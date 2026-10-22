@@ -241,6 +241,75 @@ it.each([
   },
 );
 
+it("the built-in cookie manager floors a generic 0.5-second lifetime to immediate expiry", () => {
+  const backend = expiringCookieBackend();
+  const cookies = createCookieManager(backend);
+  expect(cookies.set(key, "value", 0.5)).toBe(true);
+  expect(backend.setCookie.mock.calls.at(-1)?.[1]).toContain("; max-age=0;");
+  expect(cookies.get(key)).toBe("");
+  cookies.shutdown();
+});
+
+it.each(
+  [
+    { inactivityTimeout: 0.5, maxDuration: 60, write: 0, reload: 100, boundary: 600, age: 1 },
+    { inactivityTimeout: 0, maxDuration: 0.5, write: 0, reload: 100, boundary: 500, age: 1 },
+    { inactivityTimeout: 1.5, maxDuration: 60, write: 0, reload: 1100, boundary: 2600, age: 2 },
+    { inactivityTimeout: 10, maxDuration: 2, write: 1500, reload: 1600, boundary: 2000, age: 1 },
+    { inactivityTimeout: 10, maxDuration: 2, write: 500, reload: 1600, boundary: 2000, age: 2 },
+  ].flatMap((options) =>
+    [false, true].map((reloadAtBoundary) => ({ ...options, reloadAtBoundary })),
+  ),
+)(
+  "preserves fractional cookie lifetime (idle=$inactivityTimeout, max=$maxDuration, write=$write) without storage; boundary reload=$reloadAtBoundary",
+  async ({ inactivityTimeout, maxDuration, write, reload, boundary, age, reloadAtBoundary }) => {
+    const local = vi.spyOn(window, "localStorage", "get");
+    const backend = expiringCookieBackend();
+    const cookies = createCookieManager(backend);
+    const options = { inactivityTimeout, maxDuration };
+    const first = createSession(options, null, cookies);
+    const start = Date.now();
+    await first.start();
+    const id = first.getSessionId();
+    vi.setSystemTime(start + write);
+    expect(first.getSessionId()).toBe(id);
+    const formatted = backend.setCookie.mock.calls.at(-1)?.[1];
+    first.shutdown();
+
+    vi.setSystemTime(start + reload);
+    // A new manager models a reload without retaining any pending or instance-local state.
+    cookies.shutdown();
+    const reloadedCookies = createCookieManager(backend);
+    const reloaded = createSession(options, null, reloadedCookies);
+    await reloaded.start();
+    expect(reloaded.getSessionId()).toBe(id);
+    expect(formatted).toContain(`; max-age=${age};`);
+
+    vi.setSystemTime(start + boundary);
+    // The rounded-up cookie still exists: timestamps, not browser expiry, must end the session.
+    expect(decode(reloadedCookies.get(key))).toEqual({
+      id,
+      startTimestamp: start,
+      lastActivityTimestamp: start + reload,
+    });
+    if (reloadAtBoundary) {
+      reloaded.shutdown();
+      reloadedCookies.shutdown();
+      const boundaryCookies = createCookieManager(backend);
+      const atBoundary = createSession(options, null, boundaryCookies);
+      await atBoundary.start();
+      expect(atBoundary.getSessionId()).not.toBe(id);
+      atBoundary.shutdown();
+      boundaryCookies.shutdown();
+    } else {
+      expect(reloaded.getSessionId()).not.toBe(id);
+      reloaded.shutdown();
+      reloadedCookies.shutdown();
+    }
+    expect(local).not.toHaveBeenCalled();
+  },
+);
+
 it.each([0, 10])(
   "retains browser-session cookie semantics with maxDuration=0 and inactivity=%s",
   async (inactivityTimeout) => {

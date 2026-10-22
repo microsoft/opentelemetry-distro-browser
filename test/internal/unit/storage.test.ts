@@ -1,8 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-import { context, diag, propagation, trace } from "@opentelemetry/api";
-import { logs } from "@opentelemetry/api-logs";
+import { context, diag, propagation, trace, type Tracer } from "@opentelemetry/api";
+import { logs, type Logger } from "@opentelemetry/api-logs";
 import type { ReadWriteLogRecord } from "@opentelemetry/sdk-logs";
 import type { Span } from "@opentelemetry/sdk-trace-base";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -13,6 +13,7 @@ import {
 } from "../../../src/index.js";
 import { getSdkLoaderScript } from "../../../src/snippet.js";
 import { TEST_INSTRUMENTATION_KEY } from "../../fixtures/azureMonitor.js";
+import { MemoryStorage } from "../../fixtures/sessionStorageSetup.js";
 
 const AZURE_MONITOR_CONNECTION_STRING = `InstrumentationKey=${TEST_INSTRUMENTATION_KEY};IngestionEndpoint=https://example.test`;
 
@@ -61,9 +62,26 @@ afterEach(async () => {
 async function initialize(options: MicrosoftOpenTelemetryBrowserOptions = {}) {
   const spans: Span[] = [];
   const records: ReadWriteLogRecord[] = [];
+  let tracer: Tracer;
+  let logger: Logger;
   const handle = await useMicrosoftOpenTelemetry({
     ...options,
     pageView: { enabled: false },
+    instrumentations: [
+      ...(options.instrumentations ?? []),
+      {
+        // Bind emissions to this instance even when another live handle owns the global route.
+        setTracerProvider(provider) {
+          tracer = provider.getTracer("storage-test");
+        },
+        setLoggerProvider(provider) {
+          logger = provider.getLogger("storage-test");
+        },
+        getConfig: () => ({ enabled: false }),
+        enable() {},
+        disable() {},
+      },
+    ],
     spanProcessors: [
       {
         onStart: (span) => {
@@ -88,13 +106,27 @@ async function initialize(options: MicrosoftOpenTelemetryBrowserOptions = {}) {
   return {
     handle,
     emit() {
-      trace.getTracer("storage-test").startSpan("operation").end();
-      logs.getLogger("storage-test").emit({});
+      tracer.startSpan("operation").end();
+      logger.emit({});
       const attributes = spans.at(-1)!.attributes;
       expect(records.at(-1)!.attributes).toMatchObject(attributes);
       return attributes;
     },
   };
+}
+
+function legacyUserStorage(namePrefix: string) {
+  const storage = new MemoryStorage();
+  const key = `${namePrefix}opentelemetry-user`;
+  const otherKey = `${namePrefix ? "" : "app-a-"}opentelemetry-user`;
+  const legacy = JSON.stringify({
+    anonymousId: "legacy-anonymous",
+    authenticatedUserId: "legacy-user",
+    accountId: "legacy-account",
+  });
+  storage.setItem(key, legacy);
+  storage.setItem(otherKey, legacy);
+  return { storage, key, otherKey, legacy };
 }
 
 it.each(["string", "promise"] as const)(
@@ -415,6 +447,243 @@ it("enables deferred SDK cookies while traces and logs flow immediately", async 
     accountId: "account",
   });
   expect(emit()).toMatchObject(before);
+});
+
+it.each([
+  { namePrefix: "", cleanupFails: false },
+  { namePrefix: "", cleanupFails: true },
+  { namePrefix: "app-a-", cleanupFails: false },
+  { namePrefix: "app-a-", cleanupFails: true },
+])(
+  "removes only superseded authentication on failed deferred replay and retries B (%j)",
+  async ({ namePrefix, cleanupFails }) => {
+    const name = `${namePrefix}opentelemetry-auth-user`;
+    const values = new Map<string, string>();
+    let failWrites = false;
+    let failCleanup = cleanupFails;
+    const setCookie = vi.fn((key: string, value: string) => {
+      if (failWrites) throw new Error("Cookie write denied");
+      values.set(key, value.split(";")[0]!);
+    });
+    const delCookie = vi.fn((key: string) => {
+      if (failCleanup) throw new Error("Cookie removal denied");
+      values.delete(key);
+    });
+    const options = {
+      storage: { enabled: false, namePrefix },
+      session: { enabled: false },
+      cookieCfg: {
+        getCookie: (key: string) => values.get(key) ?? "",
+        setCookie,
+        delCookie,
+      },
+    };
+    const first = await initialize(options);
+    first.handle.userContext.setAuthenticatedUserContext("A", "account-A", true);
+    expect(first.emit()).toMatchObject({ "user.id": "A", "user.account.id": "account-A" });
+    const previousAuthentication = values.get(name);
+    expect(JSON.parse(decodeURIComponent(previousAuthentication!))).toEqual({
+      authenticatedUserId: "A",
+      accountId: "account-A",
+    });
+    const manager = first.handle.getCookieMgr();
+    const controlNames = [
+      `${namePrefix}opentelemetry-user`,
+      `${namePrefix}opentelemetry-session`,
+      `${namePrefix}custom-cookie`,
+      `${namePrefix ? "" : "app-a-"}opentelemetry-auth-user`,
+    ];
+    for (const key of controlNames.slice(1)) expect(manager.set(key, "previous")).toBe(true);
+    const previousControls = controlNames.map((key) => [key, values.get(key)]);
+    manager.setEnabled(false);
+    first.handle.userContext.setAuthenticatedUserContext("B", "account-B", true);
+    for (const key of controlNames) expect(manager.set(key, values.get(key)!)).toBe(true);
+    expect(values.get(name)).toBe(previousAuthentication);
+    failWrites = true;
+    expect(() => manager.setEnabled(true)).not.toThrow();
+    expect(first.emit()).toMatchObject({ "user.id": "B", "user.account.id": "account-B" });
+    expect(delCookie.mock.calls.map(([key]) => key)).toEqual([name]);
+    expect(controlNames.map((key) => [key, values.get(key)])).toEqual(previousControls);
+    if (cleanupFails) {
+      expect(values.get(name)).toBe(previousAuthentication);
+      failCleanup = false;
+      // A failed removal must leave the pending replacement available for another bounded pass.
+      expect(() => manager.setEnabled(true)).not.toThrow();
+      expect(delCookie.mock.calls.map(([key]) => key)).toEqual([name, name]);
+    }
+    expect(values.has(name)).toBe(false);
+
+    // Keep the first manager alive for its pending retry; emissions are instance-bound.
+    const restored = await initialize(options);
+    const withoutAuthentication = restored.emit();
+    expect(withoutAuthentication["user.id"]).toBeUndefined();
+    expect(withoutAuthentication["user.account.id"]).toBeUndefined();
+    await restored.handle.shutdown();
+
+    failWrites = false;
+    manager.setEnabled(true);
+    expect(JSON.parse(decodeURIComponent(values.get(name)!))).toEqual({
+      authenticatedUserId: "B",
+      accountId: "account-B",
+    });
+    const writes = setCookie.mock.calls.length;
+    manager.setEnabled(true);
+    expect(setCookie).toHaveBeenCalledTimes(writes);
+    const recovered = await initialize(options);
+    expect(recovered.emit()).toMatchObject({ "user.id": "B", "user.account.id": "account-B" });
+  },
+);
+
+it.each([
+  { namePrefix: "", enabled: false },
+  { namePrefix: "", enabled: true },
+  { namePrefix: "app-a-", enabled: false },
+  { namePrefix: "app-a-", enabled: true },
+])(
+  "cleans legacy Web Storage only through explicit identity controls (%j)",
+  async ({ namePrefix, enabled }) => {
+    const { storage, key, otherKey, legacy } = legacyUserStorage(namePrefix);
+    const local = vi.spyOn(window, "localStorage", "get").mockReturnValue(storage);
+    const session = vi.spyOn(window, "sessionStorage", "get");
+    const read = vi.spyOn(storage, "getItem");
+    const write = vi.spyOn(storage, "setItem");
+    const remove = vi.spyOn(storage, "removeItem");
+    const { handle, emit } = await initialize({
+      storage: { namePrefix },
+      session: { enabled: false },
+      userContext: { enabled },
+    });
+    const initial = emit();
+    expect(initial["user.id"]).toBeUndefined();
+    expect(initial["user.account.id"]).toBeUndefined();
+    if (enabled) expect(initial["enduser.pseudo.id"]).toMatch(/^[0-9a-f]{32}$/);
+    else expect(initial["enduser.pseudo.id"]).toBeUndefined();
+    handle.userContext.setEnabled(true);
+    handle.userContext.setAuthenticatedUserContext("current-user", "current-account", true);
+    const current = emit();
+    expect(current).toMatchObject({
+      "user.id": "current-user",
+      "user.account.id": "current-account",
+    });
+    expect(current["enduser.pseudo.id"]).not.toBe("legacy-anonymous");
+    await handle.forceFlush();
+    for (const operation of [local, session, read, write, remove]) {
+      expect(operation).not.toHaveBeenCalled();
+    }
+    expect(storage.getItem(key)).toBe(legacy);
+    expect(storage.getItem(otherKey)).toBe(legacy);
+
+    handle.userContext.clearAuthenticatedUserContext();
+    expect(storage.getItem(key)).toBe(JSON.stringify({ anonymousId: "legacy-anonymous" }));
+    expect(storage.getItem(otherKey)).toBe(legacy);
+    const cleared = emit();
+    expect(cleared["user.id"]).toBeUndefined();
+    expect(cleared["user.account.id"]).toBeUndefined();
+    expect(cleared["enduser.pseudo.id"]).toBe(current["enduser.pseudo.id"]);
+    expect(readCookie(`${namePrefix}opentelemetry-auth-user`)).toBeNull();
+
+    // Disable must remove the whole legacy record, even when it still contains authentication.
+    storage.setItem(key, legacy);
+    handle.userContext.setAuthenticatedUserContext("current-user", "current-account", true);
+    handle.userContext.setEnabled(false);
+    expect(storage.getItem(key)).toBeNull();
+    expect(storage.getItem(otherKey)).toBe(legacy);
+    expect(emit()["enduser.pseudo.id"]).toBeUndefined();
+    expect(readCookie(`${namePrefix}opentelemetry-user`)).toBeNull();
+    expect(readCookie(`${namePrefix}opentelemetry-auth-user`)).toBeNull();
+    expect(session).not.toHaveBeenCalled();
+  },
+);
+
+it.each(["", "app-a-"])(
+  "never accesses legacy Web Storage through explicit controls when storage is disabled (prefix=%j)",
+  async (namePrefix) => {
+    const { storage, key, otherKey, legacy } = legacyUserStorage(namePrefix);
+    const local = vi.spyOn(window, "localStorage", "get").mockReturnValue(storage);
+    const session = vi.spyOn(window, "sessionStorage", "get");
+    const read = vi.spyOn(storage, "getItem");
+    const write = vi.spyOn(storage, "setItem");
+    const remove = vi.spyOn(storage, "removeItem");
+    const { handle, emit } = await initialize({ storage: { enabled: false, namePrefix } });
+    expect(emit()["user.id"]).toBeUndefined();
+    handle.userContext.setEnabled(true);
+    handle.userContext.setAuthenticatedUserContext("current-user", "current-account", true);
+    expect(emit()["user.id"]).toBe("current-user");
+    handle.userContext.clearAuthenticatedUserContext();
+    handle.userContext.setEnabled(false);
+    handle.userContext.setEnabled(true);
+    await handle.forceFlush();
+    window.dispatchEvent(new PageTransitionEvent("pagehide"));
+    await handle.shutdown();
+    handle.userContext.clearAuthenticatedUserContext();
+    handle.userContext.setEnabled(false);
+    for (const operation of [local, session, read, write, remove]) {
+      expect(operation).not.toHaveBeenCalled();
+    }
+    expect(storage.getItem(key)).toBe(legacy);
+    expect(storage.getItem(otherKey)).toBe(legacy);
+  },
+);
+
+it.each(["read", "write", "write and remove"] as const)(
+  "contains legacy logout %s failures independently of cookie removal failures",
+  async (failure) => {
+    const { storage, key, otherKey, legacy } = legacyUserStorage("app-a-");
+    vi.spyOn(window, "localStorage", "get").mockReturnValue(storage);
+    const delCookie = vi.fn((_name: string) => {
+      throw new Error("Cookie removal denied");
+    });
+    const { handle, emit } = await initialize({
+      storage: { namePrefix: "app-a-" },
+      session: { enabled: false },
+      cookieCfg: { delCookie },
+    });
+    handle.userContext.setAuthenticatedUserContext("current-user", "current-account", true);
+    const deny = () => {
+      throw new Error("Web Storage operation denied");
+    };
+    if (failure === "read") vi.spyOn(storage, "getItem").mockImplementationOnce(deny);
+    else vi.spyOn(storage, "setItem").mockImplementationOnce(deny);
+    if (failure === "write and remove") {
+      vi.spyOn(storage, "removeItem").mockImplementationOnce(deny);
+    }
+    expect(() => handle.userContext.clearAuthenticatedUserContext()).not.toThrow();
+    const cleared = emit();
+    expect(cleared["user.id"]).toBeUndefined();
+    expect(cleared["user.account.id"]).toBeUndefined();
+    expect(delCookie).toHaveBeenCalledWith("app-a-opentelemetry-auth-user", expect.any(String));
+    expect(storage.getItem(key)).toBe(failure === "write and remove" ? legacy : null);
+    expect(storage.getItem(otherKey)).toBe(legacy);
+    // A retry removes stale authentication even while a failed write remains in backoff.
+    handle.userContext.clearAuthenticatedUserContext();
+    expect(storage.getItem(key)).toBeNull();
+  },
+);
+
+it("retries explicit legacy disable after Web Storage and cookie removal fail", async () => {
+  const { storage, key, otherKey, legacy } = legacyUserStorage("app-a-");
+  vi.spyOn(window, "localStorage", "get").mockReturnValue(storage);
+  const delCookie = vi.fn((_name: string) => {
+    throw new Error("Cookie removal denied");
+  });
+  const { handle, emit } = await initialize({
+    storage: { namePrefix: "app-a-" },
+    session: { enabled: false },
+    cookieCfg: { delCookie },
+  });
+  vi.spyOn(storage, "removeItem").mockImplementationOnce(() => {
+    throw new Error("Web Storage removal denied");
+  });
+  expect(() => handle.userContext.setEnabled(false)).not.toThrow();
+  expect(emit()["enduser.pseudo.id"]).toBeUndefined();
+  expect(delCookie.mock.calls.map(([name]) => name)).toEqual([
+    "app-a-opentelemetry-user",
+    "app-a-opentelemetry-auth-user",
+  ]);
+  expect(storage.getItem(key)).toBe(legacy);
+  expect(() => handle.userContext.setEnabled(false)).not.toThrow();
+  expect(storage.getItem(key)).toBeNull();
+  expect(storage.getItem(otherKey)).toBe(legacy);
 });
 
 it("cancels deferred SDK cookie writes on shutdown and ignores stale enable calls", async () => {
