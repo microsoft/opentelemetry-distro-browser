@@ -26,8 +26,10 @@ import {
   type MicrosoftOpenTelemetryBrowser,
   type MicrosoftOpenTelemetryBrowserOptions,
 } from "../../../src/index.js";
+import { PageViewInstrumentation } from "../../../src/instrumentation/pageView/index.js";
 import { addInstance, withInstance } from "../../../src/routing/instanceRouter.js";
 import { startTelemetryInstance } from "../../../src/routing/telemetryInstance.js";
+import { getSharedRegistry } from "../../../src/shared/globalOwnership.js";
 import { createInMemoryPipeline } from "../../fixtures/telemetry.js";
 
 vi.mock("../../../src/routing/instanceRouter.js", { spy: true });
@@ -696,6 +698,25 @@ describe("page visit time through useMicrosoftOpenTelemetry", () => {
     );
   }
 
+  function visitNamespace(namePrefix: string): string {
+    return JSON.stringify([namePrefix, null, null]);
+  }
+
+  function visitKey(namePrefix: string, slot: number): string {
+    return `otel.pageVisit.${visitNamespace(namePrefix)}.${slot}`;
+  }
+
+  function seedVisit(key: string) {
+    const previous = {
+      id: "11111111111111111111111111111111",
+      name: "previous document",
+      url: new URL("/previous-document", originalUrl).href,
+      startTimeUnixMs: performance.timeOrigin - 2_000,
+    };
+    storage.setItem(key, JSON.stringify(previous));
+    return previous;
+  }
+
   beforeEach(() => {
     originalUrl = location.href;
     originalState = history.state;
@@ -750,6 +771,7 @@ describe("page visit time through useMicrosoftOpenTelemetry", () => {
           async forceFlush() {},
           async shutdown() {},
         },
+        ...(options.logRecordProcessors ?? []),
       ],
       pageView: {
         routeResolver: () => `${name}:${location.pathname}`,
@@ -764,6 +786,312 @@ describe("page visit time through useMicrosoftOpenTelemetry", () => {
       visits: () => records.filter((record) => record.eventName === "browser.page_visit"),
     };
   }
+
+  it.each([
+    "construction",
+    "initial context",
+    "page correlation",
+    "resource",
+    "instrumentation list",
+    "provider startup",
+  ])(
+    "reuses slot zero and restores the previous document after failed %s before enable",
+    async (stage) => {
+      const namePrefix = `visit-failed-${stage}-`;
+      const key = visitKey(namePrefix, 0);
+      const previous = seedVisit(key);
+      const saved = storage.getItem(key);
+      const failure = new Error(`${stage} failed`);
+      const enable = vi.spyOn(PageViewInstrumentation.prototype, "enable");
+      const options: MicrosoftOpenTelemetryBrowserOptions = {
+        storage: { namePrefix },
+        pageView: { autoTrackPageVisitTime: true },
+      };
+      if (stage === "construction") {
+        vi.spyOn(PageViewInstrumentation.prototype, "setConfig").mockImplementationOnce(() => {
+          throw failure;
+        });
+      } else if (stage === "initial context") {
+        const manager = new StackContextManager();
+        vi.spyOn(manager, "active").mockImplementationOnce(() => {
+          throw failure;
+        });
+        options.traces = { contextManager: manager };
+      } else if (stage === "page correlation") {
+        vi.spyOn(PageViewInstrumentation.prototype, "pageViews", "get").mockImplementationOnce(
+          () => {
+            throw failure;
+          },
+        );
+      } else if (stage === "resource") {
+        const resource = resourceFromAttributes({});
+        vi.spyOn(resource, "waitForAsyncAttributes").mockRejectedValueOnce(failure);
+        options.resource = resource;
+      } else if (stage === "instrumentation list") {
+        const instrumentations: BrowserInstrumentation[] = [];
+        vi.spyOn(instrumentations, Symbol.iterator).mockImplementationOnce(() => {
+          throw failure;
+        });
+        options.instrumentations = instrumentations;
+      } else {
+        vi.mocked(addInstance).mockImplementationOnce(() => {
+          throw failure;
+        });
+      }
+
+      await expect(startVisits("failed", options)).rejects.toBe(failure);
+
+      expect(enable).not.toHaveBeenCalled();
+      expect(storage.getItem(key)).toBe(saved);
+      expect(getSharedRegistry().pageVisitSlots?.has(visitNamespace(namePrefix))).toBe(false);
+      const retry = await startVisits("retry", {
+        storage: { namePrefix },
+        pageView: { autoTrackPageVisitTime: true },
+      });
+      expect(visitKeys()).toEqual([key]);
+      expect(retry.visits()).toMatchObject([
+        {
+          spanContext: { traceId: previous.id },
+          attributes: {
+            "browser.page_view.id": previous.id,
+            "browser.page_view.name": previous.name,
+            "url.full": previous.url,
+            "browser.page_visit.duration": 2_000,
+          },
+        },
+      ]);
+      expect(retry.visits()).toHaveLength(1);
+      expect(JSON.parse(storage.getItem(key)!)).toMatchObject({
+        name: `retry:${location.pathname}`,
+      });
+    },
+  );
+
+  it("reuses slot zero after shutdown and restores that slot in the next document", async () => {
+    const namePrefix = "visit-recreated-";
+    const options = {
+      storage: { namePrefix },
+      pageView: { autoTrackPageVisitTime: true },
+    };
+    const key = visitKey(namePrefix, 0);
+    const first = await startVisits("first", options);
+    expect(visitKeys()).toEqual([key]);
+    await first.handle.shutdown();
+    expect(visitKeys()).toEqual([]);
+
+    const recreated = await startVisits("recreated", options);
+    expect(visitKeys()).toEqual([key]);
+    expect(recreated.visits()).toEqual([]);
+    const saved = storage.getItem(key)!;
+    await recreated.handle.shutdown();
+    expect(visitKeys()).toEqual([]);
+
+    // Restore the persisted visit with an earlier document's time origin.
+    const previous = JSON.parse(saved) as { id: string; name: string };
+    storage.setItem(
+      key,
+      JSON.stringify({ ...JSON.parse(saved), startTimeUnixMs: performance.timeOrigin - 10_000 }),
+    );
+    const nextDocument = await startVisits("next-document", options);
+    expect(visitKeys()).toEqual([key]);
+    expect(nextDocument.visits()).toMatchObject([
+      {
+        attributes: {
+          "browser.page_view.id": previous.id,
+          "browser.page_view.name": previous.name,
+          "browser.page_visit.duration": 10_000,
+        },
+      },
+    ]);
+    expect(nextDocument.visits()).toHaveLength(1);
+  });
+
+  it("reuses the lowest free slot without moving or overlapping live instances", async () => {
+    const namePrefix = "visit-live-slots-";
+    const initialPath = location.pathname;
+    const options = {
+      storage: { namePrefix },
+      pageView: { autoTrackPageVisitTime: true },
+    };
+    const alpha = await startVisits("alpha", options);
+    const beta = await startVisits("beta", options);
+    const gamma = await startVisits("gamma", options);
+    expect(visitKeys().sort()).toEqual([0, 1, 2].map((slot) => visitKey(namePrefix, slot)));
+    const gammaSaved = storage.getItem(visitKey(namePrefix, 2));
+
+    await beta.handle.shutdown();
+    const delta = await startVisits("delta", options);
+    expect(delta.visits()).toEqual([]);
+    expect(storage.getItem(visitKey(namePrefix, 2))).toBe(gammaSaved);
+    const deltaSaved = storage.getItem(visitKey(namePrefix, 1));
+    await alpha.handle.shutdown();
+    const epsilon = await startVisits("epsilon", options);
+    // Repeating an old shutdown must not release a replacement's reservation.
+    await alpha.handle.shutdown();
+    expect(epsilon.visits()).toEqual([]);
+    expect(storage.getItem(visitKey(namePrefix, 1))).toBe(deltaSaved);
+    expect(storage.getItem(visitKey(namePrefix, 2))).toBe(gammaSaved);
+    expect(getSharedRegistry().pageVisitSlots?.get(visitNamespace(namePrefix))).toEqual(
+      new Set([0, 1, 2]),
+    );
+
+    now = performance.timeOrigin + 5_000;
+    history.pushState(null, "", "/visit-live-slots");
+    for (const [name, instance, slot] of [
+      ["gamma", gamma, 2],
+      ["delta", delta, 1],
+      ["epsilon", epsilon, 0],
+    ] as const) {
+      expect(instance.visits()).toHaveLength(1);
+      expect(instance.visits()[0].attributes["browser.page_view.name"]).toBe(
+        `${name}:${initialPath}`,
+      );
+      expect(JSON.parse(storage.getItem(visitKey(namePrefix, slot))!)).toMatchObject({
+        name: `${name}:/visit-live-slots`,
+      });
+    }
+  });
+
+  it("honors reservations shared through the realm registry by another distribution copy", async () => {
+    const namePrefix = "visit-shared-slots-";
+    const namespace = visitNamespace(namePrefix);
+    const registry = getSharedRegistry();
+    // Model another bundle's live slots using only the shared registry contract.
+    const foreignSlots = new Set([0, 2]);
+    const namespaces = (registry.pageVisitSlots ??= new Map());
+    namespaces.set(namespace, foreignSlots);
+    try {
+      const instance = await startVisits("local", {
+        storage: { namePrefix },
+        pageView: { autoTrackPageVisitTime: true },
+      });
+      expect(visitKeys()).toEqual([visitKey(namePrefix, 1)]);
+      expect(namespaces.get(namespace)).toBe(foreignSlots);
+      expect(foreignSlots).toEqual(new Set([0, 1, 2]));
+      await instance.handle.shutdown();
+      expect(foreignSlots).toEqual(new Set([0, 2]));
+      expect(namespaces.get(namespace)).toBe(foreignSlots);
+    } finally {
+      foreignSlots.delete(0);
+      foreignSlots.delete(2);
+      if (!foreignSlots.size) namespaces.delete(namespace);
+    }
+  });
+
+  it("keeps a re-entrant startup's slot reserved when the enclosing startup fails", async () => {
+    const namePrefix = "visit-reentrant-start-";
+    const key = visitKey(namePrefix, 0);
+    seedVisit(key);
+    const saved = storage.getItem(key);
+    const options = {
+      storage: { namePrefix },
+      pageView: { autoTrackPageVisitTime: true },
+    };
+    const failure = new Error("initial context failed");
+    const manager = new StackContextManager();
+    let nested!: ReturnType<typeof startVisits>;
+    vi.spyOn(manager, "active").mockImplementationOnce(() => {
+      nested = startVisits("nested", options);
+      throw failure;
+    });
+
+    await expect(
+      startVisits("outer", { ...options, traces: { contextManager: manager } }),
+    ).rejects.toBe(failure);
+    const survivor = await nested;
+    expect(survivor.visits()).toEqual([]);
+    expect(storage.getItem(key)).toBe(saved);
+    expect(JSON.parse(storage.getItem(visitKey(namePrefix, 1))!)).toMatchObject({
+      name: `nested:${location.pathname}`,
+    });
+    const retry = await startVisits("retry", options);
+    expect(retry.visits()).toHaveLength(1);
+    expect(visitKeys().sort()).toEqual([key, visitKey(namePrefix, 1)]);
+    expect(getSharedRegistry().pageVisitSlots?.get(visitNamespace(namePrefix))).toEqual(
+      new Set([0, 1]),
+    );
+  });
+
+  it("releases a failed startup's slot even when instrumentation cleanup throws", async () => {
+    const namePrefix = "visit-startup-cleanup-";
+    const failure = new Error("instrumentation enable failed");
+    const cleanupFailure = new Error("instrumentation disable failed");
+    const options = {
+      storage: { namePrefix },
+      pageView: { autoTrackPageVisitTime: true },
+    };
+    const disable = vi.fn(() => {
+      throw cleanupFailure;
+    });
+
+    await expect(
+      startVisits("failed", {
+        ...options,
+        instrumentations: [
+          {
+            ...createProbe(),
+            enable() {
+              throw failure;
+            },
+            disable,
+          },
+        ],
+      }),
+    ).rejects.toBe(failure);
+
+    expect(disable).toHaveBeenCalledOnce();
+    expect(visitKeys()).toEqual([]);
+    expect(getSharedRegistry().pageVisitSlots?.has(visitNamespace(namePrefix))).toBe(false);
+    await startVisits("retry", options);
+    expect(visitKeys()).toEqual([visitKey(namePrefix, 0)]);
+  });
+
+  it.each(["instrumentation", "processor"])(
+    "releases a slot after throwing %s cleanup without overlapping re-entrant startup",
+    async (stage) => {
+      const namePrefix = `visit-shutdown-cleanup-${stage}-`;
+      const options = {
+        storage: { namePrefix },
+        pageView: { autoTrackPageVisitTime: true },
+      };
+      const failure = new Error(`${stage} cleanup failed`);
+      let nested!: ReturnType<typeof startVisits>;
+      const cleanup = () => {
+        nested = startVisits("nested", options);
+        throw failure;
+      };
+      const instance = await startVisits("stopping", {
+        ...options,
+        ...(stage === "instrumentation"
+          ? { instrumentations: [{ ...createProbe(), disable: cleanup }] }
+          : {
+              logRecordProcessors: [
+                {
+                  onEmit() {},
+                  async forceFlush() {},
+                  async shutdown() {
+                    cleanup();
+                  },
+                },
+              ],
+            }),
+      });
+      // Expected rejected shutdown is already observed here, not by the suite's cleanup.
+      handles.delete(instance.handle);
+      await expect(instance.handle.shutdown()).rejects.toBe(failure);
+
+      const survivor = await nested;
+      expect(survivor.visits()).toEqual([]);
+      expect(visitKeys()).toEqual([visitKey(namePrefix, 1)]);
+      const survivorSaved = storage.getItem(visitKey(namePrefix, 1));
+      await startVisits("replacement", options);
+      expect(visitKeys().sort()).toEqual([0, 1].map((slot) => visitKey(namePrefix, slot)));
+      expect(storage.getItem(visitKey(namePrefix, 1))).toBe(survivorSaved);
+      expect(getSharedRegistry().pageVisitSlots?.get(visitNamespace(namePrefix))).toEqual(
+        new Set([0, 1]),
+      );
+    },
+  );
 
   it.each([undefined, false])(
     "does not access sessionStorage or report visits when autoTrackPageVisitTime is %s",

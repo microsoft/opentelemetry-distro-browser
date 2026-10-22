@@ -15,9 +15,10 @@ export class PageVisitTime {
     private readonly storage: KeyValueStorage | null,
     private readonly key: string,
     private readonly report: (visit: Visit, duration: number) => void,
+    private readonly sanitizeRestoredUrl: (url: string) => string = (url) => url,
   ) {}
 
-  #read(): Visit | undefined {
+  #read(sanitize = true): Visit | undefined {
     const result = this.storage?.getItem(this.key);
     if (!result?.success || !result.value) return undefined;
     try {
@@ -31,7 +32,10 @@ export class PageVisitTime {
         typeof value.startTimeUnixMs === "number" &&
         Number.isFinite(value.startTimeUnixMs)
       )
-        return value as Visit;
+        return {
+          ...value,
+          url: sanitize && value.url ? this.sanitizeRestoredUrl(value.url) : value.url,
+        } as Visit;
     } catch {
       // Web Storage is untrusted and may contain data from another application version.
     }
@@ -65,7 +69,7 @@ export class PageVisitTime {
   }
 
   public stop(): void {
-    if (this.#current?.id === this.#read()?.id) this.storage?.removeItem(this.key);
+    if (this.#current?.id === this.#read(false)?.id) this.storage?.removeItem(this.key);
     this.#current = undefined;
   }
 }

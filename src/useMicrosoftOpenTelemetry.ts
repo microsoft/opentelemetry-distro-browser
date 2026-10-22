@@ -63,6 +63,7 @@ function createOwnedInstrumentations(
   options: MicrosoftOpenTelemetryBrowserOptions,
   sharedOperation: () => SpanContext | undefined,
   samplingPercentage: () => number,
+  reserveVisitStorageKey: (namespace: string) => string,
 ): PageViewInstrumentation[] {
   if (typeof document === "undefined" || typeof location === "undefined") return [];
 
@@ -80,10 +81,7 @@ function createOwnedInstrumentations(
         destination?.instrumentationKey,
         destination?.ingestionEndpoint,
       ]);
-      const slots = (getSharedRegistry().pageVisitSlots ??= new Map<string, number>());
-      const slot = slots.get(namespace) ?? 0;
-      slots.set(namespace, slot + 1);
-      visitStorageKey = `otel.pageVisit.${namespace}.${slot}`;
+      visitStorageKey = reserveVisitStorageKey(namespace);
     }
     owned.push(
       new PageViewInstrumentation(
@@ -204,22 +202,9 @@ export async function useMicrosoftOpenTelemetry(
   };
   // While another instance supplies page correlation, page views adopt its operation.
   const correlationState: { current?: PageViewCorrelation } = {};
-  const owned = createOwnedInstrumentations(
-    { ...options, pageView },
-    () => getPageOperation(correlationState.current),
-    () => readSamplingPercentage() ?? 100,
-  );
-  const pageViewInstrumentation = owned[0];
-  const correlation = pageViewInstrumentation
-    ? new PageViewCorrelation(
-        () => pageViewInstrumentation.getOperationContext(),
-        pageViewInstrumentation.pageViews,
-        (traceId) => pageViewInstrumentation.getOperationName(traceId),
-      )
-    : undefined;
-  correlationState.current = correlation;
-  // Publish the initial page operation before caller instrumentations can emit.
-  const instrumentations = [...owned, ...(options.instrumentations ?? [])];
+  let pageViewInstrumentation: PageViewInstrumentation | undefined;
+  let correlation: PageViewCorrelation | undefined;
+  let releasePageVisitSlot: (() => void) | undefined;
   let instance: TelemetryInstance | undefined;
   let processorsTransferred = false;
   let initialized = false;
@@ -289,9 +274,9 @@ export async function useMicrosoftOpenTelemetry(
     });
     void (async () => {
       stopping = true;
-      stopAzureMonitorStartup?.();
       const errors: unknown[] = [];
       for (const cleanup of [
+        () => stopAzureMonitorStartup?.(),
         () => instance?.detach(),
         () => {
           void correlation?.shutdown();
@@ -351,7 +336,13 @@ export async function useMicrosoftOpenTelemetry(
         errors.push(error);
       }
       throwErrors(errors, "Telemetry shutdown failed");
-    })().then(resolve, reject);
+    })()
+      .finally(() => {
+        const release = releasePageVisitSlot;
+        releasePageVisitSlot = undefined;
+        release?.();
+      })
+      .then(resolve, reject);
     return shutdownPromise;
   }
 
@@ -363,6 +354,36 @@ export async function useMicrosoftOpenTelemetry(
   };
 
   try {
+    // Reserve before construction or callbacks can re-enter startup, with rollback already armed.
+    const owned = createOwnedInstrumentations(
+      { ...options, pageView },
+      () => getPageOperation(correlationState.current),
+      () => readSamplingPercentage() ?? 100,
+      (namespace) => {
+        const namespaces = (getSharedRegistry().pageVisitSlots ??= new Map<string, Set<number>>());
+        const slots = namespaces.get(namespace) ?? new Set<number>();
+        namespaces.set(namespace, slots);
+        let slot = 0;
+        while (slots.has(slot)) slot++;
+        slots.add(slot);
+        releasePageVisitSlot = () => {
+          slots.delete(slot);
+          if (!slots.size) namespaces.delete(namespace);
+        };
+        return `otel.pageVisit.${namespace}.${slot}`;
+      },
+    );
+    const pageInstrumentation = (pageViewInstrumentation = owned[0]);
+    correlation = pageInstrumentation
+      ? new PageViewCorrelation(
+          () => pageInstrumentation.getOperationContext(),
+          pageInstrumentation.pageViews,
+          (traceId) => pageInstrumentation.getOperationName(traceId),
+        )
+      : undefined;
+    correlationState.current = correlation;
+    // Publish the initial page operation before caller instrumentations can emit.
+    const instrumentations = [...owned, ...(options.instrumentations ?? [])];
     if (azureMonitor) {
       const { span, log, stop, startDiagnostics } = createAzureMonitorProcessors(
         azureMonitor,

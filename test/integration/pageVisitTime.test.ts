@@ -58,6 +58,7 @@ function expectVisit(
     PageUrl: previous.data.baseData.url,
   });
   expect(visit.tags["ai.operation.id"]).toBe(previous.data.baseData.id);
+  expect(visit.tags).not.toHaveProperty("ai.operation.parentId");
   expect(metrics).toHaveLength(1);
   const { value } = metrics[0];
   expect(metrics[0]).toEqual({

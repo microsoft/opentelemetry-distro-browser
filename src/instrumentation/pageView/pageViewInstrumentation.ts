@@ -332,24 +332,32 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
           : config.visitStorage,
         config.visitStorageKey ?? "otel.pageVisit",
         (previous, duration) => {
-          const url = previous.url ? this.#sanitize(previous.url) : "";
+          const operation: SpanContext = {
+            traceId: previous.id,
+            spanId: new RandomIdGenerator().generateSpanId(),
+            traceFlags: this.isTraceSampled(previous.id) ? TraceFlags.SAMPLED : TraceFlags.NONE,
+          };
+          markPageContext(operation);
           this.#emitLogRecord({
             eventName: "browser.page_visit",
             timestamp: Date.now(),
             severityNumber: SEVERITY_NUMBER_INFO,
-            context: trace.setSpanContext(ROOT_CONTEXT, {
-              traceId: previous.id,
-              spanId: new RandomIdGenerator().generateSpanId(),
-              traceFlags: this.isTraceSampled(previous.id) ? TraceFlags.SAMPLED : TraceFlags.NONE,
-            }),
+            context: trace.setSpanContext(ROOT_CONTEXT, operation),
             attributes: {
               [ATTR_PAGE_VIEW_ID]: previous.id,
               [ATTR_PAGE_VIEW_NAME]: previous.name,
-              ...(url ? { [ATTR_URL_FULL]: url } : {}),
+              ...(previous.url ? { [ATTR_URL_FULL]: previous.url } : {}),
               "browser.page_visit.duration": duration,
             },
           });
         },
+        // Only storage is untrusted. In-memory page URLs already passed both redactors.
+        // Resolve pathname-only sanitizer output before built-in absolute-URL redaction.
+        (url) =>
+          this.#guard(
+            () => this.#sanitize(new URL(url, location.href).href),
+            "Invalid stored page visit URL; dropping the URL",
+          ) ?? "",
       );
     }
     this.#lastUrl = location.href;
