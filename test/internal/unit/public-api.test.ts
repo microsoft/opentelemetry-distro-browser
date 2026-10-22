@@ -118,7 +118,7 @@ it("exposes only sampling updates on the runtime configuration API", () => {
     keyof MicrosoftOpenTelemetryBrowserConfigurationUpdate
   >().toEqualTypeOf<"samplingPercentage">();
   expectTypeOf<MicrosoftOpenTelemetryBrowserConfigurationUpdate>().toEqualTypeOf<{
-    samplingPercentage?: number;
+    samplingPercentage?: number | undefined;
   }>();
   expectTypeOf<MicrosoftOpenTelemetryBrowser["updateCfg"]>().toEqualTypeOf<
     (

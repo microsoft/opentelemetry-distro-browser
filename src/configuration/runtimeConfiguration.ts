@@ -9,7 +9,7 @@ import { validateSamplingPercentage } from "../sampling.js";
  */
 export interface MicrosoftOpenTelemetryBrowserConfigurationUpdate {
   /** Finite percentage from 0 through 100. Omission retains the current value when merging. */
-  samplingPercentage?: number;
+  samplingPercentage?: number | undefined;
 }
 
 /**

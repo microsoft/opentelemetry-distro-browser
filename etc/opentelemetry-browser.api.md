@@ -79,7 +79,7 @@ export interface MicrosoftOpenTelemetryBrowser {
 
 // @public
 export interface MicrosoftOpenTelemetryBrowserConfigurationUpdate {
-    samplingPercentage?: number;
+    samplingPercentage?: number | undefined;
 }
 
 // @public
