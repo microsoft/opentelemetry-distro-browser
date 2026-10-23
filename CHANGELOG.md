@@ -6,6 +6,9 @@ All notable changes to this package are documented in this file.
 
 ### Added
 
+- Add internal customer SDK Stats reporter primitives with option validation, counter aggregation,
+  bounded reporting, and coordinated flush/shutdown. Keep stats failure diagnostics out of
+  distribution log pipelines and standalone console instrumentation without adding public configuration.
 - Support per-instance runtime sampling updates through dynamic configuration
 - Validate releases end to end: `npm run test:e2e` sends telemetry from the npm and CDN builds to
   real Azure Monitor ingestion in Chromium, Firefox, and WebKit; `npm run test:build` rejects
