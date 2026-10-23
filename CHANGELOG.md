@@ -30,6 +30,9 @@ false` blocks SDK-managed storage access, including later identity-control calls
 
 ### Changed
 
+- Require Node.js 22.23.4+, 24.22.1+, or 26.12.1+ for repository tooling to address
+  CVE-2026-111497. Enforce patched minimums in CI and installs, and reject unsupported
+  runtimes before CDN verification/publishing and performance network operations.
 - Shrink the minified CDN bundles by minifying them with SWC, which also shortens `_`-prefixed
   private properties, and by trimming exporter code. `opentelemetry-browser.min.js` drops from
   164.64 kB to 150.70 kB minified (50.40 kB to 48.22 kB gzip).
