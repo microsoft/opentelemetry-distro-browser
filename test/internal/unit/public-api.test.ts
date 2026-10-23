@@ -79,7 +79,7 @@ it("exposes distro-owned configuration and lifecycle contracts", () => {
     AzureMonitorOptions<string | Promise<string>> | undefined
   >();
   expectTypeOf<keyof AzureMonitorOptions>().toEqualTypeOf<
-    "connectionString" | "disableBeacon" | "initTimeOut" | "initInMemoMaxSize"
+    "connectionString" | "disableBeacon" | "sdkStats" | "initTimeOut" | "initInMemoMaxSize"
   >();
   expectTypeOf<AzureMonitorOptions["connectionString"]>().toEqualTypeOf<string>();
   expectTypeOf<AzureMonitorOptions<Promise<string>>["connectionString"]>().toEqualTypeOf<

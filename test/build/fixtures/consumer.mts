@@ -10,8 +10,7 @@ import {
   type MicrosoftOpenTelemetryBrowserOptions,
   type MicrosoftOpenTelemetryBrowserSessionOptions,
 } from "@microsoft/opentelemetry-browser";
-// @ts-expect-error SDK stats types are internal.
-import type { AzureMonitorSdkStatsOptions as _SdkStatsOptions } from "@microsoft/opentelemetry-browser";
+import type { AzureMonitorSdkStatsOptions } from "@microsoft/opentelemetry-browser";
 import { OTLPLogExporter } from "@opentelemetry/exporter-logs-otlp-http";
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
 import { BatchLogRecordProcessor } from "@opentelemetry/sdk-logs";
@@ -63,8 +62,18 @@ export const options: MicrosoftOpenTelemetryBrowserOptions = {
 const connectionString =
   "InstrumentationKey=00000000-0000-0000-0000-000000000000;IngestionEndpoint=https://example.test";
 export const azureMonitorOptions: MicrosoftOpenTelemetryBrowserOptions = {
-  azureMonitor: { connectionString },
+  azureMonitor: {
+    connectionString,
+    sdkStats: {
+      enabled: true,
+      collectionIntervalMillis: 900000,
+    } satisfies AzureMonitorSdkStatsOptions,
+  },
 };
+useMicrosoftOpenTelemetry({
+  // @ts-expect-error Customer stats cannot override Microsoft's internal destination.
+  azureMonitor: { connectionString, sdkStats: { endpoint: "https://example.test" } },
+});
 // An explicitly annotated pre-existing exporter configuration remains accepted.
 const synchronousOptions: AzureMonitorOptions = { connectionString };
 new AzureMonitorSpanExporter(synchronousOptions);
@@ -78,7 +87,6 @@ useMicrosoftOpenTelemetry({ azureMonitor: asynchronousOptions });
 new AzureMonitorSpanExporter(asynchronousOptions);
 // @ts-expect-error Standalone log exporters require a resolved connection string.
 new AzureMonitorLogRecordExporter(asynchronousOptions);
-// @ts-expect-error SDK stats options are internal.
 useMicrosoftOpenTelemetry({ azureMonitor: { connectionString, sdkStats: {} } });
 export const initialize: (
   config: MicrosoftOpenTelemetryBrowserOptions,
