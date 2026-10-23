@@ -5,16 +5,11 @@ import { context, diag, propagation, trace } from "@opentelemetry/api";
 import { logs } from "@opentelemetry/api-logs";
 import { FetchInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/fetch";
 import { ConsoleInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/console";
-import {
-  InMemoryLogRecordExporter,
-  LoggerProvider,
-  SimpleLogRecordProcessor,
-} from "@opentelemetry/sdk-logs";
 import { afterEach, expect, inject, it, vi } from "vitest";
 import type { BrowserInstrumentation, MicrosoftOpenTelemetryBrowser } from "../../src/types.js";
 import type { AzureMonitorEnvelope } from "../../src/exporter/telemetryModels.js";
 import { assertAzureMonitorEnvelope, TEST_INSTRUMENTATION_KEY } from "../fixtures/azureMonitor.js";
-import { createInMemoryPipeline } from "../fixtures/telemetry.js";
+import { createConsolePipeline, createInMemoryPipeline } from "../fixtures/telemetry.js";
 import { SDK_STATS_ENDPOINT } from "../fixtures/sdkStats.js";
 import { loadBrowserScript } from "../fixtures/browserBundle.js";
 
@@ -46,13 +41,7 @@ it.each(["index.js", "index.min.js", "iife.min"] as const)(
       async (url) => new Response(null, { status: url === SDK_STATS_ENDPOINT ? 503 : 200 }),
     );
     vi.stubGlobal("fetch", transport);
-    const exporter = new InMemoryLogRecordExporter();
-    const provider = new LoggerProvider({
-      processors: [new SimpleLogRecordProcessor({ exporter })],
-    });
-    const standalone = new ConsoleInstrumentation({ enabled: false, logMethods: ["warn"] });
-    standalone.setLoggerProvider(provider);
-    standalone.enable();
+    const { exporter, provider, instrumentation: standalone } = createConsolePipeline();
     const standaloneWarn = console.warn;
     const scripts: HTMLScriptElement[] = [];
     let handle: MicrosoftOpenTelemetryBrowser | undefined;

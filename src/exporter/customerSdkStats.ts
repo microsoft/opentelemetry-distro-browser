@@ -164,7 +164,6 @@ export function createCustomerSdkStats(
     flushing = sendSdkStats(sender, envelopes, controller, isUnloading())
       .catch((error: unknown) => reportFailure(error, "Customer SDK stats export failed"))
       .finally(() => {
-        controller.abort();
         flushing = undefined;
         schedule();
       });

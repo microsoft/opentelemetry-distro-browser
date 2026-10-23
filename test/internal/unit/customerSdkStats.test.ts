@@ -111,6 +111,7 @@ it("reports customer metrics without identifiers, enrichment, application sampli
       signal: expect.any(AbortSignal),
     }),
   ]);
+  expect(fetch.mock.calls[0][1]?.signal?.aborted).toBe(true);
   await clock.advance(900_000);
   expect(fetch).toHaveBeenCalledOnce();
   expect(vi.getTimerCount()).toBe(0);
@@ -127,6 +128,7 @@ it.each(["HTTP", "network"] as const)(
     await stats.forceFlush();
     await stats.shutdown();
     expect(fetch).toHaveBeenCalledOnce();
+    expect(fetch.mock.calls[0][1]?.signal?.aborted).toBe(true);
     expect(diag.warn).toHaveBeenCalledWith("Customer SDK stats export failed", expect.any(Error));
   },
 );

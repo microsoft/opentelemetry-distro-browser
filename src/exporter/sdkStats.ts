@@ -194,7 +194,6 @@ export function createInternalSdkStats(
     try {
       await sendSdkStats(statsSender, envelopes, controller, unloading);
     } finally {
-      controller.abort();
       sending = undefined;
     }
   }
@@ -220,28 +219,32 @@ export function createSdkStatsEnvelope(
   );
 }
 
-/** Sends stats outside customer pipelines and counters. */
+/** Sends stats outside customer pipelines and counters, aborting the request on completion. */
 export async function sendSdkStats(
   sender: Sender,
   envelopes: readonly AzureMonitorEnvelope<MetricData>[],
   controller: AbortController,
   unloading: boolean,
 ): Promise<void> {
-  const result = await callWithTimeout(
-    sender.send({
-      body: new TextEncoder().encode(JSON.stringify(envelopes)),
-      contentType: "application/json",
-      unloading,
-      signal: controller.signal,
-      retry: false,
-    }),
-    10_000,
-  );
-  if (
-    result.transport === "fetch" &&
-    (result.statusCode < 200 || result.statusCode >= 300 || result.statusCode === 206)
-  ) {
-    throw new Error(`SDK stats ingestion failed: HTTP ${result.statusCode}.`);
+  try {
+    const result = await callWithTimeout(
+      sender.send({
+        body: new TextEncoder().encode(JSON.stringify(envelopes)),
+        contentType: "application/json",
+        unloading,
+        signal: controller.signal,
+        retry: false,
+      }),
+      10_000,
+    );
+    if (
+      result.transport === "fetch" &&
+      (result.statusCode < 200 || result.statusCode >= 300 || result.statusCode === 206)
+    ) {
+      throw new Error(`SDK stats ingestion failed: HTTP ${result.statusCode}.`);
+    }
+  } finally {
+    controller.abort();
   }
 }
 

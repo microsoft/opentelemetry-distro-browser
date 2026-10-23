@@ -4,12 +4,7 @@
 import { context, diag, propagation, trace } from "@opentelemetry/api";
 import { logs } from "@opentelemetry/api-logs";
 import { ConsoleInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/console";
-import {
-  BatchLogRecordProcessor,
-  InMemoryLogRecordExporter,
-  LoggerProvider,
-  SimpleLogRecordProcessor,
-} from "@opentelemetry/sdk-logs";
+import { BatchLogRecordProcessor, SimpleLogRecordProcessor } from "@opentelemetry/sdk-logs";
 import { afterEach, expect, it, vi } from "vitest";
 import { createCustomerSdkStats } from "../../../src/exporter/customerSdkStats.js";
 import { createInternalSdkStats, reportFailure } from "../../../src/exporter/sdkStats.js";
@@ -22,7 +17,7 @@ import {
   reportWithoutTelemetry,
 } from "../../../src/shared/globalOwnership.js";
 import { TEST_INSTRUMENTATION_KEY } from "../../fixtures/azureMonitor.js";
-import { createInMemoryPipeline } from "../../fixtures/telemetry.js";
+import { createConsolePipeline, createInMemoryPipeline } from "../../fixtures/telemetry.js";
 
 const owners: Array<{ shutdown(): Promise<void> }> = [];
 const instrumentations: ConsoleInstrumentation[] = [];
@@ -48,12 +43,8 @@ it.each([
     context.disable();
     const transport = vi.fn<typeof fetch>(async () => new Response(null, { status: 503 }));
     vi.stubGlobal("fetch", transport);
-    const exporter = new InMemoryLogRecordExporter();
-    const provider = new LoggerProvider({ processors: [new Processor({ exporter })] });
+    const { exporter, provider, instrumentation } = createConsolePipeline(Processor);
     owners.push(provider);
-    const instrumentation = new ConsoleInstrumentation({ enabled: false, logMethods: ["warn"] });
-    instrumentation.setLoggerProvider(provider);
-    instrumentation.enable();
     instrumentations.push(instrumentation);
     const wrappedWarn = console.warn;
     vi.spyOn(diag, "warn").mockImplementation((...args) => console.warn(...args));
@@ -113,14 +104,8 @@ it.each(["normal", "throwing", "nested"] as const)(
   async (mode) => {
     context.disable();
     const original = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const exporter = new InMemoryLogRecordExporter();
-    const provider = new LoggerProvider({
-      processors: [new SimpleLogRecordProcessor({ exporter })],
-    });
+    const { exporter, provider, instrumentation: standalone } = createConsolePipeline();
     owners.push(provider);
-    const standalone = new ConsoleInstrumentation({ enabled: false, logMethods: ["warn"] });
-    standalone.setLoggerProvider(provider);
-    standalone.enable();
     instrumentations.push(standalone);
     const standaloneWarn = console.warn;
     const pipeline = createInMemoryPipeline();
