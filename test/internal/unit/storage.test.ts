@@ -1,11 +1,11 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-import { context, diag, propagation, trace } from "@opentelemetry/api";
-import { logs } from "@opentelemetry/api-logs";
+import { context, diag, propagation, trace, type Tracer } from "@opentelemetry/api";
+import { logs, type Logger } from "@opentelemetry/api-logs";
 import type { ReadWriteLogRecord } from "@opentelemetry/sdk-logs";
 import type { Span } from "@opentelemetry/sdk-trace-base";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import {
   useMicrosoftOpenTelemetry,
   type MicrosoftOpenTelemetryBrowser,
@@ -13,12 +13,28 @@ import {
 } from "../../../src/index.js";
 import { getSdkLoaderScript } from "../../../src/snippet.js";
 import { TEST_INSTRUMENTATION_KEY } from "../../fixtures/azureMonitor.js";
+import { MemoryStorage } from "../../fixtures/sessionStorageSetup.js";
 
 const AZURE_MONITOR_CONNECTION_STRING = `InstrumentationKey=${TEST_INSTRUMENTATION_KEY};IngestionEndpoint=https://example.test`;
 
 const handles: MicrosoftOpenTelemetryBrowser[] = [];
 const keys = ["opentelemetry-session", "opentelemetry-user"];
 const saved = new Map<string, string | null>();
+
+function clearCookies() {
+  for (const prefix of ["", "app-a-", "app-b-", "shop-"]) {
+    for (const key of [...keys, "opentelemetry-auth-user"]) {
+      document.cookie = `${prefix}${key}=; max-age=0; path=/`;
+    }
+  }
+}
+
+function readCookie(name: string) {
+  const value = document.cookie.split("; ").find((part) => part.startsWith(`${name}=`));
+  return value ? JSON.parse(decodeURIComponent(value.slice(name.length + 1))) : null;
+}
+
+beforeEach(clearCookies);
 
 function preserve(key: string, value: string | null = null) {
   if (!saved.has(key)) saved.set(key, localStorage.getItem(key));
@@ -35,6 +51,7 @@ afterEach(async () => {
   diag.disable();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+  clearCookies();
   for (const [key, value] of saved) {
     if (value === null) localStorage.removeItem(key);
     else localStorage.setItem(key, value);
@@ -45,9 +62,26 @@ afterEach(async () => {
 async function initialize(options: MicrosoftOpenTelemetryBrowserOptions = {}) {
   const spans: Span[] = [];
   const records: ReadWriteLogRecord[] = [];
+  let tracer: Tracer;
+  let logger: Logger;
   const handle = await useMicrosoftOpenTelemetry({
     ...options,
     pageView: { enabled: false },
+    instrumentations: [
+      ...(options.instrumentations ?? []),
+      {
+        // Bind emissions to this instance even when another live handle owns the global route.
+        setTracerProvider(provider) {
+          tracer = provider.getTracer("storage-test");
+        },
+        setLoggerProvider(provider) {
+          logger = provider.getLogger("storage-test");
+        },
+        getConfig: () => ({ enabled: false }),
+        enable() {},
+        disable() {},
+      },
+    ],
     spanProcessors: [
       {
         onStart: (span) => {
@@ -72,8 +106,8 @@ async function initialize(options: MicrosoftOpenTelemetryBrowserOptions = {}) {
   return {
     handle,
     emit() {
-      trace.getTracer("storage-test").startSpan("operation").end();
-      logs.getLogger("storage-test").emit({});
+      tracer.startSpan("operation").end();
+      logger.emit({});
       const attributes = spans.at(-1)!.attributes;
       expect(records.at(-1)!.attributes).toMatchObject(attributes);
       return attributes;
@@ -81,8 +115,61 @@ async function initialize(options: MicrosoftOpenTelemetryBrowserOptions = {}) {
   };
 }
 
+function legacyUserStorage(namePrefix: string) {
+  const storage = new MemoryStorage();
+  const key = `${namePrefix}opentelemetry-user`;
+  const otherKey = `${namePrefix ? "" : "app-a-"}opentelemetry-user`;
+  const legacy = JSON.stringify({
+    anonymousId: "legacy-anonymous",
+    authenticatedUserId: "legacy-user",
+    accountId: "legacy-account",
+  });
+  storage.setItem(key, legacy);
+  storage.setItem(otherKey, legacy);
+  return { storage, key, otherKey, legacy };
+}
+
+it.each(["", "shop-"])(
+  "preserves the backup after a transient anonymous-cookie hook failure (prefix=%j)",
+  async (prefix) => {
+    const key = `${prefix}opentelemetry-session`;
+    const now = Date.now();
+    const backup = JSON.stringify({
+      id: "restored-after-read-failure",
+      startTimestamp: now,
+      lastActivityTimestamp: now,
+    });
+    preserve(key, backup);
+    const anonymous = encodeURIComponent(
+      JSON.stringify({ anonymousId: "existing-user", acquisitionTimestamp: now }),
+    );
+    const write = vi.fn();
+    let failed = false;
+    const getCookie = vi.fn((name: string) => {
+      if (name !== `${prefix}opentelemetry-user`) return "";
+      if (!failed) {
+        failed = true;
+        throw new Error("transient cookie read failure");
+      }
+      return anonymous;
+    });
+    const { handle, emit } = await initialize({
+      storage: { namePrefix: prefix },
+      cookieCfg: { getCookie, setCookie: write },
+    });
+    expect(localStorage.getItem(key)).toBe(backup);
+    expect(write.mock.calls.some(([name]) => name === `${prefix}opentelemetry-user`)).toBe(false);
+    expect(emit()).toMatchObject({
+      "session.id": "restored-after-read-failure",
+      "enduser.pseudo.id": "existing-user",
+    });
+    expect(localStorage.getItem(key)).toBe(backup);
+    await handle.shutdown();
+  },
+);
+
 it.each(["string", "promise"] as const)(
-  "blocks storage throughout identity controls, expiry, flush and shutdown (%s)",
+  "blocks Web Storage and cookie persistence throughout identity controls, expiry, flush and shutdown (%s)",
   async (destination) => {
     const now = Date.now();
     const clock = vi.spyOn(Date, "now").mockReturnValue(now);
@@ -103,6 +190,7 @@ it.each(["string", "promise"] as const)(
             ? AZURE_MONITOR_CONNECTION_STRING
             : Promise.resolve(AZURE_MONITOR_CONNECTION_STRING),
       },
+      cookieCfg: { enabled: false, disableCookieDefer: true },
       session: { persist: true, inactivityTimeout: 0.001 },
       userContext: { enabled: true },
     });
@@ -114,7 +202,14 @@ it.each(["string", "promise"] as const)(
     expect(emit()["enduser.pseudo.id"]).toBeUndefined();
     handle.userContext.clearAuthenticatedUserContext();
     expect(emit()["user.id"]).toBeUndefined();
+    expect(cookieWrite).not.toHaveBeenCalled();
     handle.userContext.setEnabled(false);
+    // Explicit identity removal uses purge, which intentionally bypasses disabled cookies.
+    expect(cookieWrite.mock.calls).toEqual([
+      ["opentelemetry-user=; expires=Thu, 01 Jan 1970 00:00:01 GMT; max-age=0; path=/"],
+      ["opentelemetry-auth-user=; expires=Thu, 01 Jan 1970 00:00:01 GMT; max-age=0; path=/"],
+    ]);
+    cookieWrite.mockClear();
     clock.mockReturnValue(now + 1000);
     expect(emit()["session.id"]).not.toBe(first);
     await handle.forceFlush().catch(() => {});
@@ -163,7 +258,7 @@ it("isolates prefixed sessions and users, restores them, and scopes identity rem
     for (const key of keys) preserve(prefix + key);
   }
   const first = await initialize({ storage: { namePrefix: "app-a-" } });
-  first.handle.userContext.setAuthenticatedUserContext("user-a");
+  first.handle.userContext.setAuthenticatedUserContext("user-a", undefined, true);
   const a = first.emit();
   await first.handle.shutdown();
   const second = await initialize({ storage: { namePrefix: "app-b-" } });
@@ -176,20 +271,485 @@ it("isolates prefixed sessions and users, restores them, and scopes identity rem
   const restored = await initialize({ storage: { namePrefix: "app-a-" } });
   expect(restored.emit()).toMatchObject(a);
   restored.handle.userContext.clearAuthenticatedUserContext();
-  expect(JSON.parse(localStorage.getItem("app-a-opentelemetry-user")!)).toEqual({
+  expect(readCookie("app-a-opentelemetry-auth-user")).toBeNull();
+  expect(readCookie("app-a-opentelemetry-user")).toEqual({
     anonymousId: a["enduser.pseudo.id"],
+    acquisitionTimestamp: expect.any(Number),
   });
   restored.handle.userContext.setEnabled(false);
-  expect(localStorage.getItem("app-a-opentelemetry-user")).toBeNull();
-  expect(JSON.parse(localStorage.getItem("app-b-opentelemetry-user")!)).toEqual({
+  expect(readCookie("app-a-opentelemetry-user")).toBeNull();
+  expect(readCookie("app-b-opentelemetry-user")).toEqual({
     anonymousId: b["enduser.pseudo.id"],
+    acquisitionTimestamp: expect.any(Number),
   });
-  const disabled = await initialize({ storage: { enabled: false } });
+  await restored.handle.shutdown();
+  const activeSecond = await initialize({ storage: { namePrefix: "app-b-" } });
+  expect(activeSecond.emit()).toMatchObject(b);
+  const disabled = await initialize({
+    storage: { enabled: false },
+    cookieCfg: { enabled: false, disableCookieDefer: true },
+  });
   disabled.handle.userContext.setEnabled(true);
-  second.handle.userContext.setAuthenticatedUserContext("user-b");
-  expect(JSON.parse(localStorage.getItem("app-b-opentelemetry-user")!)).toMatchObject({
+  activeSecond.handle.userContext.setAuthenticatedUserContext("user-b", undefined, true);
+  expect(readCookie("app-b-opentelemetry-auth-user")).toEqual({
     authenticatedUserId: "user-b",
   });
+  expect(readCookie("app-b-opentelemetry-user")).toMatchObject({
+    anonymousId: b["enduser.pseudo.id"],
+  });
+});
+
+it("keeps cookies independent of disabled Web Storage for both signals and restores them", async () => {
+  const local = vi.spyOn(window, "localStorage", "get");
+  const session = vi.spyOn(window, "sessionStorage", "get");
+  const first = await initialize({ storage: { enabled: false } });
+  first.handle.userContext.setAuthenticatedUserContext("user-b", "account", true);
+  const attributes = first.emit();
+  expect(attributes["session.id"]).toMatch(/^[0-9a-f]{32}$/);
+  expect(attributes["enduser.pseudo.id"]).toMatch(/^[0-9a-f]{32}$/);
+  expect(readCookie("opentelemetry-session").id).toBe(attributes["session.id"]);
+  expect(readCookie("opentelemetry-auth-user")).toEqual({
+    authenticatedUserId: "user-b",
+    accountId: "account",
+  });
+  await first.handle.forceFlush();
+  await first.handle.shutdown();
+  const restored = await initialize({ storage: { enabled: false } });
+  expect(restored.emit()).toMatchObject(attributes);
+  await restored.handle.shutdown();
+  expect(local).not.toHaveBeenCalled();
+  expect(session).not.toHaveBeenCalled();
+});
+
+it.each(["", "app-a-"])(
+  "discards the session backup when both identity and session cookies are missing (prefix=%j)",
+  async (namePrefix) => {
+    const sessionKey = `${namePrefix}opentelemetry-session`;
+    preserve(sessionKey);
+    const first = await initialize({ storage: { namePrefix } });
+    const previous = first.emit();
+    await first.handle.shutdown();
+    expect(JSON.parse(localStorage.getItem(sessionKey)!).id).toBe(previous["session.id"]);
+    clearCookies();
+    expect(readCookie(`${namePrefix}opentelemetry-user`)).toBeNull();
+    expect(readCookie(sessionKey)).toBeNull();
+
+    const restored = await initialize({ storage: { namePrefix } });
+    const current = restored.emit();
+    expect(current["session.id"]).toMatch(/^[0-9a-f]{32}$/);
+    expect(current["session.id"]).not.toBe(previous["session.id"]);
+    expect(current["enduser.pseudo.id"]).toMatch(/^[0-9a-f]{32}$/);
+    expect(current["enduser.pseudo.id"]).not.toBe(previous["enduser.pseudo.id"]);
+    expect(localStorage.getItem(sessionKey)).toBeNull();
+    expect(readCookie(sessionKey).id).toBe(current["session.id"]);
+    await restored.handle.shutdown();
+    expect(JSON.parse(localStorage.getItem(sessionKey)!).id).toBe(current["session.id"]);
+  },
+);
+
+it.each(["", "app-a-"])(
+  "retains and restores the session backup when user and session cookies are ignored (prefix=%j)",
+  async (namePrefix) => {
+    const sessionKey = `${namePrefix}opentelemetry-session`;
+    const userKey = `${namePrefix}opentelemetry-user`;
+    const otherSessionKey = `${namePrefix ? "" : "app-a-"}opentelemetry-session`;
+    const now = Date.now();
+    const previous = {
+      id: "0123456789abcdef0123456789abcdef",
+      startTimestamp: now - 1000,
+      lastActivityTimestamp: now - 500,
+    };
+    const backup = JSON.stringify(previous);
+    const otherBackup = JSON.stringify({ ...previous, id: "fedcba9876543210fedcba9876543210" });
+    preserve(sessionKey, backup);
+    preserve(otherSessionKey, otherBackup);
+    const options = {
+      storage: { namePrefix },
+      cookieCfg: { ignoreCookies: [userKey, sessionKey] },
+    };
+
+    const first = await initialize(options);
+    expect(first.handle.getCookieMgr().isEnabled()).toBe(true);
+    expect(localStorage.getItem(sessionKey)).toBe(backup);
+    const attributes = first.emit();
+    expect(attributes["session.id"]).toBe(previous.id);
+    expect(attributes["enduser.pseudo.id"]).toBeUndefined();
+    expect(localStorage.getItem(sessionKey)).toBe(backup);
+    expect(readCookie(userKey)).toBeNull();
+    expect(readCookie(sessionKey)).toBeNull();
+    await first.handle.shutdown();
+    const savedBackup = localStorage.getItem(sessionKey);
+    expect(JSON.parse(savedBackup!)).toMatchObject({
+      id: previous.id,
+      startTimestamp: previous.startTimestamp,
+    });
+
+    const restored = await initialize(options);
+    expect(localStorage.getItem(sessionKey)).toBe(savedBackup);
+    expect(restored.emit()).toMatchObject(attributes);
+    expect(localStorage.getItem(sessionKey)).toBe(savedBackup);
+    await restored.handle.shutdown();
+    expect(JSON.parse(localStorage.getItem(sessionKey)!).id).toBe(previous.id);
+    expect(localStorage.getItem(otherSessionKey)).toBe(otherBackup);
+    expect(readCookie(userKey)).toBeNull();
+    expect(readCookie(sessionKey)).toBeNull();
+  },
+);
+
+it.each(["trace", "logs"])(
+  "rejects an invalid Azure %s destination without browser persistence or cookie hook calls",
+  async (signal) => {
+    const local = vi.spyOn(window, "localStorage", "get");
+    const session = vi.spyOn(window, "sessionStorage", "get");
+    const read = vi.spyOn(document, "cookie", "get");
+    const write = vi.spyOn(document, "cookie", "set");
+    const getCookie = vi.fn(() => "");
+    const setCookie = vi.fn();
+    const delCookie = vi.fn();
+    await expect(
+      useMicrosoftOpenTelemetry({
+        azureMonitor: { connectionString: "InstrumentationKey=not-an-instrumentation-key" },
+        ...(signal === "logs" ? { spanProcessors: [] } : {}),
+        cookieCfg: { getCookie, setCookie, delCookie },
+        pageView: { enabled: false },
+      }),
+    ).rejects.toThrow("valid InstrumentationKey UUID");
+    for (const operation of [local, session, read, write, getCookie, setCookie, delCookie]) {
+      expect(operation).not.toHaveBeenCalled();
+    }
+  },
+);
+
+it.each(["invalid prefix", "invalid;prefix", "invalid=prefix", "invalid\nprefix", "雪"])(
+  "rejects an invalid cookie name prefix before browser persistence or cookie hook calls (%j)",
+  async (namePrefix) => {
+    const local = vi.spyOn(window, "localStorage", "get");
+    const session = vi.spyOn(window, "sessionStorage", "get");
+    const read = vi.spyOn(document, "cookie", "get");
+    const write = vi.spyOn(document, "cookie", "set");
+    const getCookie = vi.fn(() => "");
+    const setCookie = vi.fn();
+    const delCookie = vi.fn();
+    await expect(
+      initialize({ storage: { namePrefix }, cookieCfg: { getCookie, setCookie, delCookie } }),
+    ).rejects.toThrow("storage.namePrefix must contain only cookie-name token characters.");
+    for (const operation of [local, session, read, write, getCookie, setCookie, delCookie]) {
+      expect(operation).not.toHaveBeenCalled();
+    }
+  },
+);
+
+it("disables cookies without touching them and writes only a session Web Storage backup", async () => {
+  for (const key of keys) preserve(key);
+  const cookie = vi.spyOn(document, "cookie", "get");
+  const cookieWrite = vi.spyOn(document, "cookie", "set");
+  const write = vi.spyOn(Storage.prototype, "setItem");
+  const { handle, emit } = await initialize({
+    cookieCfg: { enabled: false, disableCookieDefer: true },
+  });
+  const attributes = emit();
+  expect(attributes["enduser.pseudo.id"]).toBeUndefined();
+  handle.userContext.setAuthenticatedUserContext("memory-user", "account", true);
+  expect(emit()["user.id"]).toBe("memory-user");
+  handle.userContext.clearAuthenticatedUserContext();
+  expect(emit()["user.id"]).toBeUndefined();
+  await handle.forceFlush();
+  expect(write).not.toHaveBeenCalled();
+  await handle.shutdown();
+  expect(write).toHaveBeenCalledExactlyOnceWith("opentelemetry-session", expect.any(String));
+  expect(JSON.parse(localStorage.getItem("opentelemetry-session")!).id).toBe(
+    attributes["session.id"],
+  );
+  expect(localStorage.getItem("opentelemetry-user")).toBeNull();
+  expect(cookie).not.toHaveBeenCalled();
+  expect(cookieWrite).not.toHaveBeenCalled();
+});
+
+it("enables deferred SDK cookies while traces and logs flow immediately", async () => {
+  const { handle, emit } = await initialize({
+    storage: { enabled: false },
+    cookieCfg: { enabled: false },
+  });
+  handle.userContext.setAuthenticatedUserContext("deferred-user", "account", true);
+  const before = emit();
+  expect(before["enduser.pseudo.id"]).toMatch(/^[0-9a-f]{32}$/);
+  expect(before["user.id"]).toBe("deferred-user");
+  expect(document.cookie).toBe("");
+  const manager = handle.getCookieMgr();
+  expect(manager.isEnabled()).toBe(false);
+  manager.setEnabled(true);
+  expect(manager.isEnabled()).toBe(true);
+  expect(readCookie("opentelemetry-session").id).toBe(before["session.id"]);
+  expect(readCookie("opentelemetry-user").anonymousId).toBe(before["enduser.pseudo.id"]);
+  expect(readCookie("opentelemetry-auth-user")).toEqual({
+    authenticatedUserId: "deferred-user",
+    accountId: "account",
+  });
+  expect(emit()).toMatchObject(before);
+});
+
+it.each([
+  { namePrefix: "", cleanupFails: false },
+  { namePrefix: "", cleanupFails: true },
+  { namePrefix: "app-a-", cleanupFails: false },
+  { namePrefix: "app-a-", cleanupFails: true },
+])(
+  "removes only superseded authentication on failed deferred replay and retries B (%j)",
+  async ({ namePrefix, cleanupFails }) => {
+    const name = `${namePrefix}opentelemetry-auth-user`;
+    const values = new Map<string, string>();
+    let failWrites = false;
+    let failCleanup = cleanupFails;
+    const setCookie = vi.fn((key: string, value: string) => {
+      if (failWrites) throw new Error("Cookie write denied");
+      values.set(key, value.split(";")[0]!);
+    });
+    const delCookie = vi.fn((key: string) => {
+      if (failCleanup) throw new Error("Cookie removal denied");
+      values.delete(key);
+    });
+    const options = {
+      storage: { enabled: false, namePrefix },
+      session: { enabled: false },
+      cookieCfg: {
+        getCookie: (key: string) => values.get(key) ?? "",
+        setCookie,
+        delCookie,
+      },
+    };
+    const first = await initialize(options);
+    first.handle.userContext.setAuthenticatedUserContext("A", "account-A", true);
+    expect(first.emit()).toMatchObject({ "user.id": "A", "user.account.id": "account-A" });
+    const previousAuthentication = values.get(name);
+    expect(JSON.parse(decodeURIComponent(previousAuthentication!))).toEqual({
+      authenticatedUserId: "A",
+      accountId: "account-A",
+    });
+    const manager = first.handle.getCookieMgr();
+    const controlNames = [
+      `${namePrefix}opentelemetry-user`,
+      `${namePrefix}opentelemetry-session`,
+      `${namePrefix}custom-cookie`,
+      `${namePrefix ? "" : "app-a-"}opentelemetry-auth-user`,
+    ];
+    for (const key of controlNames.slice(1)) expect(manager.set(key, "previous")).toBe(true);
+    const previousControls = controlNames.map((key) => [key, values.get(key)]);
+    manager.setEnabled(false);
+    first.handle.userContext.setAuthenticatedUserContext("B", "account-B", true);
+    for (const key of controlNames) expect(manager.set(key, values.get(key)!)).toBe(true);
+    expect(values.get(name)).toBe(previousAuthentication);
+    failWrites = true;
+    expect(() => manager.setEnabled(true)).not.toThrow();
+    expect(first.emit()).toMatchObject({ "user.id": "B", "user.account.id": "account-B" });
+    expect(delCookie.mock.calls.map(([key]) => key)).toEqual([name]);
+    expect(controlNames.map((key) => [key, values.get(key)])).toEqual(previousControls);
+    if (cleanupFails) {
+      expect(values.get(name)).toBe(previousAuthentication);
+      failCleanup = false;
+      // A failed removal must leave the pending replacement available for another bounded pass.
+      expect(() => manager.setEnabled(true)).not.toThrow();
+      expect(delCookie.mock.calls.map(([key]) => key)).toEqual([name, name]);
+    }
+    expect(values.has(name)).toBe(false);
+
+    // Keep the first manager alive for its pending retry; emissions are instance-bound.
+    const restored = await initialize(options);
+    const withoutAuthentication = restored.emit();
+    expect(withoutAuthentication["user.id"]).toBeUndefined();
+    expect(withoutAuthentication["user.account.id"]).toBeUndefined();
+    await restored.handle.shutdown();
+
+    failWrites = false;
+    manager.setEnabled(true);
+    expect(JSON.parse(decodeURIComponent(values.get(name)!))).toEqual({
+      authenticatedUserId: "B",
+      accountId: "account-B",
+    });
+    const writes = setCookie.mock.calls.length;
+    manager.setEnabled(true);
+    expect(setCookie).toHaveBeenCalledTimes(writes);
+    const recovered = await initialize(options);
+    expect(recovered.emit()).toMatchObject({ "user.id": "B", "user.account.id": "account-B" });
+  },
+);
+
+it.each([
+  { namePrefix: "", enabled: false },
+  { namePrefix: "", enabled: true },
+  { namePrefix: "app-a-", enabled: false },
+  { namePrefix: "app-a-", enabled: true },
+])(
+  "cleans legacy Web Storage only through explicit identity controls (%j)",
+  async ({ namePrefix, enabled }) => {
+    const { storage, key, otherKey, legacy } = legacyUserStorage(namePrefix);
+    const local = vi.spyOn(window, "localStorage", "get").mockReturnValue(storage);
+    const session = vi.spyOn(window, "sessionStorage", "get");
+    const read = vi.spyOn(storage, "getItem");
+    const write = vi.spyOn(storage, "setItem");
+    const remove = vi.spyOn(storage, "removeItem");
+    const { handle, emit } = await initialize({
+      storage: { namePrefix },
+      session: { enabled: false },
+      userContext: { enabled },
+    });
+    const initial = emit();
+    expect(initial["user.id"]).toBeUndefined();
+    expect(initial["user.account.id"]).toBeUndefined();
+    if (enabled) expect(initial["enduser.pseudo.id"]).toMatch(/^[0-9a-f]{32}$/);
+    else expect(initial["enduser.pseudo.id"]).toBeUndefined();
+    handle.userContext.setEnabled(true);
+    handle.userContext.setAuthenticatedUserContext("current-user", "current-account", true);
+    const current = emit();
+    expect(current).toMatchObject({
+      "user.id": "current-user",
+      "user.account.id": "current-account",
+    });
+    expect(current["enduser.pseudo.id"]).not.toBe("legacy-anonymous");
+    await handle.forceFlush();
+    for (const operation of [local, session, read, write, remove]) {
+      expect(operation).not.toHaveBeenCalled();
+    }
+    expect(storage.getItem(key)).toBe(legacy);
+    expect(storage.getItem(otherKey)).toBe(legacy);
+
+    handle.userContext.clearAuthenticatedUserContext();
+    expect(storage.getItem(key)).toBe(JSON.stringify({ anonymousId: "legacy-anonymous" }));
+    expect(storage.getItem(otherKey)).toBe(legacy);
+    const cleared = emit();
+    expect(cleared["user.id"]).toBeUndefined();
+    expect(cleared["user.account.id"]).toBeUndefined();
+    expect(cleared["enduser.pseudo.id"]).toBe(current["enduser.pseudo.id"]);
+    expect(readCookie(`${namePrefix}opentelemetry-auth-user`)).toBeNull();
+
+    // Disable must remove the whole legacy record, even when it still contains authentication.
+    storage.setItem(key, legacy);
+    handle.userContext.setAuthenticatedUserContext("current-user", "current-account", true);
+    handle.userContext.setEnabled(false);
+    expect(storage.getItem(key)).toBeNull();
+    expect(storage.getItem(otherKey)).toBe(legacy);
+    expect(emit()["enduser.pseudo.id"]).toBeUndefined();
+    expect(readCookie(`${namePrefix}opentelemetry-user`)).toBeNull();
+    expect(readCookie(`${namePrefix}opentelemetry-auth-user`)).toBeNull();
+    expect(session).not.toHaveBeenCalled();
+  },
+);
+
+it.each(["", "app-a-"])(
+  "never accesses legacy Web Storage through explicit controls when storage is disabled (prefix=%j)",
+  async (namePrefix) => {
+    const { storage, key, otherKey, legacy } = legacyUserStorage(namePrefix);
+    const local = vi.spyOn(window, "localStorage", "get").mockReturnValue(storage);
+    const session = vi.spyOn(window, "sessionStorage", "get");
+    const read = vi.spyOn(storage, "getItem");
+    const write = vi.spyOn(storage, "setItem");
+    const remove = vi.spyOn(storage, "removeItem");
+    const { handle, emit } = await initialize({ storage: { enabled: false, namePrefix } });
+    expect(emit()["user.id"]).toBeUndefined();
+    handle.userContext.setEnabled(true);
+    handle.userContext.setAuthenticatedUserContext("current-user", "current-account", true);
+    expect(emit()["user.id"]).toBe("current-user");
+    handle.userContext.clearAuthenticatedUserContext();
+    handle.userContext.setEnabled(false);
+    handle.userContext.setEnabled(true);
+    await handle.forceFlush();
+    window.dispatchEvent(new PageTransitionEvent("pagehide"));
+    await handle.shutdown();
+    handle.userContext.clearAuthenticatedUserContext();
+    handle.userContext.setEnabled(false);
+    for (const operation of [local, session, read, write, remove]) {
+      expect(operation).not.toHaveBeenCalled();
+    }
+    expect(storage.getItem(key)).toBe(legacy);
+    expect(storage.getItem(otherKey)).toBe(legacy);
+  },
+);
+
+it.each(["read", "write", "write and remove"] as const)(
+  "contains legacy logout %s failures independently of cookie removal failures",
+  async (failure) => {
+    const { storage, key, otherKey, legacy } = legacyUserStorage("app-a-");
+    vi.spyOn(window, "localStorage", "get").mockReturnValue(storage);
+    const delCookie = vi.fn((_name: string) => {
+      throw new Error("Cookie removal denied");
+    });
+    const { handle, emit } = await initialize({
+      storage: { namePrefix: "app-a-" },
+      session: { enabled: false },
+      cookieCfg: { delCookie },
+    });
+    handle.userContext.setAuthenticatedUserContext("current-user", "current-account", true);
+    const deny = () => {
+      throw new Error("Web Storage operation denied");
+    };
+    if (failure === "read") vi.spyOn(storage, "getItem").mockImplementationOnce(deny);
+    else vi.spyOn(storage, "setItem").mockImplementationOnce(deny);
+    if (failure === "write and remove") {
+      vi.spyOn(storage, "removeItem").mockImplementationOnce(deny);
+    }
+    expect(() => handle.userContext.clearAuthenticatedUserContext()).not.toThrow();
+    const cleared = emit();
+    expect(cleared["user.id"]).toBeUndefined();
+    expect(cleared["user.account.id"]).toBeUndefined();
+    expect(delCookie).toHaveBeenCalledWith("app-a-opentelemetry-auth-user", expect.any(String));
+    expect(storage.getItem(key)).toBe(failure === "write and remove" ? legacy : null);
+    expect(storage.getItem(otherKey)).toBe(legacy);
+    // A retry removes stale authentication even while a failed write remains in backoff.
+    handle.userContext.clearAuthenticatedUserContext();
+    expect(storage.getItem(key)).toBeNull();
+  },
+);
+
+it("retries explicit legacy disable after Web Storage and cookie removal fail", async () => {
+  const { storage, key, otherKey, legacy } = legacyUserStorage("app-a-");
+  vi.spyOn(window, "localStorage", "get").mockReturnValue(storage);
+  const delCookie = vi.fn((_name: string) => {
+    throw new Error("Cookie removal denied");
+  });
+  const { handle, emit } = await initialize({
+    storage: { namePrefix: "app-a-" },
+    session: { enabled: false },
+    cookieCfg: { delCookie },
+  });
+  vi.spyOn(storage, "removeItem").mockImplementationOnce(() => {
+    throw new Error("Web Storage removal denied");
+  });
+  expect(() => handle.userContext.setEnabled(false)).not.toThrow();
+  expect(emit()["enduser.pseudo.id"]).toBeUndefined();
+  expect(delCookie.mock.calls.map(([name]) => name)).toEqual([
+    "app-a-opentelemetry-user",
+    "app-a-opentelemetry-auth-user",
+  ]);
+  expect(storage.getItem(key)).toBe(legacy);
+  expect(() => handle.userContext.setEnabled(false)).not.toThrow();
+  expect(storage.getItem(key)).toBeNull();
+  expect(storage.getItem(otherKey)).toBe(legacy);
+});
+
+it("cancels deferred SDK cookie writes on shutdown and ignores stale enable calls", async () => {
+  const { handle, emit } = await initialize({
+    storage: { enabled: false },
+    cookieCfg: { enabled: false },
+  });
+  handle.userContext.setAuthenticatedUserContext("queued-user", undefined, true);
+  const attributes = emit();
+  const manager = handle.getCookieMgr();
+  expect(manager.get("opentelemetry-session")).not.toBe("");
+  expect(manager.get("opentelemetry-auth-user")).not.toBe("");
+  expect(attributes["user.id"]).toBe("queued-user");
+  const tracer = trace.getTracer("stale");
+  const logger = logs.getLogger("stale");
+  await handle.shutdown();
+  const write = vi.spyOn(document, "cookie", "set");
+  manager.setEnabled(true);
+  handle.userContext.setEnabled(true);
+  handle.userContext.setAuthenticatedUserContext("stale-user", undefined, true);
+  tracer.startSpan("after-shutdown").end();
+  logger.emit({});
+  expect(manager.isEnabled()).toBe(false);
+  expect(manager.get("opentelemetry-session")).toBe("");
+  expect(manager.get("opentelemetry-auth-user")).toBe("");
+  expect(write).not.toHaveBeenCalled();
+  expect(document.cookie).toBe("");
 });
 
 it.each([false, null, [], true, 0, "", "disabled", () => {}])(
