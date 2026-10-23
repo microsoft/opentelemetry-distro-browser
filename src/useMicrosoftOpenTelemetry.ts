@@ -1,13 +1,19 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-import { context, diag, type SpanContext } from "@opentelemetry/api";
+import { context, diag, type SpanContext, type SpanKind } from "@opentelemetry/api";
 import {
   BrowserContextLogRecordProcessor,
   BrowserContextSpanProcessor,
 } from "./context/contextProcessors.js";
 import { createSession } from "./session/createSession.js";
 import { createUserContext } from "./user/createUserContext.js";
+import {
+  spanItemType,
+  validateSdkStatsOptions,
+  type CustomerSdkStats,
+  type ItemType,
+} from "./exporter/customerSdkStats.js";
 import { createKeyValueStorage } from "./storage/keyValueStorage.js";
 import { createSessionBufferStorage, sessionBufferStorage } from "./exporter/sessionBuffer.js";
 import { validateSdkStatsOptions } from "./exporter/customerSdkStats.js";
@@ -172,7 +178,12 @@ export async function useMicrosoftOpenTelemetry(
   const maxDuration = sessionOptions?.maxDuration;
   const sessionRenewalMs = options.sessionRenewalMs;
   const sessionExpirationMs = options.sessionExpirationMs;
-  const azureMonitor = options.azureMonitor ? { ...options.azureMonitor } : undefined;
+  const azureMonitor = options.azureMonitor
+    ? {
+        ...options.azureMonitor,
+        sdkStats: options.azureMonitor.sdkStats && { ...options.azureMonitor.sdkStats },
+      }
+    : undefined;
   const configuration = createRuntimeConfiguration(
     {
       samplingPercentage: options.samplingPercentage,
@@ -228,8 +239,23 @@ export async function useMicrosoftOpenTelemetry(
         )
       : undefined;
   getSharedRegistry();
+  let spanStats: CustomerSdkStats | undefined;
+  // Sampling can reject spans before a deferred destination creates its reporter.
+  let pendingSampleDrops: Map<ItemType, number> | undefined;
+  const onSampleDrop =
+    options.azureMonitor?.sdkStats?.enabled === true
+      ? (kind: SpanKind) => {
+          if (stopping) return;
+          const type = spanItemType(kind);
+          if (spanStats) spanStats.count("Dropped", type, "SAMPLING");
+          else {
+            pendingSampleDrops ??= new Map();
+            pendingSampleDrops.set(type, (pendingSampleDrops.get(type) ?? 0) + 1);
+          }
+        }
+      : undefined;
   const readSamplingPercentage = () => configuration.snapshot().samplingPercentage;
-  const sampler = new RuntimeSampler(readSamplingPercentage);
+  const sampler = new RuntimeSampler(readSamplingPercentage, onSampleDrop);
   const userContext = createUserContext(
     options.userContext?.enabled,
     createKeyValueStorage(
@@ -338,6 +364,7 @@ export async function useMicrosoftOpenTelemetry(
     });
     void (async () => {
       stopping = true;
+      pendingSampleDrops = undefined;
       const errors: unknown[] = [];
       for (const cleanup of [
         () => {
@@ -460,6 +487,13 @@ export async function useMicrosoftOpenTelemetry(
         readSamplingPercentage,
         azureMonitorExporters,
         () => configuration.snapshot().azureMonitor.disableBeacon,
+        (stats) => {
+          spanStats = stats;
+          for (const [type, count] of pendingSampleDrops ?? []) {
+            stats.count("Dropped", type, "SAMPLING", count);
+          }
+          pendingSampleDrops = undefined;
+        },
       );
       stopAzureMonitorStartup = stop;
       startAzureMonitorDiagnostics = startDiagnostics;

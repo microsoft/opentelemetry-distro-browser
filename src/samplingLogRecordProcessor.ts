@@ -47,6 +47,7 @@ export class AzureMonitorSamplingLogRecordProcessor extends BrowserBatchLogRecor
     record: ReadWriteLogRecord,
     percentage: number | undefined,
   ): void {
+    if (!this.accepts(record)) return;
     if (percentage === undefined) {
       super.onEmit(record);
       return;
@@ -58,7 +59,10 @@ export class AzureMonitorSamplingLogRecordProcessor extends BrowserBatchLogRecor
       ? isTraceSampled(spanContext.traceId, samplingPercentage)
       : samplingPercentage === 100 ||
         (samplingPercentage !== 0 && this.random() * 100 < samplingPercentage);
-    if (!sampled) return;
+    if (!sampled) {
+      this.drop(record, "SAMPLING");
+      return;
+    }
 
     const currentSampleRate = record.attributes[AZURE_MONITOR_SAMPLE_RATE];
     const effectiveSampleRate = getEffectiveSampleRate(
