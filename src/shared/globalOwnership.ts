@@ -14,6 +14,8 @@ const realm = globalThis as typeof globalThis & { [key: symbol]: unknown };
 interface SharedRegistry {
   version: 1;
   diagInitialized?: boolean;
+  reportingSdkStats?: boolean;
+  sdkIngestionUrls?: Set<string>;
   pageContexts?: WeakSet<SpanContext>;
   operationNames?: WeakMap<object, string>;
   router?: RouterState;
@@ -24,10 +26,64 @@ interface SharedRegistry {
   pending?: { signal: "trace" | "logs"; rollback: () => void }[];
 }
 
+/** Retain exact destinations for buffered resource timings delivered after exporter shutdown. */
+export function rememberSdkIngestionUrl(endpoint: string): void {
+  const url = new URL(endpoint);
+  url.hash = "";
+  (getSharedRegistry().sdkIngestionUrls ??= new Set()).add(url.href);
+}
+
+export function isSdkIngestionUrl(url: string): boolean {
+  const registry = realm[distroKey] as SharedRegistry | undefined;
+  return registry?.version === 1 && registry.sdkIngestionUrls?.has(url) === true;
+}
+
 /** Exporter-only consumers may read page membership without initializing a distribution. */
 export function getPageContexts(): WeakSet<SpanContext> | undefined {
   const registry = realm[distroKey] as SharedRegistry | undefined;
   return registry?.version === 1 ? registry.pageContexts : undefined;
+}
+
+/** Prevents diagnostic feedback into telemetry. */
+export function isReportingSdkStats(): boolean {
+  const registry = realm[distroKey] as SharedRegistry | undefined;
+  return registry?.version === 1 && registry.reportingSdkStats === true;
+}
+
+export function reportWithoutTelemetry(report: () => void): void {
+  const existing = realm[distroKey] as SharedRegistry | undefined;
+  const registry = existing?.version === 1 ? existing : undefined;
+  const previous = registry?.reportingSdkStats;
+  if (registry) registry.reportingSdkStats = true;
+  const restore: (() => void)[] = [];
+  try {
+    // Standalone providers do not consult our emission guard. Bypass OpenTelemetry's
+    // console wrappers while reporting, even without a registered context manager.
+    if (typeof console !== "undefined") {
+      type ConsoleMethod = typeof console.warn & { __original?: ConsoleMethod };
+      /* eslint-disable no-console, @typescript-eslint/unbound-method -- Preserve and restore console wrapper identities without invoking them. */
+      for (const name of ["debug", "info", "log", "warn", "error"] as const) {
+        const wrapped = console[name];
+        const patch = registry?.browserPatches?.targets.get(console)?.get(name);
+        let original: ConsoleMethod = wrapped;
+        while (true) {
+          if (patch && original === patch.wrapper) original = patch.original;
+          else if (typeof original.__original === "function") original = original.__original;
+          else break;
+        }
+        if (original === wrapped) continue;
+        console[name] = original;
+        restore.push(() => {
+          if (console[name] === original) console[name] = wrapped;
+        });
+      }
+      /* eslint-enable no-console, @typescript-eslint/unbound-method */
+    }
+    report();
+  } finally {
+    for (const undo of restore) undo();
+    if (registry) registry.reportingSdkStats = previous;
+  }
 }
 
 /** Exporter-only consumers may read operation names without initializing a distribution. */
