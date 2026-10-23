@@ -19,6 +19,9 @@ import {
 import { isUnloading } from "../../../src/exporter/common.js";
 import type { MicrosoftOpenTelemetryBrowser } from "../../../src/types.js";
 import { BROWSER_ASYNC_TIMEOUT_MS } from "../../fixtures/timeouts.js";
+import { createSession } from "../../../src/session/createSession.js";
+
+vi.mock("../../../src/session/createSession.js", { spy: true });
 
 /** Captures every log record the distribution emits through the real pipeline. */
 class RecordingProcessor implements LogRecordProcessor {
@@ -329,32 +332,17 @@ describe("distribution-owned instrumentation", () => {
       spanProcessors: [],
       logRecordProcessors: [new BatchLogRecordProcessor(processorOptions)],
     });
-    const failure = new Error("session serialization failed");
+    const failure = new Error("session backup failed");
     const error = vi.spyOn(diag, "error").mockImplementation(() => {});
-    const failBackup = vi.fn(() => {
+    const session = vi.mocked(createSession).mock.results.at(-1)!.value;
+    const backup = vi.spyOn(session, "backup").mockImplementation(() => {
       throw failure;
-    });
-    const originalStringify = JSON.stringify;
-    // Cookie refresh is throttled at this timestamp. Fail only session serialization, not
-    // unrelated browser/SDK serialization that can also run during page-hide settlement.
-    const stringify = vi.spyOn(JSON, "stringify").mockImplementation((...args) => {
-      const [value] = args;
-      if (
-        typeof value === "object" &&
-        value !== null &&
-        "id" in value &&
-        "startTimestamp" in value &&
-        "lastActivityTimestamp" in value
-      ) {
-        return failBackup();
-      }
-      return originalStringify(...args);
     });
     try {
       window.dispatchEvent(new Event("pagehide"));
-      expect(failBackup).toHaveBeenCalledOnce();
+      expect(backup).toHaveBeenCalledOnce();
     } finally {
-      stringify.mockRestore();
+      backup.mockRestore();
     }
     await vi.waitFor(() => {
       expect(exporter.export).toHaveBeenCalledOnce();

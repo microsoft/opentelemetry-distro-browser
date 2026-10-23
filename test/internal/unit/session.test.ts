@@ -20,17 +20,28 @@ vi.mock("../../../src/routing/telemetryInstance.js", { spy: true });
 
 const storageKey = "opentelemetry-session";
 const handles = new Set<MicrosoftOpenTelemetryBrowser>();
+// Keep persisted records synchronous and independent of the native cookie jar. Fake timers
+// do not control native cookie expiry or WebKit's asynchronous cookie-cache updates. Cookie
+// retention and browser persistence are covered by the cookie and integration suites.
+const cookieValues = new Map<string, string>();
+const cookieCfg = {
+  getCookie: vi.fn((name: string) => cookieValues.get(name) ?? ""),
+  setCookie: vi.fn((name: string, formatted: string) => {
+    cookieValues.set(name, formatted.split(";")[0]!);
+  }),
+  delCookie: vi.fn((name: string, _formatted: string) => {
+    cookieValues.delete(name);
+  }),
+};
 let previousSession: string | null;
 
 function clearCookies() {
-  for (const key of [storageKey, "opentelemetry-user", "opentelemetry-auth-user"]) {
-    document.cookie = `${key}=; max-age=0; path=/`;
-  }
+  cookieValues.clear();
 }
 
 function readSessionCookie() {
-  const value = document.cookie.split("; ").find((part) => part.startsWith(`${storageKey}=`));
-  return value ? JSON.parse(decodeURIComponent(value.slice(storageKey.length + 1))) : null;
+  const value = cookieValues.get(storageKey);
+  return value ? JSON.parse(decodeURIComponent(value)) : null;
 }
 
 const fallbackOnly = { cookieCfg: { enabled: false, disableCookieDefer: true } } as const;
@@ -51,13 +62,12 @@ function resetApis() {
 
 beforeEach(() => {
   clearCookies();
+  cookieCfg.getCookie.mockClear();
+  cookieCfg.setCookie.mockClear();
+  cookieCfg.delCookie.mockClear();
   previousSession = localStorage.getItem(storageKey);
   localStorage.removeItem(storageKey);
-  // Real browser cookie expiry is not controlled by fake timers. Keep generated Expires
-  // dates out of the past instead of starting the fake clock in January 1970.
-  const now = Date.now();
-  vi.useFakeTimers();
-  vi.setSystemTime(now);
+  vi.useFakeTimers({ now: Date.now() });
   vi.mocked(startTelemetryInstance).mockClear();
 });
 
@@ -89,6 +99,7 @@ async function initialize(
   const records: ReadWriteLogRecord[] = [];
   const handle = await useMicrosoftOpenTelemetry({
     ...options,
+    cookieCfg: { ...cookieCfg, ...options.cookieCfg },
     userContext: { enabled: false },
     pageView: { enabled: false },
     spanProcessors: [
@@ -165,6 +176,7 @@ it.each(["inactivityTimeout", "maxDuration"] as const)(
     for (const value of [-1, NaN, Infinity, -Infinity, null, "10"]) {
       await expect(
         useMicrosoftOpenTelemetry({
+          cookieCfg,
           session: { enabled: true, [option]: value },
           azureMonitor: { connectionString: "invalid" },
         }),
@@ -180,6 +192,7 @@ it("rejects invalid persistence configuration rather than enabling storage", asy
   const access = vi.spyOn(window, "localStorage", "get");
   await expect(
     useMicrosoftOpenTelemetry({
+      cookieCfg,
       // @ts-expect-error Exercise untyped JavaScript input.
       session: { enabled: true, persist: "false" },
     }),
@@ -527,6 +540,7 @@ it("awaits persisted restoration before starting providers or enabling instrumen
   const spanIds: unknown[] = [];
   const logIds: unknown[] = [];
   const pending = useMicrosoftOpenTelemetry({
+    cookieCfg,
     session: { enabled: true },
     userContext: { enabled: false },
     pageView: { enabled: false },
@@ -595,14 +609,83 @@ it.each([1799_999, 1800_000, 1800_001])(
   async (idleMs) => {
     const first = await initialize();
     const id = first.emit();
+    const persisted = readSessionCookie();
     await first.handle.shutdown();
+    expect(JSON.parse(localStorage.getItem(storageKey)!)).toEqual(persisted);
     resetApis();
     await vi.advanceTimersByTimeAsync(idleMs);
+    expect(Date.now() - persisted.lastActivityTimestamp).toBe(idleMs);
+    expect(readSessionCookie()).toEqual(persisted);
     const second = await initialize();
     if (idleMs < 1800_000) expect(second.emit()).toBe(id);
     else expect(second.emit()).not.toBe(id);
   },
 );
+
+it.each([0, 7])(
+  "uses the authoritative cookie's age rather than a newer shutdown backup (%i ms older)",
+  async (olderMs) => {
+    const first = await initialize();
+    const id = first.emit();
+    const persisted = readSessionCookie();
+    await first.handle.shutdown();
+    handles.delete(first.handle);
+    expect(JSON.parse(localStorage.getItem(storageKey)!)).toEqual(persisted);
+    resetApis();
+
+    // Reproduce the Linux WebKit snapshot: after an async tick the native jar returned
+    // a different record, seven milliseconds older, instead of the last write.
+    const authoritative = {
+      id: olderMs === 0 ? id : "older-session",
+      startTimestamp: persisted.startTimestamp - olderMs,
+      lastActivityTimestamp: persisted.lastActivityTimestamp - olderMs,
+    };
+    cookieValues.set(storageKey, encodeURIComponent(JSON.stringify(authoritative)));
+    await vi.advanceTimersByTimeAsync(1799_999);
+    expect(Date.now() - persisted.lastActivityTimestamp).toBe(1799_999);
+    expect(Date.now() - authoritative.lastActivityTimestamp).toBe(1799_999 + olderMs);
+    const readBackup = vi.spyOn(Storage.prototype, "getItem");
+    const second = await initialize();
+    const restored = second.emit();
+    expect(readBackup).not.toHaveBeenCalled();
+    if (olderMs === 0) expect(restored).toBe(id);
+    else {
+      expect(restored).not.toBe(id);
+      expect(restored).not.toBe(authoritative.id);
+    }
+    expect(readSessionCookie().id).toBe(restored);
+  },
+);
+
+it("keeps fake-time reloads independent of delayed native cookie-cache updates", async () => {
+  let nativeCookie = "";
+  const readNative = vi.spyOn(document, "cookie", "get").mockImplementation(() => nativeCookie);
+  const writeNative = vi.spyOn(document, "cookie", "set").mockImplementation((value) => {
+    nativeCookie = value.split(";")[0]!;
+  });
+  const first = await initialize();
+  const id = first.emit();
+  const persisted = readSessionCookie();
+  await first.handle.shutdown();
+  handles.delete(first.handle);
+  resetApis();
+  await vi.advanceTimersByTimeAsync(1799_999);
+  // Deterministically inject the observed native-cache rollback after the async tick.
+  // With the former document.cookie fixture, this expired record replaced the live one.
+  nativeCookie = `${storageKey}=${encodeURIComponent(
+    JSON.stringify({
+      id: "stale-native-session",
+      startTimestamp: persisted.startTimestamp - 7,
+      lastActivityTimestamp: persisted.lastActivityTimestamp - 7,
+    }),
+  )}`;
+  expect(Date.now() - persisted.lastActivityTimestamp).toBe(1799_999);
+  expect(readSessionCookie()).toEqual(persisted);
+  const restored = await initialize();
+  expect(restored.emit()).toBe(id);
+  expect(readNative).not.toHaveBeenCalled();
+  expect(writeNative).not.toHaveBeenCalled();
+});
 
 it.each(["span", "log"])(
   "persists recent %s activity so an old but active session survives reload",
@@ -683,7 +766,7 @@ it("does not renew or persist idle sessions until telemetry arrives", async () =
 it("coalesces cookie activity writes within 60 seconds without writing Web Storage", async () => {
   const { emit } = await initialize();
   const backup = vi.spyOn(Storage.prototype, "setItem");
-  const write = vi.spyOn(document, "cookie", "set");
+  const write = cookieCfg.setCookie.mockClear();
   await vi.advanceTimersByTimeAsync(1);
   emit();
   emit();
@@ -705,7 +788,7 @@ it.each(["span", "log"])(
     const id = first.emit();
     const started = Date.now();
     const write = vi.spyOn(Storage.prototype, "setItem");
-    const cookieWrite = vi.spyOn(document, "cookie", "set");
+    const cookieWrite = cookieCfg.setCookie.mockClear();
     const activity = () => {
       if (signal === "span") trace.getTracer("backup-activity").startSpan("activity").end();
       else logs.getLogger("backup-activity").emit({ eventName: "activity" });
@@ -739,7 +822,7 @@ it.each(["span", "log"])(
     handles.delete(first.handle);
     resetApis();
     // A missing cookie permits restoring the newer Web Storage backup.
-    document.cookie = `${storageKey}=; max-age=0; path=/`;
+    cookieValues.delete(storageKey);
     const restored = await initialize();
     expect(restored.emit()).toBe(id);
     expect(readSessionCookie().id).toBe(id);
@@ -950,7 +1033,9 @@ it("stops session timers on SDK startup failure", async () => {
   vi.mocked(startTelemetryInstance).mockImplementationOnce(() => {
     throw failure;
   });
-  await expect(useMicrosoftOpenTelemetry({ session: { enabled: true } })).rejects.toBe(failure);
+  await expect(useMicrosoftOpenTelemetry({ cookieCfg, session: { enabled: true } })).rejects.toBe(
+    failure,
+  );
   expect(vi.getTimerCount()).toBe(0);
 });
 
@@ -966,6 +1051,7 @@ it("stops session timers even when instrumentation and SDK shutdown fail", async
     shutdown: vi.fn().mockRejectedValue(sdkFailure),
   });
   const handle = await useMicrosoftOpenTelemetry({
+    cookieCfg,
     session: { enabled: true },
     pageView: { enabled: false },
     instrumentations: [
@@ -991,6 +1077,7 @@ it("cleans up session timers when instrumentation initialization rolls back", as
   const failure = new Error("enable failed");
   await expect(
     useMicrosoftOpenTelemetry({
+      cookieCfg,
       session: { enabled: true },
       spanProcessors: [],
       logRecordProcessors: [],
@@ -1070,6 +1157,7 @@ it("stops session timers while failed initialization waits for provider shutdown
   const disableFailure = new Error("disable failed");
   const report = vi.spyOn(diag, "error").mockImplementation(() => {});
   const initialization = useMicrosoftOpenTelemetry({
+    cookieCfg,
     session: { enabled: true },
     pageView: { enabled: false },
     spanProcessors: [
