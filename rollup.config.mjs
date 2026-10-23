@@ -153,7 +153,7 @@ export default [
       ...esmOutput,
       file: "dist/esm/index.min.js",
       plugins: [
-        terser(),
+        terser({ compress: { passes: 3 } }),
         visualizer({
           filename: "reports/bundle-stats.html",
           title: "OpenTelemetry browser ESM bundle",

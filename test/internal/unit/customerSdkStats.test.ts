@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-import { context, diag, propagation, SpanKind, trace } from "@opentelemetry/api";
+import { context, diag, propagation, ROOT_CONTEXT, SpanKind, trace } from "@opentelemetry/api";
 import { logs } from "@opentelemetry/api-logs";
 import { ExportResultCode, type ExportResult } from "@opentelemetry/core";
 import {
@@ -23,6 +23,13 @@ import { spanToEnvelopes } from "../../../src/exporter/spanUtils.js";
 import { beginUnloading, endUnloading } from "../../../src/exporter/common.js";
 import { MAX_SEND_ATTEMPTS } from "../../../src/exporter/constants.js";
 import { AzureMonitorExportClient } from "../../../src/exporter/base.js";
+import { createStatsSpanProcessor } from "../../../src/statsSpanProcessor.js";
+import { BrowserBatchLogRecordProcessor } from "../../../src/browserBatchLogRecordProcessor.js";
+import { logItemType } from "../../../src/exporter/logUtils.js";
+import {
+  useMicrosoftOpenTelemetry,
+  type MicrosoftOpenTelemetryBrowser,
+} from "../../../src/index.js";
 import type { AzureMonitorEnvelope, MetricData } from "../../../src/exporter/telemetryModels.js";
 import { createReadableLogRecord, createReadableSpan } from "../../fixtures/telemetry.js";
 import {
@@ -30,6 +37,7 @@ import {
   assertAzureMonitorEnvelope,
 } from "../../fixtures/azureMonitor.js";
 import { installFakeClock } from "../../fixtures/clock.js";
+import { reportFailure } from "../../../src/exporter/sdkStats.js";
 
 const endpoint = "https://customer.example.test";
 const connectionString = `InstrumentationKey=${TEST_INSTRUMENTATION_KEY};IngestionEndpoint=${endpoint}`;
@@ -581,6 +589,303 @@ it("reports customer stats with keepalive but never falls back to beacon", async
   expect(beacon).not.toHaveBeenCalled();
 });
 
+it.each(["spans", "logs"] as const)(
+  "observes real $signal queue overflow without changing queue ownership",
+  async (signal) => {
+    const stats = create();
+    let complete!: () => void;
+    let calls = 0;
+    const exporter = {
+      export: (_records: unknown[], callback: (result: ExportResult) => void) => {
+        if (++calls === 1) complete = () => callback({ code: ExportResultCode.SUCCESS });
+        else callback({ code: ExportResultCode.SUCCESS });
+      },
+      shutdown: async () => {},
+      forceFlush: async () => {},
+    };
+    if (signal === "spans") {
+      const processor = createStatsSpanProcessor(
+        {
+          exporter,
+          maxExportBatchSize: 1,
+          maxQueueSize: 1,
+          disableAutoFlushOnDocumentHide: true,
+        },
+        stats,
+      );
+      owners.push(processor);
+      processor.onEnd(createReadableSpan());
+      processor.onEnd(createReadableSpan());
+      processor.onEnd(createReadableSpan({ kind: SpanKind.SERVER }));
+    } else {
+      const processor = new BrowserBatchLogRecordProcessor({
+        exporter,
+        maxExportBatchSize: 1,
+        maxQueueSize: 1,
+        onDrop: (record, reason) => stats.count("Dropped", logItemType(record), reason),
+      });
+      const provider = new LoggerProvider({ processors: [processor] });
+      owners.push(provider);
+      const logger = provider.getLogger("queue");
+      logger.emit({ body: "in flight" });
+      await Promise.resolve();
+      logger.emit({ body: "queued" });
+      logger.emit({ eventName: "exception" });
+    }
+    finishers.push(() => complete());
+    await stats.forceFlush();
+    expect(totals()).toEqual({
+      [`Item_Dropped_Count:${signal === "spans" ? "REQUEST" : "EXCEPTION"}:QUEUE_FULL`]: 1,
+    });
+  },
+);
+
+async function initialize(
+  key = TEST_INSTRUMENTATION_KEY,
+  samplingPercentage?: number,
+  enabled = true,
+): Promise<MicrosoftOpenTelemetryBrowser> {
+  const handle = await useMicrosoftOpenTelemetry({
+    azureMonitor: {
+      connectionString: `InstrumentationKey=${key};IngestionEndpoint=${endpoint}`,
+      sdkStats: { enabled },
+    },
+    samplingPercentage,
+    pageView: { enabled: false },
+    storage: { enabled: false },
+    session: { enabled: false },
+  });
+  owners.push(handle);
+  return handle;
+}
+
+it("reports trace and log sampling at zero percent, with no customer items sent", async () => {
+  const handle = await initialize(TEST_INSTRUMENTATION_KEY, 0);
+  trace.getTracer("sample").startSpan("private span", { kind: SpanKind.SERVER }).end();
+  logs.getLogger("sample").emit({ eventName: "private event", body: "private body" });
+  await handle.forceFlush();
+  expect(totals()).toEqual({
+    "Item_Dropped_Count:REQUEST:SAMPLING": 1,
+    "Item_Dropped_Count:CUSTOM_EVENT:SAMPLING": 1,
+  });
+  expect(fetch).toHaveBeenCalledTimes(2);
+  expect(JSON.stringify(reports)).not.toContain("private");
+  const tracer = trace.getTracer("stale");
+  await handle.shutdown();
+  tracer.startSpan("after shutdown").end();
+  await handle.forceFlush();
+  expect(fetch).toHaveBeenCalledTimes(2);
+});
+
+it("counts the default parent-based sampler's drops", async () => {
+  const handle = await initialize();
+  const parent = trace.setSpanContext(ROOT_CONTEXT, {
+    traceId: "1".repeat(32),
+    spanId: "2".repeat(16),
+    traceFlags: 0,
+  });
+  trace.getTracer("parent").startSpan("child", {}, parent).end();
+  await handle.forceFlush();
+  expect(totals()).toEqual({ "Item_Dropped_Count:DEPENDENCY:SAMPLING": 1 });
+});
+
+it("keeps sampling counters attached across runtime policy changes", async () => {
+  const handle = await initialize(TEST_INSTRUMENTATION_KEY, 100);
+  const tracer = trace.getTracer("runtime-stats");
+  const logger = logs.getLogger("runtime-stats");
+  const emit = () => {
+    tracer.startSpan("operation", { kind: SpanKind.SERVER }).end();
+    logger.emit({ body: "log" });
+  };
+  emit();
+  await handle.forceFlush();
+  await handle.updateCfg({ samplingPercentage: 0 });
+  emit();
+  await handle.forceFlush();
+  await handle.updateCfg({ samplingPercentage: undefined });
+  emit();
+  await handle.forceFlush();
+  expect(totals()).toEqual({
+    "Item_Success_Count:REQUEST": 2,
+    "Item_Success_Count:TRACE": 2,
+    "Item_Dropped_Count:REQUEST:SAMPLING": 1,
+    "Item_Dropped_Count:TRACE:SAMPLING": 1,
+  });
+});
+
+it("retains sampling counts and emission-time log policy while the destination resolves", async () => {
+  let resolve!: (value: string) => void;
+  const pending = new Promise<string>((done) => (resolve = done));
+  const handle = await useMicrosoftOpenTelemetry({
+    azureMonitor: { connectionString: pending, sdkStats: { enabled: true } },
+    samplingPercentage: 0,
+    pageView: { enabled: false },
+    storage: { enabled: false },
+    session: { enabled: false },
+  });
+  owners.push(handle);
+  trace.getTracer("deferred-stats").startSpan("sampled", { kind: SpanKind.SERVER }).end();
+  logs.getLogger("deferred-stats").emit({ body: "sampled" });
+  await handle.updateCfg({ samplingPercentage: 100 });
+  trace.getTracer("deferred-stats").startSpan("retained").end();
+  logs.getLogger("deferred-stats").emit({ body: "retained" });
+  await handle.forceFlush();
+  expect(fetch).not.toHaveBeenCalled();
+  resolve(connectionString);
+  await Promise.resolve();
+  await handle.forceFlush();
+  expect(totals()).toEqual({
+    "Item_Dropped_Count:REQUEST:SAMPLING": 1,
+    "Item_Dropped_Count:TRACE:SAMPLING": 1,
+    "Item_Success_Count:DEPENDENCY": 1,
+    "Item_Success_Count:TRACE": 1,
+  });
+});
+
+it.each([0, 1])(
+  "counts deferred startup overflow by signal and type with capacity %s",
+  async (initInMemoMaxSize) => {
+    let resolve!: (value: string) => void;
+    const pending = new Promise<string>((done) => (resolve = done));
+    const handle = await useMicrosoftOpenTelemetry({
+      azureMonitor: {
+        connectionString: pending,
+        initInMemoMaxSize,
+        sdkStats: { enabled: true },
+      },
+      samplingPercentage: 100,
+      pageView: { enabled: false },
+      storage: { enabled: false },
+      session: { enabled: false },
+    });
+    owners.push(handle);
+    const tracer = trace.getTracer("startup-overflow");
+    const logger = logs.getLogger("startup-overflow");
+    new Sender({ endpoint: "https://peer.example.test/v2/track" });
+    logs.getLogger("@opentelemetry/browser-instrumentation/resource-timing").emit({
+      eventName: "browser.resource_timing",
+      attributes: { "url.full": "https://peer.example.test/v2/track" },
+    });
+    logger.emit({ body: "first" });
+    logger.emit({ body: "overflow" });
+    logger.emit({ eventName: "exception" });
+    tracer.startSpan("dependency").end();
+    tracer.startSpan("request", { kind: SpanKind.SERVER }).end();
+    tracer.startSpan("another request", { kind: SpanKind.CONSUMER }).end();
+    expect(fetch).not.toHaveBeenCalled();
+    resolve(connectionString);
+    await Promise.resolve();
+    await handle.forceFlush();
+    expect(totals()).toEqual({
+      ...(initInMemoMaxSize ? { "Item_Success_Count:TRACE": 1 } : {}),
+      "Item_Dropped_Count:TRACE:QUEUE_FULL": 2 - initInMemoMaxSize,
+      "Item_Dropped_Count:EXCEPTION:QUEUE_FULL": 1,
+      "Item_Dropped_Count:DEPENDENCY:QUEUE_FULL": 1,
+      "Item_Dropped_Count:REQUEST:QUEUE_FULL": 2,
+    });
+    tracer.startSpan("after activation").end();
+    logger.emit({ body: "after activation" });
+    await handle.shutdown();
+    expect(totals()).toEqual({
+      "Item_Success_Count:TRACE": initInMemoMaxSize + 1,
+      "Item_Success_Count:DEPENDENCY": 1,
+      "Item_Dropped_Count:TRACE:QUEUE_FULL": 2 - initInMemoMaxSize,
+      "Item_Dropped_Count:EXCEPTION:QUEUE_FULL": 1,
+      "Item_Dropped_Count:DEPENDENCY:QUEUE_FULL": 1,
+      "Item_Dropped_Count:REQUEST:QUEUE_FULL": 2,
+    });
+  },
+);
+
+it.each([undefined, 0, 100])(
+  "does not count resource timing for its own ingestion at sampling %s",
+  async (samplingPercentage) => {
+    const handle = await initialize(TEST_INSTRUMENTATION_KEY, samplingPercentage);
+    const logger = logs.getLogger("@opentelemetry/browser-instrumentation/resource-timing");
+    logger.emit({
+      eventName: "browser.resource_timing",
+      attributes: { "url.full": `${endpoint}/v2/track` },
+    });
+    await handle.forceFlush();
+    expect(fetch).not.toHaveBeenCalled();
+    logger.emit({
+      eventName: "browser.resource_timing",
+      attributes: { "url.full": "https://application.example.test/image.png" },
+    });
+    await handle.forceFlush();
+    expect(totals()).toEqual({
+      [samplingPercentage === 0
+        ? "Item_Dropped_Count:CUSTOM_EVENT:SAMPLING"
+        : "Item_Success_Count:CUSTOM_EVENT"]: 1,
+    });
+  },
+);
+
+it.each([false, true])(
+  "does not collect stats failure diagnostics with a logs-only pipeline: %s",
+  async (logsOnly) => {
+    const instrumentation = new ConsoleInstrumentation({ enabled: false, logMethods: ["warn"] });
+    const handle = await useMicrosoftOpenTelemetry({
+      azureMonitor: { connectionString, sdkStats: { enabled: true } },
+      spanProcessors: logsOnly ? [] : undefined,
+      pageView: { enabled: false },
+      storage: { enabled: false },
+      session: { enabled: false },
+      instrumentations: [instrumentation],
+    });
+    owners.push(handle);
+    vi.spyOn(diag, "warn").mockImplementation(() => console.warn("Customer stats failed"));
+    logs.getLogger("app").emit({ body: "application" });
+    fetch
+      .mockResolvedValueOnce(new Response(null))
+      .mockResolvedValueOnce(new Response(null, { status: 503 }));
+    await handle.forceFlush();
+    await handle.forceFlush();
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(diag.warn).toHaveBeenCalledOnce();
+  },
+);
+
+it.each([
+  `${endpoint}/v2.1/track`,
+  `${endpoint}/redirected`,
+  "https://eastus-8.in.applicationinsights.azure.com/v2.1/track",
+])("excludes remembered SDK dispatches to %s before sampling", async (redirectedEndpoint) => {
+  const handle = await initialize(TEST_INSTRUMENTATION_KEY, 0);
+  const response = new Response(null);
+  Object.defineProperties(response, {
+    redirected: { value: true },
+    url: { value: redirectedEndpoint },
+  });
+  fetch.mockResolvedValueOnce(response);
+  const sender = new Sender({
+    endpoint: redirectedEndpoint.includes("applicationinsights")
+      ? "https://dc.services.visualstudio.com/v2/track"
+      : `${endpoint}/v2/track`,
+  });
+  await sender.send(request());
+  await sender.send(request());
+  expect(fetch.mock.calls[1][0]).toBe(redirectedEndpoint);
+  fetch.mockClear();
+  const logger = logs.getLogger("@opentelemetry/browser-instrumentation/resource-timing");
+  logger.emit({
+    eventName: "browser.resource_timing",
+    attributes: { "url.full": redirectedEndpoint },
+  });
+  await handle.forceFlush();
+  expect(fetch).not.toHaveBeenCalled();
+  logger.emit({
+    eventName: "browser.resource_timing",
+    attributes: { "url.full": `${redirectedEndpoint}/unrelated` },
+  });
+  logs.getLogger("application").emit({
+    eventName: "browser.resource_timing",
+    attributes: { "url.full": redirectedEndpoint },
+  });
+  await handle.forceFlush();
+  expect(totals()).toEqual({ "Item_Dropped_Count:CUSTOM_EVENT:SAMPLING": 2 });
+});
+
 it.each([
   { name: "simple", Processor: SimpleLogRecordProcessor },
   { name: "batch", Processor: BatchLogRecordProcessor },
@@ -618,6 +923,36 @@ it.each([
     expect(fetch).toHaveBeenCalledTimes(4);
   },
 );
+
+it("restores console instrumentation when a stats diagnostic logger throws", () => {
+  const instrumentation = new ConsoleInstrumentation({ enabled: false, logMethods: ["warn"] });
+  instrumentation.enable();
+  finishers.push(() => instrumentation.disable());
+  const wrappedWarn = console.warn;
+  vi.spyOn(diag, "warn").mockImplementation(() => {
+    throw new Error("logger failed");
+  });
+  expect(() => reportFailure(new Error("stats failed"))).not.toThrow();
+  expect(console.warn).toBe(wrappedWarn);
+});
+
+it("keeps opt-in and counters isolated across instances and hands off after shutdown", async () => {
+  const secondKey = "22222222-2222-2222-2222-222222222222";
+  const first = await initialize(TEST_INSTRUMENTATION_KEY, 0, false);
+  const second = await initialize(secondKey, 0);
+  trace.getTracer("first").startSpan("not reported").end();
+  logs.getLogger("first").emit({ body: "not reported" });
+  await first.shutdown();
+  expect(reports).toHaveLength(0);
+  trace.getTracer("second").startSpan("reported").end();
+  logs.getLogger("second").emit({ body: "reported" });
+  await second.shutdown();
+  expect(reports.flat().every((envelope) => envelope.iKey === secondKey)).toBe(true);
+  expect(totals()).toEqual({
+    "Item_Dropped_Count:DEPENDENCY:SAMPLING": 1,
+    "Item_Dropped_Count:TRACE:SAMPLING": 1,
+  });
+});
 
 it.each([false, true])(
   "filters only exact shared configured and redirect URLs in standalone logs when enabled: %s",
