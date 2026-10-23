@@ -24,6 +24,7 @@ export interface SdkLoaderConfig {
     readonly loadDelay?: number;
     readonly pageView?: {
         readonly enabled?: boolean;
+        readonly autoTrackPageVisitTime?: boolean;
         readonly redactedQueryParams?: readonly string[];
         readonly softNavigationSettleTimeoutMs?: number;
         readonly useNavigationApiIfAvailable?: boolean;

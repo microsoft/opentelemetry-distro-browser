@@ -4,6 +4,13 @@
 import { defineBrowserCommand } from "@vitest/browser";
 import type {} from "vitest/browser";
 
+interface ReloadDeliveryOptions {
+  /** Defaults to two reloads, preserving the unload-buffer replay checks. */
+  reloadCount?: number;
+  /** Navigate between documents without an intermediate about:blank page. */
+  navigateDirectly?: boolean;
+}
+
 declare module "vitest/browser" {
   interface BrowserCommands {
     verifyUnloadDelivery(
@@ -16,13 +23,15 @@ declare module "vitest/browser" {
       reloadUrl: string,
       captureUrl: string,
       expected: Record<string, number>,
+      options?: ReloadDeliveryOptions,
     ): Promise<unknown[]>;
   }
 }
 
 /**
- * Loads the fixture, navigates away and loads `reloadUrl` twice in the same tab, then returns
- * everything ingestion captured once it holds at least the `expected` count of each envelope name.
+ * Loads the fixture and reloads it in the same tab (twice by default). Direct navigation can
+ * exercise a real document-to-document handoff. Returns captured envelopes after the expected
+ * counts of `baseData.name` arrive; fixtures must finish any explicit flush before reporting ready.
  */
 export const verifyReloadDelivery = defineBrowserCommand(
   async (
@@ -31,21 +40,27 @@ export const verifyReloadDelivery = defineBrowserCommand(
     reloadUrl: string,
     captureUrl: string,
     expected: Record<string, number>,
+    options: ReloadDeliveryOptions = {},
   ) => {
     const browser = page.context().browser();
     if (!browser) throw new Error("Reload tests require a browser connection.");
     const fixtureContext = await browser.newContext();
     try {
       const fixturePage = await fixtureContext.newPage();
-      for (const url of [fixtureUrl, reloadUrl, reloadUrl]) {
+      const urls = [
+        fixtureUrl,
+        ...Array.from({ length: options.reloadCount ?? 2 }, () => reloadUrl),
+      ];
+      for (const url of urls) {
         await fixturePage.goto(url);
         await fixturePage.waitForFunction(() => document.body.dataset.ready === "true", undefined, {
           timeout: 15_000,
         });
         // Let leftovers adopted on load reach ingestion before leaving.
         await fixturePage.waitForTimeout(500);
-        await fixturePage.goto("about:blank");
+        if (!options.navigateDirectly) await fixturePage.goto("about:blank");
       }
+      if (options.navigateDirectly) await fixturePage.goto("about:blank");
       // The last navigation's keepalive request can still be in flight.
       const deadline = Date.now() + 5_000;
       let envelopes: unknown[] = [];
