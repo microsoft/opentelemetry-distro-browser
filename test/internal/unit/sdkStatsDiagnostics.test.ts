@@ -13,8 +13,10 @@ import {
 import { afterEach, expect, it, vi } from "vitest";
 import { createCustomerSdkStats } from "../../../src/exporter/customerSdkStats.js";
 import { createInternalSdkStats, reportFailure } from "../../../src/exporter/sdkStats.js";
+import { useMicrosoftOpenTelemetry } from "../../../src/index.js";
 import { startTelemetryInstance } from "../../../src/routing/telemetryInstance.js";
 import {
+  getRegisteredGlobal,
   getSharedRegistry,
   isReportingSdkStats,
   reportWithoutTelemetry,
@@ -103,6 +105,76 @@ it.each([false, true])(
       "application",
     ]);
     expect(isReportingSdkStats()).toBe(false);
+  },
+);
+
+it.each(["normal", "throwing", "nested"] as const)(
+  "bypasses standalone console instrumentation beneath a shared patch for %s diagnostics",
+  async (mode) => {
+    context.disable();
+    const original = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const exporter = new InMemoryLogRecordExporter();
+    const provider = new LoggerProvider({
+      processors: [new SimpleLogRecordProcessor({ exporter })],
+    });
+    owners.push(provider);
+    const standalone = new ConsoleInstrumentation({ enabled: false, logMethods: ["warn"] });
+    standalone.setLoggerProvider(provider);
+    standalone.enable();
+    instrumentations.push(standalone);
+    const standaloneWarn = console.warn;
+    const pipeline = createInMemoryPipeline();
+    const handle = await useMicrosoftOpenTelemetry({
+      spanProcessors: [],
+      logRecordProcessors: pipeline.options.logRecordProcessors,
+      pageView: { enabled: false },
+      session: { enabled: false },
+      storage: { enabled: false },
+      instrumentations: [new ConsoleInstrumentation({ enabled: false, logMethods: ["warn"] })],
+    });
+    owners.push(handle, pipeline);
+    const sharedWarn = console.warn;
+    try {
+      expect(sharedWarn).not.toBe(standaloneWarn);
+      expect(getRegisteredGlobal("context")).toBeUndefined();
+      let nested = false;
+      let nestedGuard: boolean | undefined;
+      vi.spyOn(diag, "warn").mockImplementation(() => {
+        console.warn("stats failure");
+        if (mode === "nested" && !nested) {
+          nested = true;
+          reportFailure(new Error("nested stats failure"));
+          nestedGuard = isReportingSdkStats();
+        }
+        if (mode !== "normal") throw new Error("diagnostic logger failed");
+      });
+      console.warn("before diagnostic");
+      expect(() => reportFailure(new Error("stats failure"))).not.toThrow();
+      expect(console.warn).toBe(sharedWarn);
+      expect(isReportingSdkStats()).toBe(false);
+      if (mode === "nested") expect(nestedGuard).toBe(true);
+      console.warn("after diagnostic");
+      await Promise.all([provider.forceFlush(), handle.forceFlush()]);
+      expect(exporter.getFinishedLogRecords().map((record) => record.body)).toEqual([
+        "before diagnostic",
+        "after diagnostic",
+      ]);
+      expect(pipeline.logExporter.getFinishedLogRecords().map((record) => record.body)).toEqual([
+        "before diagnostic",
+        "after diagnostic",
+      ]);
+      expect(original).toHaveBeenCalledTimes(2);
+      expect(diag.warn).toHaveBeenCalledTimes(mode === "nested" ? 2 : 1);
+      await handle.shutdown();
+      expect(console.warn).toBe(standaloneWarn);
+      console.warn("standalone after shutdown");
+      await provider.forceFlush();
+      expect(exporter.getFinishedLogRecords()).toHaveLength(3);
+    } finally {
+      await handle.shutdown();
+      standalone.disable();
+    }
+    expect(console.warn).toBe(standaloneWarn);
   },
 );
 

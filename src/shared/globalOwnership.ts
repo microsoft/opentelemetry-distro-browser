@@ -64,8 +64,13 @@ export function reportWithoutTelemetry(report: () => void): void {
       /* eslint-disable no-console, @typescript-eslint/unbound-method -- Preserve and restore console wrapper identities without invoking them. */
       for (const name of ["debug", "info", "log", "warn", "error"] as const) {
         const wrapped = console[name];
+        const patch = registry?.browserPatches?.targets.get(console)?.get(name);
         let original: ConsoleMethod = wrapped;
-        while (typeof original.__original === "function") original = original.__original;
+        while (true) {
+          if (patch && original === patch.wrapper) original = patch.original;
+          else if (typeof original.__original === "function") original = original.__original;
+          else break;
+        }
         if (original === wrapped) continue;
         console[name] = original;
         restore.push(() => {
