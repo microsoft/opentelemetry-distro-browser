@@ -7,6 +7,8 @@ import type {
   MicrosoftOpenTelemetryBrowserCookieManager,
 } from "../types.js";
 
+export type CookieReadResult = { success: true; value: string } | { success: false };
+
 /**
  * Creates an instance-owned cookie manager without accessing cookies during construction.
  * Settings (including inherited/non-enumerable members and lists) are snapshotted.
@@ -17,6 +19,7 @@ import type {
 export function createCookieManager(
   config?: MicrosoftOpenTelemetryBrowserCookieConfig,
 ): MicrosoftOpenTelemetryBrowserCookieManager & {
+  read(name: string): CookieReadResult;
   canRead(name: string): boolean;
   setReplayFailureHandler(
     handler: ((name: string, removeSuperseded: () => boolean) => void) | undefined,
@@ -145,7 +148,30 @@ export function createCookieManager(
     return true;
   }
 
+  function read(name: string): CookieReadResult {
+    if (stopped || !validScope(name) || ignored.has(name)) return { success: true, value: "" };
+    if (!enabled) return { success: true, value: pending.get(name)?.value ?? "" };
+    return attempt<CookieReadResult>(
+      () => {
+        if (settings.getCookie) {
+          const value = settings.getCookie(name);
+          return typeof value === "string" ? { success: true, value } : { success: false };
+        }
+        for (const part of document.cookie.split(";")) {
+          const cookie = part.trim();
+          const separator = cookie.indexOf("=");
+          if (cookie.slice(0, separator) === name) {
+            return { success: true, value: cookie.slice(separator + 1) };
+          }
+        }
+        return { success: true, value: "" };
+      },
+      { success: false },
+    );
+  }
+
   return {
+    read,
     // Internal policy query: availability is checked separately, without re-reading caller config.
     canRead: (name) => !ignored.has(name),
     // Internal coordination only: generic cookie failures do not authorize destructive cleanup.
@@ -193,20 +219,8 @@ export function createCookieManager(
       }
     },
     get(name) {
-      if (stopped || !validScope(name) || ignored.has(name)) return "";
-      if (!enabled) return pending.get(name)?.value ?? "";
-      return attempt(() => {
-        if (settings.getCookie) {
-          const value = settings.getCookie(name);
-          return typeof value === "string" ? value : "";
-        }
-        for (const part of document.cookie.split(";")) {
-          const cookie = part.trim();
-          const separator = cookie.indexOf("=");
-          if (cookie.slice(0, separator) === name) return cookie.slice(separator + 1);
-        }
-        return "";
-      }, "");
+      const result = read(name);
+      return result.success ? result.value : "";
     },
     set(name, value, maxAgeSec, domain, path) {
       if (
