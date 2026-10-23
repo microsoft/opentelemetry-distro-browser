@@ -99,7 +99,7 @@ it("exposes distro-owned configuration and lifecycle contracts", () => {
     AzureMonitorOptions<string | Promise<string>> | undefined
   >();
   expectTypeOf<keyof AzureMonitorOptions>().toEqualTypeOf<
-    "connectionString" | "disableBeacon" | "initTimeOut" | "initInMemoMaxSize"
+    "connectionString" | "disableBeacon" | "sdkStats" | "initTimeOut" | "initInMemoMaxSize"
   >();
   expectTypeOf<Pick<AzureMonitorOptions, "disableBeacon">>().toEqualTypeOf<{
     readonly disableBeacon?: boolean;

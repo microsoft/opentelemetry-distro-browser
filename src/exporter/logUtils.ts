@@ -59,6 +59,7 @@ import type {
 import { USER_ATTRIBUTES } from "../user/constants.js";
 import { AZURE_MONITOR_SAMPLE_RATE } from "../sampling.js";
 import { getManagedOperationName } from "../context/operationName.js";
+import type { ItemType } from "./customerSdkStats.js";
 
 const promotedLogAttributes = /* @__PURE__ */ new Set([
   EXCEPTION_MESSAGE,
@@ -399,6 +400,15 @@ export function createExceptionDetails(
   return { ...exception, parsedStack };
 }
 
+export function logItemType(logRecord: ReadableLogRecord): ItemType {
+  if (logRecord.eventName === "exception" || logRecord.attributes[EXCEPTION_TYPE])
+    return "EXCEPTION";
+  if (isPageView(logRecord.eventName)) return "PAGE_VIEW";
+  return logRecord.eventName && logRecord.eventName !== "browser.console"
+    ? "CUSTOM_EVENT"
+    : "TRACE";
+}
+
 export function logToEnvelope(
   logRecord: ReadableLogRecord,
   instrumentationKey: string,
@@ -426,8 +436,9 @@ export function logToEnvelope(
   const visitDuration = logRecord.attributes["browser.page_visit.duration"];
   let baseType: AzureMonitorEnvelope["data"]["baseType"];
   let baseData: MessageData | ExceptionData | PageViewData | CustomEventData | MetricData;
+  const itemType = logItemType(logRecord);
 
-  if (logRecord.eventName === "exception" || logRecord.attributes[EXCEPTION_TYPE]) {
+  if (itemType === "EXCEPTION") {
     baseType = "ExceptionData";
     const baseDataWithoutException: ExceptionData = {
       ver: 2,
@@ -451,7 +462,7 @@ export function logToEnvelope(
       exceptions: [createExceptionDetails(logRecord.attributes, logRecord.body, maxExceptionSize)],
       ...customFields,
     };
-  } else if (isPageView(logRecord.eventName)) {
+  } else if (itemType === "PAGE_VIEW") {
     const duration =
       logRecord.attributes[ATTR_PAGE_VIEW_DURATION] ?? logRecord.attributes[NAVIGATION_DURATION];
     const explicitId = logRecord.attributes[ATTR_PAGE_VIEW_ID];
@@ -518,7 +529,7 @@ export function logToEnvelope(
         ...(typeof pageUrl === "string" && pageUrl.length > 0 ? { PageUrl: pageUrl } : {}),
       }),
     };
-  } else if (logRecord.eventName && logRecord.eventName !== "browser.console") {
+  } else if (itemType === "CUSTOM_EVENT" && logRecord.eventName) {
     baseType = "EventData";
     baseData = {
       ver: 2,

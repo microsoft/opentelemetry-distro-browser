@@ -37,6 +37,13 @@ export interface AzureMonitorOptions<TConnectionString extends string | Promise<
     readonly disableBeacon?: boolean;
     readonly initInMemoMaxSize?: number;
     readonly initTimeOut?: number;
+    readonly sdkStats?: AzureMonitorSdkStatsOptions;
+}
+
+// @public
+export interface AzureMonitorSdkStatsOptions {
+    readonly collectionIntervalMillis?: number;
+    readonly enabled?: boolean;
 }
 
 // @public

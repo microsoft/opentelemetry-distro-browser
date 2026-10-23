@@ -59,11 +59,15 @@ function restorePage(): void {
   window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true }));
 }
 
-function breezeResponse(errors: Array<{ index: number; statusCode: number }>, headers = {}) {
+function breezeResponse(
+  errors: Array<{ index: number; statusCode: number }>,
+  headers = {},
+  itemsReceived = 3,
+) {
   return new Response(
     JSON.stringify({
-      itemsReceived: 3,
-      itemsAccepted: 3 - errors.length,
+      itemsReceived,
+      itemsAccepted: itemsReceived - errors.length,
       errors: errors.map((error) => ({ ...error, message: "error" })),
     }),
     { status: 206, headers },
@@ -299,7 +303,9 @@ describe("Azure Monitor sessionStorage buffer", () => {
     const firstFetch = stubFetch(
       () => new Response("", { status: 503, headers: { "retry-after": "1" } }),
     );
-    const original = exportAsync(createClient(), [envelope("handed off")]);
+    const client = createClient({ sdkStats: { enabled: true } });
+    const count = vi.spyOn(client.itemStats!, "countEnvelopes");
+    const original = exportAsync(client, [envelope("handed off")]);
     await vi.waitFor(() => expect(firstFetch).toHaveBeenCalledOnce());
     hidePage();
 
@@ -314,6 +320,7 @@ describe("Azure Monitor sessionStorage buffer", () => {
       error: { message: "Telemetry was handed off to another page." },
     });
     expect(firstFetch).toHaveBeenCalledOnce();
+    expect(count.mock.calls.filter(([outcome]) => outcome === "Retry")).toEqual([]);
     expect(bufferKeys()).toEqual([]);
   });
 
@@ -422,15 +429,29 @@ describe("Azure Monitor sessionStorage buffer", () => {
   it.each([200, 400])(
     "does not resend telemetry after HTTP %i when its body cannot be read",
     async (status) => {
-      stubFetch(
+      const firstFetch = stubFetch(
         () =>
           new Response(
             new ReadableStream({ start: (controller) => controller.error(new TypeError("reset")) }),
             { status },
           ),
       );
-      await expect(exportAsync(createClient(), [envelope("settled")])).resolves.toMatchObject({
+      const client = createClient({ sdkStats: { enabled: true } });
+      await expect(exportAsync(client, [envelope("settled")])).resolves.toMatchObject({
         code: ExportResultCode.FAILED,
+      });
+      firstFetch.mockResolvedValue(new Response(null));
+      await client.forceFlush();
+      expect(firstFetch).toHaveBeenCalledTimes(2);
+      const [url, init] = firstFetch.mock.calls[1];
+      const stats: AzureMonitorEnvelope[] = await new Request(url, init).json();
+      expect(stats).toHaveLength(1);
+      expect(stats[0].data.baseData).toMatchObject({
+        metrics: [{ name: status === 200 ? "Item_Success_Count" : "Item_Dropped_Count", value: 1 }],
+        properties: {
+          telemetryType: "DEPENDENCY",
+          ...(status === 400 ? { dropCode: "400" } : {}),
+        },
       });
       hidePage();
       expect(bufferKeys()).toEqual([]);
@@ -551,7 +572,7 @@ describe("Azure Monitor sessionStorage buffer", () => {
   it("removes a partially accepted batch once its retry succeeds", async () => {
     const fetch = stubFetch();
     fetch.mockResolvedValueOnce(
-      breezeResponse([{ index: 1, statusCode: 503 }], { "retry-after": "0" }),
+      breezeResponse([{ index: 1, statusCode: 503 }], { "retry-after": "0" }, 2),
     );
     await expect(
       exportAsync(createClient(), [envelope("accepted"), envelope("retried")]),

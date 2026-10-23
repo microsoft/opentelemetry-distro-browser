@@ -16,6 +16,11 @@ import { createInternalSdkStats, type InternalSdkStats } from "./sdkStats.js";
 import { getInternalSdkStatsConfiguration } from "./sdkStatsConfiguration.js";
 import { SessionBuffer, sessionBufferStorage } from "./sessionBuffer.js";
 import type { AzureMonitorBaseData, AzureMonitorEnvelope } from "./telemetryModels.js";
+import {
+  createCustomerSdkStats,
+  type CustomerSdkStats,
+  type AzureMonitorSdkStatsOptions,
+} from "./customerSdkStats.js";
 
 const CONTENT_TYPE = "application/json";
 const noop = (): void => {};
@@ -46,6 +51,8 @@ export interface AzureMonitorOptions<TConnectionString extends string | Promise<
    * This can prevent pending telemetry from being delivered when the page closes.
    */
   readonly disableBeacon?: boolean;
+  /** Opt-in customer SDK Stats for this destination. Disabled by default. */
+  readonly sdkStats?: AzureMonitorSdkStatsOptions;
 }
 
 export class AzureMonitorExportClient {
@@ -63,12 +70,18 @@ export class AzureMonitorExportClient {
       throw new Error("Connection string needs a valid InstrumentationKey UUID.");
     }
     this.instrumentationKey = instrumentationKey;
+    this.itemStats = createCustomerSdkStats(
+      options.sdkStats,
+      instrumentationKey,
+      ingestionEndpoint,
+    );
     const statsConfiguration = getInternalSdkStatsConfiguration(ingestionEndpoint);
     this.#stats = createInternalSdkStats(statsConfiguration, instrumentationKey, ingestionEndpoint);
     this.#sender = new Sender({
       endpoint: `${ingestionEndpoint}/v2/track`,
       disableBeacon: unloadBeaconPolicies.get(options) ?? options.disableBeacon,
       stats: this.#stats,
+      itemStats: this.itemStats,
     });
     // Unsent telemetry is mirrored in sessionStorage unless `storage.enabled` is false; leftovers
     // from the previous page load in this tab go out before any new telemetry. Storage failures
@@ -86,6 +99,7 @@ export class AzureMonitorExportClient {
   }
 
   public readonly instrumentationKey: string;
+  public readonly itemStats: CustomerSdkStats | undefined;
 
   public export(
     envelopes: readonly AzureMonitorEnvelope[],
@@ -105,6 +119,11 @@ export class AzureMonitorExportClient {
         unloading,
       );
     } catch (error) {
+      this.itemStats?.countEnvelopes(
+        "Dropped",
+        envelopes,
+        error instanceof RangeError ? "PAYLOAD_TOO_LARGE" : "CLIENT_EXCEPTION",
+      );
       callback({
         code: ExportResultCode.FAILED,
         error: error instanceof Error ? error : new Error(String(error)),
@@ -112,6 +131,7 @@ export class AzureMonitorExportClient {
       return;
     }
     const { requests, dropped, error } = batchResult;
+    this.itemStats?.countEnvelopes("Dropped", dropped, "PAYLOAD_TOO_LARGE");
     // Envelopes that cannot fit the unload beacon wait for the next page load.
     if (dropped.length > 0) this.#buffer?.add(JSON.stringify(dropped));
     if (error) {
@@ -216,6 +236,7 @@ export class AzureMonitorExportClient {
   public async forceFlush(): Promise<void> {
     // Customer exports get keepalive capacity before stats.
     await Promise.all([...this.#pending]);
+    await this.itemStats?.forceFlush();
     await this.#stats.forceFlush();
   }
 
@@ -224,7 +245,7 @@ export class AzureMonitorExportClient {
     this.#stopped = true;
     const pending = Promise.all([...this.#pending]);
     try {
-      await this.#stats.shutdown(pending);
+      await Promise.all([this.#stats.shutdown(pending), this.itemStats?.shutdown(pending)]);
     } finally {
       this.#buffer?.dispose();
     }
