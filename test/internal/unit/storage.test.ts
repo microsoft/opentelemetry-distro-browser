@@ -129,6 +129,45 @@ function legacyUserStorage(namePrefix: string) {
   return { storage, key, otherKey, legacy };
 }
 
+it.each(["", "shop-"])(
+  "preserves the backup after a transient anonymous-cookie hook failure (prefix=%j)",
+  async (prefix) => {
+    const key = `${prefix}opentelemetry-session`;
+    const now = Date.now();
+    const backup = JSON.stringify({
+      id: "restored-after-read-failure",
+      startTimestamp: now,
+      lastActivityTimestamp: now,
+    });
+    preserve(key, backup);
+    const anonymous = encodeURIComponent(
+      JSON.stringify({ anonymousId: "existing-user", acquisitionTimestamp: now }),
+    );
+    const write = vi.fn();
+    let failed = false;
+    const getCookie = vi.fn((name: string) => {
+      if (name !== `${prefix}opentelemetry-user`) return "";
+      if (!failed) {
+        failed = true;
+        throw new Error("transient cookie read failure");
+      }
+      return anonymous;
+    });
+    const { handle, emit } = await initialize({
+      storage: { namePrefix: prefix },
+      cookieCfg: { getCookie, setCookie: write },
+    });
+    expect(localStorage.getItem(key)).toBe(backup);
+    expect(write.mock.calls.some(([name]) => name === `${prefix}opentelemetry-user`)).toBe(false);
+    expect(emit()).toMatchObject({
+      "session.id": "restored-after-read-failure",
+      "enduser.pseudo.id": "existing-user",
+    });
+    expect(localStorage.getItem(key)).toBe(backup);
+    await handle.shutdown();
+  },
+);
+
 it.each(["string", "promise"] as const)(
   "blocks Web Storage and cookie persistence throughout identity controls, expiry, flush and shutdown (%s)",
   async (destination) => {

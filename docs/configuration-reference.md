@@ -177,11 +177,15 @@ or `isCookieUseDisabled`) or global storage switch (`isStorageUseDisabled`); use
 telemetry collection or stop network requests. Custom processors/exporters must enforce their own
 storage policy.
 
-Sessions and identities use localStorage; unsent Azure Monitor telemetry and opt-in page-visit state
-use sessionStorage. No cookies are created. Application Insights `cookieCfg` and cookie domain/path settings are separate
-cookie controls, not Web Storage settings. Its `enableSessionStorageBuffer` corresponds to the
-unsent telemetry buffer described under Azure Monitor, which is always on here unless
-`storage.enabled` is false.
+Anonymous identity and managed sessions use cookies by default; authenticated identity is
+memory-only unless explicitly stored in a separate session cookie. localStorage provides session
+backup/restoration and explicit cleanup of legacy identity records, not identity restoration.
+Unsent Azure Monitor telemetry and opt-in page-visit state use sessionStorage.
+`storage.enabled: false` blocks only Web Storage; `cookieCfg.enabled: false` independently disables cookies. Also set
+`cookieCfg.disableCookieDefer: true` to discard disabled cookie operations instead of queuing them.
+Unlike Web Storage, cookies are sent in HTTP headers to matching domains and paths, subject to
+browser rules. Application Insights' `enableSessionStorageBuffer` corresponds to the unsent
+telemetry buffer described under Azure Monitor, enabled here unless `storage.enabled` is false.
 
 Implementation references: Application Insights JavaScript's
 [cookie manager](https://github.com/microsoft/ApplicationInsights-JS/blob/main/shared/AppInsightsCore/src/core/CookieMgr.ts),
