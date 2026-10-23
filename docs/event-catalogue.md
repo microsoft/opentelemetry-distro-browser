@@ -258,9 +258,20 @@ sends an `SDKLoadFailed` exception directly to the configured ingestion endpoint
 log from the SDK, since initialization may never occur. Its reported URL omits credentials, query
 and fragment. Source: [loader implementation](../src/snippet.ts).
 
-Internal exporter network health statistics are a separate SDK-owned delivery path, not customer
+Internal exporter network SDK Stats are a separate SDK-owned delivery path, not customer
 events or a public Metrics API. They are not included in the event schemas above. See the
-[statistics implementation](../src/exporter/sdkStats.ts).
+[SDK Stats implementation](../src/exporter/sdkStats.ts).
+
+Standalone Azure Monitor exporters can opt into customer SDK Stats with `sdkStats.enabled`.
+They report item successes, retries and drops to the customer's destination; standalone exporters
+observe export outcomes only, not application sampling or processor queue drops.
+To prevent feedback, stats-enabled log exporters exclude resource-timing records for exact known
+SDK ingestion URLs shared across exporters, including remembered redirects. Other URLs and
+application log records remain eligible. Stats failure warnings bypass OpenTelemetry console
+wrappers while being logged, including without a context manager.
+Retry counts include only dispatched transport attempts. If a response body cannot be read,
+item counters preserve any known final HTTP success or permanent rejection, while the export
+callback still reports the body-read failure.
 
 ## Azure Monitor mapping
 
