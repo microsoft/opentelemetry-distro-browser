@@ -18,8 +18,6 @@ export class PageVisitTime {
     | {
         previous?: Visit;
         owner?: Visit;
-        persisted?: Visit;
-        stale?: Visit;
         reports: { visit: Visit; duration: number }[];
       }
     | undefined;
@@ -61,11 +59,10 @@ export class PageVisitTime {
     const previous = this.#current ?? this.#read();
     if (this.#startup && !this.#startup.owner) this.#startup.previous = previous;
     this.#current = undefined;
-    // Commit the successor before reporting: re-entrant processors must not emit this twice.
-    // Web Storage replacement is atomic: a failed write must retain an unreported predecessor.
-    if (!this.update(page) && !sameVisit(previous, page)) {
-      if (this.#startup) this.#startup.stale ??= previous;
-      else this.#removeIfOwned(previous);
+    // Commit in-memory state before reporting: re-entrant processors must not emit this twice.
+    // Managed startup keeps the persisted predecessor untouched until initialization commits.
+    if (!this.update(page) && !this.#startup && !sameVisit(previous, page)) {
+      this.#removeIfOwned(previous);
     }
     if (!previous || sameVisit(previous, page)) return;
     const duration = page.startTimeUnixMs - previous.startTimeUnixMs;
@@ -85,13 +82,11 @@ export class PageVisitTime {
       url: page.url,
       startTimeUnixMs: page.startTimeUnixMs,
     };
-    if (this.#startup) this.#startup.owner = this.#current;
-    const persisted = this.storage?.setItem(this.key, JSON.stringify(this.#current)) ?? false;
-    if (persisted && this.#startup) {
-      this.#startup.persisted = this.#current;
-      this.#startup.stale = undefined;
+    if (this.#startup) {
+      this.#startup.owner = this.#current;
+      return false;
     }
-    return persisted;
+    return this.storage?.setItem(this.key, JSON.stringify(this.#current)) ?? false;
   }
 
   /** Distribution startup opts in before collection; standalone reporting stays immediate. */
@@ -103,8 +98,14 @@ export class PageVisitTime {
     const startup = this.#startup;
     // Clear before application callbacks can re-enter commit or rollback.
     this.#startup = undefined;
-    // A failed successor write may have left a predecessor that is now consumed.
-    this.#removeIfOwned(startup?.stale);
+    if (
+      startup?.owner &&
+      !this.storage?.setItem(this.key, JSON.stringify(startup.owner)) &&
+      !sameVisit(startup.previous, startup.owner)
+    ) {
+      // The report consumes this predecessor even if its replacement cannot be persisted.
+      this.#removeIfOwned(startup.previous);
+    }
     for (const { visit, duration } of startup?.reports ?? []) this.report(visit, duration);
   }
 
@@ -113,10 +114,8 @@ export class PageVisitTime {
     if (!startup) return;
     this.#startup = undefined;
     this.#current = undefined;
-    // A later document or owner may have replaced our entry, even with the same trace ID.
-    if (!startup.persisted || !sameVisit(startup.persisted, this.#read())) return;
-    if (startup.previous) this.storage?.setItem(this.key, JSON.stringify(startup.previous));
-    else this.storage?.removeItem(this.key);
+    // No startup writes means no restoration can fail or overwrite a later owner's state,
+    // even while the storage adapter is in write backoff.
   }
 
   /** BFCache must resume from storage, not replay the old document's visit. */

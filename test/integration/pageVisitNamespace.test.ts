@@ -132,6 +132,52 @@ describe("page visit persistence namespaces in real browsing contexts", () => {
     }
   });
 
+  it("bridges alternating instrumentation key casing without an explicit prefix", async () => {
+    const instrumentationKey = "ABCDEFAB-CDEF-4ABC-8DEF-ABCDEFABCDEF";
+    const { documents } = await commands.inspectPageVisitNamespaces(
+      [
+        instrumentationKey,
+        instrumentationKey.toLowerCase(),
+        instrumentationKey,
+        instrumentationKey.toLowerCase(),
+      ].map((instrumentationKey, index) =>
+        fixture(`Document ${index + 1}`, { instrumentationKey }),
+      ),
+    );
+
+    expect(documents).toHaveLength(4);
+    expect(visits(documents[0])).toEqual([]);
+    const keys = Object.keys(documents[0].storage);
+    expect(keys).toHaveLength(1);
+    for (const [index, document] of documents.entries()) {
+      expect(Object.keys(document.storage)).toEqual(keys);
+      if (index > 0) expectPreviousVisit(documents[index - 1], document);
+    }
+  });
+
+  it("isolates ingestion endpoint paths differing only in case with the same instrumentation key", async () => {
+    const instrumentationKey = "abcdefab-cdef-4abc-8def-abcdefabcdef";
+    const { documents } = await commands.inspectPageVisitNamespaces(
+      ["Destination", "destination", "Destination", "destination"].map((destination, index) =>
+        fixture(`Document ${index + 1}`, { instrumentationKey, destination }),
+      ),
+    );
+
+    expect(documents).toHaveLength(4);
+    expect(visits(documents[0])).toEqual([]);
+    expect(visits(documents[1])).toEqual([]);
+    expect(Object.keys(documents[0].storage)).toHaveLength(1);
+    const keys = Object.keys(documents[1].storage);
+    expect(keys).toHaveLength(2);
+    for (const [key, value] of Object.entries(documents[0].storage)) {
+      expect(documents[1].storage[key]).toBe(value);
+    }
+    expect(Object.keys(documents[2].storage)).toEqual(keys);
+    expect(Object.keys(documents[3].storage)).toEqual(keys);
+    expectPreviousVisit(documents[0], documents[2]);
+    expectPreviousVisit(documents[1], documents[3]);
+  });
+
   it.each(["prefix", "instrumentation key", "ingestion endpoint"])(
     "keeps different %s namespaces isolated across documents",
     async (difference) => {

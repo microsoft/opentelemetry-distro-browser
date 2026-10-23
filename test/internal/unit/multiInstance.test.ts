@@ -1052,19 +1052,36 @@ describe("page visit time through useMicrosoftOpenTelemetry", () => {
     ["custom processors", true],
     ["pending connection string", true],
   ] as const)(
-    "restores a seeded predecessor after a later instrumentation fails with %s (quota failure=%s)",
+    "leaves the seed untouched when caller enable navigates then fails with %s (later quota=%s)",
     async (destination, quotaFailure) => {
       const namePrefix = `visit-enable-rollback-${destination}-${quotaFailure}-`;
       const key = visitKey(namePrefix, 0);
       const previous = seedVisit(key);
       const saved = storage.getItem(key);
+      const laterPath = "/visit-enable-rollback-later-route";
+      const largeName = "Large later route name ".repeat(128);
+      const initialName = `failed:${location.pathname}`;
+      const quotaBytes =
+        Math.max(
+          saved!.length,
+          JSON.stringify({
+            ...previous,
+            name: initialName,
+            url: location.href,
+            startTimeUnixMs: performance.timeOrigin,
+          }).length,
+        ) + 32;
+      const routeResolver = vi.fn(() =>
+        location.pathname === laterPath ? largeName : initialName,
+      );
       const persist = storage.setItem.bind(storage);
       const write = vi.spyOn(storage, "setItem").mockImplementation((name, value) => {
-        if (quotaFailure && name === key) {
+        if (quotaFailure && name === key && value.length > quotaBytes) {
           throw new DOMException("Visit storage full", "QuotaExceededError");
         }
         persist(name, value);
       });
+      const remove = vi.spyOn(storage, "removeItem");
       const accepted: ReadWriteLogRecord[] = [];
       const options: MicrosoftOpenTelemetryBrowserOptions = {
         storage: { namePrefix },
@@ -1088,17 +1105,28 @@ describe("page visit time through useMicrosoftOpenTelemetry", () => {
       await expect(
         startVisits("failed", {
           ...options,
+          pageView: { ...options.pageView, routeResolver },
           instrumentations: [
             {
               ...createProbe(),
               enable() {
-                if (quotaFailure) expect(storage.getItem(key)).toBe(saved);
-                else {
-                  expect(JSON.parse(storage.getItem(key)!)).toMatchObject({
-                    name: `failed:${location.pathname}`,
-                    startTimeUnixMs: performance.timeOrigin,
-                  });
-                }
+                expect(routeResolver).toHaveReturnedWith(initialName);
+                expect(storage.getItem(key)).toBe(saved);
+                expect(write.mock.calls.filter(([name]) => name === key)).toEqual([]);
+                expect(remove.mock.calls.filter(([name]) => name === key)).toEqual([]);
+
+                now = performance.timeOrigin + 3_000;
+                history.pushState(null, "", laterPath);
+
+                // A short initial write would succeed and this route would exceed quota.
+                // Neither is attempted: managed startup prevents the old restore/backoff path.
+                expect(routeResolver).toHaveReturnedWith(largeName);
+                expect(JSON.stringify({ ...previous, name: largeName }).length).toBeGreaterThan(
+                  quotaBytes,
+                );
+                expect(write.mock.calls.filter(([name]) => name === key)).toEqual([]);
+                expect(remove.mock.calls.filter(([name]) => name === key)).toEqual([]);
+                expect(storage.getItem(key)).toBe(saved);
                 expect(
                   accepted.filter((record) => record.eventName === "browser.page_visit"),
                 ).toEqual([]);
@@ -1112,10 +1140,16 @@ describe("page visit time through useMicrosoftOpenTelemetry", () => {
       expect(storage.getItem(key)).toBe(saved);
       expect(accepted.filter((record) => record.eventName === "browser.page_visit")).toEqual([]);
       expect(getSharedRegistry().pageVisitSlots?.has(visitNamespace(namePrefix))).toBe(false);
-      expect(write).toHaveBeenCalledWith(key, expect.any(String));
-      write.mockRestore();
+      expect(write.mock.calls.filter(([name]) => name === key)).toEqual([]);
+      expect(remove.mock.calls.filter(([name]) => name === key)).toEqual([]);
+      // Retry from the original short route; the larger route is deliberately over quota.
+      history.replaceState(null, "", originalUrl);
       const retry = await startVisits("retry", options);
       expect(visitKeys()).toEqual([key]);
+      expect(write.mock.calls.filter(([name]) => name === key)).toEqual([
+        [key, storage.getItem(key)],
+      ]);
+      expect(remove.mock.calls.filter(([name]) => name === key)).toEqual([]);
       expect(JSON.parse(storage.getItem(key)!)).toMatchObject({
         name: `retry:${location.pathname}`,
         startTimeUnixMs: performance.timeOrigin,
@@ -1136,6 +1170,88 @@ describe("page visit time through useMicrosoftOpenTelemetry", () => {
       expect(accepted.filter((record) => record.eventName === "browser.page_visit")).toHaveLength(
         1,
       );
+    },
+  );
+
+  it.each(["custom processors", "pending connection string"])(
+    "consumes the seed once when the initial commit write hits native quota with %s",
+    async (destination) => {
+      const namePrefix = `visit-commit-quota-${destination}-`;
+      const key = visitKey(namePrefix, 0);
+      const previous = seedVisit(key);
+      const saved = storage.getItem(key);
+      const persist = storage.setItem.bind(storage);
+      const write = vi.spyOn(storage, "setItem").mockImplementation((name, value) => {
+        if (name === key) {
+          expect(storage.getItem(key)).toBe(saved);
+          throw new DOMException("Visit storage full", "QuotaExceededError");
+        }
+        persist(name, value);
+      });
+      const remove = vi.spyOn(storage, "removeItem");
+      const stateAtReport: (string | null)[] = [];
+      const accepted = vi.fn((record: ReadWriteLogRecord) => {
+        if (record.eventName !== "browser.page_visit") return;
+        stateAtReport.push(storage.getItem(key));
+        expect(write.mock.calls.filter(([name]) => name === key)).toHaveLength(1);
+        expect(remove.mock.calls.filter(([name]) => name === key)).toEqual([[key]]);
+        expect(storage.getItem(key)).toBeNull();
+      });
+      const options: MicrosoftOpenTelemetryBrowserOptions = {
+        storage: { namePrefix },
+        pageView: { autoTrackPageVisitTime: true },
+        ...(destination === "pending connection string"
+          ? { azureMonitor: { connectionString: new Promise<string>(() => {}) } }
+          : {}),
+        logRecordProcessors: [
+          {
+            onEmit: accepted,
+            async forceFlush() {},
+            async shutdown() {},
+          },
+        ],
+        instrumentations: [
+          {
+            ...createProbe(),
+            enable() {
+              // Initial quota failure belongs to commit, not the preceding enable loop.
+              expect(write.mock.calls.filter(([name]) => name === key)).toEqual([]);
+              expect(remove.mock.calls.filter(([name]) => name === key)).toEqual([]);
+              expect(storage.getItem(key)).toBe(saved);
+            },
+          },
+        ],
+      };
+
+      const instance = await startVisits("commit", options);
+
+      expect(write.mock.calls.filter(([name]) => name === key)).toHaveLength(1);
+      expect(remove.mock.calls.filter(([name]) => name === key)).toEqual([[key]]);
+      expect(storage.getItem(key)).toBeNull();
+      expect(stateAtReport).toEqual([null]);
+      expect(instance.visits()).toHaveLength(1);
+      expect(instance.visits()).toMatchObject([
+        {
+          spanContext: { traceId: previous.id },
+          attributes: {
+            "browser.page_view.id": previous.id,
+            "browser.page_view.name": previous.name,
+            "url.full": previous.url,
+            "browser.page_visit.duration": 2_000,
+          },
+        },
+      ]);
+      expect(
+        accepted.mock.calls.filter(([record]) => record.eventName === "browser.page_visit"),
+      ).toHaveLength(1);
+
+      await instance.handle.shutdown();
+      write.mockRestore();
+      const retry = await startVisits("retry", { ...options, instrumentations: [] });
+      expect(retry.visits()).toEqual([]);
+      expect(
+        accepted.mock.calls.filter(([record]) => record.eventName === "browser.page_visit"),
+      ).toHaveLength(1);
     },
   );
 

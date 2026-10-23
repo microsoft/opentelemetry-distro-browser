@@ -116,7 +116,7 @@ function createOwnedInstrumentations(
           : undefined;
       const namespace = JSON.stringify([
         namePrefix,
-        destination?.instrumentationKey,
+        destination?.instrumentationKey?.toLowerCase(),
         destination?.ingestionEndpoint,
       ]);
       visitStorageKey = reserveVisitStorageKey(namespace);

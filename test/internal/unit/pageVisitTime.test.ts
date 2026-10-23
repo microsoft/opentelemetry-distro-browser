@@ -151,36 +151,61 @@ describe("PageVisitTime", () => {
     },
   );
 
-  it("defers startup visits until commit and clears the transaction before re-entrant reporting", () => {
-    const storage = memoryStorage();
-    const previous = page(1, 1_000);
-    storage.setItem(key, JSON.stringify(visitOf(previous)));
-    const report = vi.fn(() => tracker.commitStartup());
-    const tracker = new PageVisitTime(storage, key, report);
-    tracker.beginStartup();
-    tracker.start(page(2, 2_000));
-    tracker.start(page(3, 5_000));
-    expect(report).not.toHaveBeenCalled();
-
-    tracker.commitStartup();
-    tracker.commitStartup();
-    tracker.rollbackStartup();
-
-    expect(report.mock.calls).toEqual([
-      [visitOf(previous), 1_000],
-      [visitOf(page(2, 2_000)), 3_000],
-    ]);
-    tracker.stop();
-    expect(storage.getItem(key)).toEqual({ success: true, value: null });
-  });
-
   it.each([false, true])(
-    "restores the unsanitized predecessor after startup rollback (suspended=%s)",
+    "persists only the latest startup owner once before re-entrant reporting (suspended=%s)",
     (suspended) => {
       const storage = memoryStorage();
       const previous = page(1, 1_000);
       const saved = JSON.stringify(visitOf(previous));
       storage.setItem(key, saved);
+      vi.mocked(storage.setItem).mockClear();
+      const initial = { ...page(2, 2_000), name: "Final initial name" };
+      const latest = { ...page(3, 5_000), name: "Final latest name" };
+      const serialized = JSON.stringify(visitOf(latest));
+      const report = vi.fn(() => {
+        expect(storage.setItem).toHaveBeenCalledExactlyOnceWith(key, serialized);
+        expect(storage.getItem(key)).toEqual({ success: true, value: serialized });
+        tracker.commitStartup();
+        tracker.rollbackStartup();
+      });
+      const tracker = new PageVisitTime(storage, key, report);
+      tracker.beginStartup();
+      tracker.start(page(2, 2_000));
+      tracker.update(initial);
+      tracker.start(page(3, 5_000));
+      tracker.update(latest);
+      if (suspended) tracker.suspend();
+      expect(report).not.toHaveBeenCalled();
+      expect(storage.setItem).not.toHaveBeenCalled();
+      expect(storage.removeItem).not.toHaveBeenCalled();
+      expect(storage.getItem(key)).toEqual({ success: true, value: saved });
+
+      tracker.commitStartup();
+      tracker.commitStartup();
+      tracker.rollbackStartup();
+
+      expect(report.mock.calls).toEqual([
+        [visitOf(previous), 1_000],
+        [visitOf(initial), 3_000],
+      ]);
+      expect(storage.setItem).toHaveBeenCalledExactlyOnceWith(key, serialized);
+      expect(storage.removeItem).not.toHaveBeenCalled();
+      tracker.stop();
+      expect(storage.getItem(key)).toEqual({
+        success: true,
+        value: suspended ? serialized : null,
+      });
+    },
+  );
+
+  it.each([false, true])(
+    "leaves the unsanitized predecessor untouched after startup rollback (suspended=%s)",
+    (suspended) => {
+      const storage = memoryStorage();
+      const previous = page(1, 1_000);
+      const saved = JSON.stringify(visitOf(previous));
+      storage.setItem(key, saved);
+      vi.mocked(storage.setItem).mockClear();
       const report = vi.fn();
       const tracker = new PageVisitTime(storage, key, report, (url) => `${url}/sanitized`);
       tracker.beginStartup();
@@ -194,6 +219,8 @@ describe("PageVisitTime", () => {
       tracker.commitStartup();
 
       expect(report).not.toHaveBeenCalled();
+      expect(storage.setItem).not.toHaveBeenCalled();
+      expect(storage.removeItem).not.toHaveBeenCalled();
       expect(storage.getItem(key)).toEqual({ success: true, value: saved });
       const retry = new PageVisitTime(storage, key, report, (url) => `${url}/sanitized`);
       retry.beginStartup();
@@ -224,7 +251,7 @@ describe("PageVisitTime", () => {
   });
 
   it.each(["rollbackStartup", "stop"] as const)(
-    "%s preserves a seeded predecessor when successor writes fail and allows a retry",
+    "%s never attempts startup writes even when writes would fail and allows a retry",
     (cleanup) => {
       const storage = memoryStorage();
       const previous = page(1, 1_000);
@@ -232,7 +259,7 @@ describe("PageVisitTime", () => {
       storage.setItem(key, saved);
       const write = vi.mocked(storage.setItem);
       const persist = write.getMockImplementation()!;
-      write.mockReturnValue(false);
+      write.mockClear().mockReturnValue(false);
       const report = vi.fn();
       const tracker = new PageVisitTime(storage, key, report);
       tracker.beginStartup();
@@ -240,10 +267,12 @@ describe("PageVisitTime", () => {
       tracker.start(page(3, 3_000));
       tracker.update({ ...page(3, 3_000), name: "Final name" });
 
+      expect(write).not.toHaveBeenCalled();
       expect(storage.getItem(key)).toEqual({ success: true, value: saved });
       tracker[cleanup]();
       tracker.commitStartup();
       expect(report).not.toHaveBeenCalled();
+      expect(write).not.toHaveBeenCalled();
       expect(storage.removeItem).not.toHaveBeenCalled();
       expect(storage.getItem(key)).toEqual({ success: true, value: saved });
 
@@ -265,27 +294,151 @@ describe("PageVisitTime", () => {
     },
   );
 
-  it.each(["first", "last"])(
-    "rolls back the last persisted owner when the %s successor write fails",
-    (failure) => {
-      const storage = memoryStorage();
-      const saved = JSON.stringify(visitOf(page(1, 1_000)));
-      storage.setItem(key, saved);
+  it.each(["rollbackStartup", "stop"] as const)(
+    "%s avoids the short-write/later-quota sequence with the production storage adapter",
+    (cleanup) => {
+      const previous = page(1, 1_000);
+      const saved = JSON.stringify(visitOf(previous), null, 2);
+      const initial = page(2, 2_000);
+      const large = { ...page(3, 3_000), name: "Large route name ".repeat(64) };
+      const quotaBytes = Math.max(saved.length, JSON.stringify(visitOf(initial)).length) + 32;
+      const values = new Map([[key, saved]]);
+      const write = vi.fn((name: string, value: string) => {
+        if (value.length > quotaBytes) {
+          throw new DOMException("Visit storage full", "QuotaExceededError");
+        }
+        values.set(name, value);
+      });
+      const remove = vi.fn((name: string) => {
+        values.delete(name);
+      });
+      vi.stubGlobal("sessionStorage", {
+        getItem: (name: string) => values.get(name) ?? null,
+        setItem: write,
+        removeItem: remove,
+      });
+      try {
+        const storage = createKeyValueStorage("sessionStorage", "Visit storage unavailable");
+        const report = vi.fn();
+        const tracker = new PageVisitTime(storage, key, report);
+        tracker.beginStartup();
+        tracker.start(initial);
+        tracker.update({ ...initial, name: large.name });
+        tracker.start(large);
+        tracker.update({ ...large, name: `${large.name} finalized` });
+        tracker.suspend();
+
+        // The old short successful write followed by quota/backoff is prevented, not replayed.
+        expect(JSON.stringify(visitOf(initial)).length).toBeLessThan(quotaBytes);
+        expect(JSON.stringify(visitOf(large)).length).toBeGreaterThan(quotaBytes);
+        expect(write).not.toHaveBeenCalled();
+        expect(remove).not.toHaveBeenCalled();
+        expect(values.get(key)).toBe(saved);
+        tracker[cleanup]();
+        tracker.rollbackStartup();
+        tracker.stop();
+        tracker.commitStartup();
+
+        expect(write).not.toHaveBeenCalled();
+        expect(remove).not.toHaveBeenCalled();
+        expect(values.get(key)).toBe(saved);
+        expect(report).not.toHaveBeenCalled();
+
+        const retry = new PageVisitTime(storage, key, report);
+        const next = page(4, 5_000);
+        retry.beginStartup();
+        retry.start(next);
+        expect(write).not.toHaveBeenCalled();
+        retry.commitStartup();
+        retry.commitStartup();
+
+        expect(report).toHaveBeenCalledExactlyOnceWith(visitOf(previous), 4_000);
+        expect(write).toHaveBeenCalledExactlyOnceWith(key, JSON.stringify(visitOf(next)));
+        expect(values.get(key)).toBe(JSON.stringify(visitOf(next)));
+        retry.start(page(5, 8_000));
+        expect(report.mock.calls).toEqual([
+          [visitOf(previous), 4_000],
+          [visitOf(next), 3_000],
+        ]);
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    },
+  );
+
+  it("rolls back without writes and consumes the seed on retry under externally forced adapter backoff", () => {
+    const previous = page(1, 1_000);
+    const saved = JSON.stringify(visitOf(previous), null, 2);
+    const values = new Map([[key, saved]]);
+    const externalKey = "external-write";
+    const nativeWrite = vi.fn((name: string, value: string) => {
+      if (name === externalKey) {
+        throw new DOMException("Storage full", "QuotaExceededError");
+      }
+      values.set(name, value);
+    });
+    const remove = vi.fn((name: string) => {
+      values.delete(name);
+    });
+    const now = vi.spyOn(Date, "now").mockReturnValue(10_000);
+    vi.stubGlobal("sessionStorage", {
+      getItem: (name: string) => values.get(name) ?? null,
+      setItem: nativeWrite,
+      removeItem: remove,
+    });
+    try {
+      const storage = createKeyValueStorage("sessionStorage", "Visit storage unavailable");
+      const write = vi.spyOn(storage, "setItem");
       const report = vi.fn();
       const tracker = new PageVisitTime(storage, key, report);
       tracker.beginStartup();
-      if (failure === "first") vi.mocked(storage.setItem).mockReturnValueOnce(false);
       tracker.start(page(2, 2_000));
-      if (failure === "last") vi.mocked(storage.setItem).mockReturnValueOnce(false);
+      tracker.update({ ...page(2, 2_000), name: "Final initial name" });
+      expect(write).not.toHaveBeenCalled();
+      expect(storage.setItem(externalKey, "force backoff")).toBe(false);
       tracker.start(page(3, 3_000));
+      tracker.update({ ...page(3, 3_000), name: "Final later route name" });
       tracker.suspend();
-
       tracker.rollbackStartup();
+      tracker.stop();
+      tracker.commitStartup();
 
+      expect(write).toHaveBeenCalledExactlyOnceWith(externalKey, "force backoff");
+      expect(nativeWrite).toHaveBeenCalledExactlyOnceWith(externalKey, "force backoff");
+      expect(remove).not.toHaveBeenCalled();
+      expect(values.get(key)).toBe(saved);
       expect(report).not.toHaveBeenCalled();
-      expect(storage.getItem(key)).toEqual({ success: true, value: saved });
-    },
-  );
+
+      const retryReport = vi.fn(() => {
+        // Removal bypasses write backoff, and must happen before application callbacks.
+        expect(remove).toHaveBeenCalledExactlyOnceWith(key);
+        expect(values.has(key)).toBe(false);
+      });
+      const retry = new PageVisitTime(storage, key, retryReport);
+      const next = page(4, 5_000);
+      retry.beginStartup();
+      retry.start(next);
+      expect(write).toHaveBeenCalledTimes(1);
+      expect(values.get(key)).toBe(saved);
+      retry.commitStartup();
+      retry.commitStartup();
+
+      expect(write.mock.calls).toEqual([
+        [externalKey, "force backoff"],
+        [key, JSON.stringify(visitOf(next))],
+      ]);
+      expect(write.mock.results.map((result) => result.value)).toEqual([false, false]);
+      expect(nativeWrite).toHaveBeenCalledTimes(1);
+      expect(retryReport).toHaveBeenCalledExactlyOnceWith(visitOf(previous), 4_000);
+      expect(values.has(key)).toBe(false);
+      new PageVisitTime(storage, key, retryReport).start(page(5, 8_000));
+      expect(retryReport).toHaveBeenCalledTimes(1);
+      expect(values.get(key)).toBe(JSON.stringify(visitOf(page(5, 8_000))));
+    } finally {
+      now.mockRestore();
+      vi.unstubAllGlobals();
+    }
+  });
 
   it.each([false, true])(
     "does not replay a consumed predecessor after a failed write (managed=%s)",
@@ -295,14 +448,21 @@ describe("PageVisitTime", () => {
       storage.setItem(key, JSON.stringify(visitOf(previous)));
       const report = vi.fn();
       const tracker = new PageVisitTime(storage, key, report);
-      vi.mocked(storage.setItem).mockReturnValueOnce(false);
+      const write = vi.mocked(storage.setItem).mockClear().mockReturnValueOnce(false);
       if (managed) tracker.beginStartup();
       tracker.start(page(2, 2_000));
       if (managed) {
+        expect(write).not.toHaveBeenCalled();
+        expect(report).not.toHaveBeenCalled();
+        expect(storage.getItem(key)).toEqual({
+          success: true,
+          value: JSON.stringify(visitOf(previous)),
+        });
         tracker.suspend();
         tracker.commitStartup();
       }
 
+      expect(write).toHaveBeenCalledExactlyOnceWith(key, JSON.stringify(visitOf(page(2, 2_000))));
       expect(report).toHaveBeenCalledExactlyOnceWith(visitOf(previous), 1_000);
       expect(storage.getItem(key)).toEqual({ success: true, value: null });
       const next = new PageVisitTime(storage, key, report);
@@ -316,17 +476,29 @@ describe("PageVisitTime", () => {
     },
   );
 
-  it("clears a consumed persisted owner on commit after a later successor write fails", () => {
+  it("consumes the original predecessor before reporting when the only commit write fails", () => {
     const storage = memoryStorage();
     const previous = page(1, 1_000);
     storage.setItem(key, JSON.stringify(visitOf(previous)));
-    const report = vi.fn();
+    vi.mocked(storage.setItem).mockClear();
+    const report = vi.fn(() => {
+      expect(storage.getItem(key)).toEqual({ success: true, value: null });
+      expect(storage.removeItem).toHaveBeenCalledExactlyOnceWith(key);
+    });
     const tracker = new PageVisitTime(storage, key, report);
     tracker.beginStartup();
     tracker.start(page(2, 2_000));
     vi.mocked(storage.setItem).mockReturnValueOnce(false);
     tracker.start(page(3, 3_000));
+    tracker.update({ ...page(3, 3_000), name: "Final route name" });
+    expect(storage.setItem).not.toHaveBeenCalled();
+    expect(storage.removeItem).not.toHaveBeenCalled();
 
+    tracker.commitStartup();
+    expect(storage.setItem).toHaveBeenCalledExactlyOnceWith(
+      key,
+      JSON.stringify({ ...visitOf(page(3, 3_000)), name: "Final route name" }),
+    );
     tracker.commitStartup();
     new PageVisitTime(storage, key, report).start(page(4, 4_000));
 
@@ -336,43 +508,61 @@ describe("PageVisitTime", () => {
     ]);
   });
 
-  it.each([
-    ["standalone", false],
-    ["commit", false],
-    ["rollback", false],
-    ["commit", true],
-    ["rollback", true],
-  ] as const)(
-    "preserves a newer owner after a failed write and %s cleanup (prior successful write=%s)",
-    (cleanup, persisted) => {
+  it.each(["standalone", "before commit", "during commit", "rollback"] as const)(
+    "preserves a newer owner with the original trace ID but a different start (%s)",
+    (scenario) => {
       const storage = memoryStorage();
       storage.setItem(key, JSON.stringify(visitOf(page(1, 1_000))));
       const write = vi.mocked(storage.setItem);
       const persist = write.getMockImplementation()!;
+      write.mockClear();
       const report = vi.fn();
       const tracker = new PageVisitTime(storage, key, report);
       const successor = page(2, 2_000);
-      const newer = JSON.stringify({ ...visitOf(successor), startTimeUnixMs: 3_000 });
-      if (cleanup !== "standalone") {
+      const latest = page(3, 4_000);
+      const newer = JSON.stringify({ ...visitOf(page(1, 1_000)), startTimeUnixMs: 5_000 });
+      if (scenario !== "standalone") {
         tracker.beginStartup();
-        if (persisted) tracker.start(successor);
+        tracker.start(successor);
+        tracker.start(latest);
+        expect(write).not.toHaveBeenCalled();
+        expect(storage.removeItem).not.toHaveBeenCalled();
       }
-      write.mockImplementationOnce(() => {
+      if (scenario === "before commit" || scenario === "rollback") {
         persist(key, newer);
-        return false;
-      });
-      tracker.start(page(3, 4_000));
+        write.mockReturnValueOnce(false);
+      } else {
+        write.mockImplementationOnce(() => {
+          persist(key, newer);
+          return false;
+        });
+      }
 
-      if (cleanup === "commit") tracker.commitStartup();
-      else if (cleanup === "rollback") tracker.rollbackStartup();
+      if (scenario === "standalone") tracker.start(latest);
+      else if (scenario === "rollback") tracker.rollbackStartup();
+      else tracker.commitStartup();
       tracker.stop();
 
       expect(storage.getItem(key)).toEqual({ success: true, value: newer });
-      if (cleanup === "rollback") expect(report).not.toHaveBeenCalled();
+      expect(storage.removeItem).not.toHaveBeenCalled();
+      if (scenario === "rollback") {
+        expect(write).not.toHaveBeenCalled();
+        expect(report).not.toHaveBeenCalled();
+      } else {
+        expect(write).toHaveBeenCalledExactlyOnceWith(key, JSON.stringify(visitOf(latest)));
+        expect(report.mock.calls).toEqual(
+          scenario === "standalone"
+            ? [[visitOf(page(1, 1_000)), 3_000]]
+            : [
+                [visitOf(page(1, 1_000)), 1_000],
+                [visitOf(successor), 2_000],
+              ],
+        );
+      }
     },
   );
 
-  it("removes a failed startup's successor when there was no predecessor", () => {
+  it("never persists or removes an uncommitted successor when there was no predecessor", () => {
     const storage = memoryStorage();
     const tracker = new PageVisitTime(storage, key, vi.fn());
     tracker.beginStartup();
@@ -380,6 +570,8 @@ describe("PageVisitTime", () => {
 
     tracker.rollbackStartup();
 
+    expect(storage.setItem).not.toHaveBeenCalled();
+    expect(storage.removeItem).not.toHaveBeenCalled();
     expect(storage.getItem(key)).toEqual({ success: true, value: null });
   });
 
