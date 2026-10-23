@@ -3,6 +3,7 @@
 
 import { createDefaultSessionIdGenerator } from "@opentelemetry/browser-sdk/session";
 import { isNonEmptyString } from "../shared/isNonEmptyString.js";
+import type { CookieReadResult } from "../storage/cookieManager.js";
 import type {
   MicrosoftOpenTelemetryBrowserCookieManager,
   MicrosoftOpenTelemetryBrowserUserContext,
@@ -51,7 +52,9 @@ function own(value: object | undefined, key: string): unknown {
  */
 export function createCookieUserContext(
   initialEnabled: boolean | undefined,
-  cookies: MicrosoftOpenTelemetryBrowserCookieManager,
+  cookies: MicrosoftOpenTelemetryBrowserCookieManager & {
+    read?: (name: string) => CookieReadResult;
+  },
   namePrefix = "",
   onNewUser?: () => void,
   canReadAnonymousCookie = true,
@@ -143,11 +146,23 @@ export function createCookieUserContext(
     }
   }
 
+  function readAnonymous(): CookieReadResult {
+    return cookies.read
+      ? cookies.read(anonymousCookie)
+      : { success: true, value: cookies.get(anonymousCookie) };
+  }
+
+  function refreshAnonymous(result = readAnonymous()): void {
+    // An unavailable read is not evidence of a new user. Leave identity unresolved so a
+    // later enable or enrichment can retry without replacing cookies or discarding backups.
+    if (result.success) restoreAnonymous(result.value);
+  }
+
   if (enabled) {
     try {
-      const anonymousValue = cookies.get(anonymousCookie);
+      const anonymous = readAnonymous();
       const authenticatedValue = cookies.get(authenticatedCookie);
-      restoreAnonymous(anonymousValue);
+      refreshAnonymous(anonymous);
 
       const authenticated = decode(authenticatedValue);
       const user = own(authenticated, "authenticatedUserId");
@@ -197,7 +212,7 @@ export function createCookieUserContext(
       enabled = newEnabled;
       if (enabled) {
         try {
-          restoreAnonymous(cookies.get(anonymousCookie));
+          refreshAnonymous();
         } catch {
           anonymousIdentityEnabled = false;
         }
@@ -223,7 +238,7 @@ export function createCookieUserContext(
         if (enabled && !anonymousIdentityEnabled && attempt(() => cookies.isEnabled())) {
           try {
             // Recover after runtime cookie enablement without replaying authentication.
-            restoreAnonymous(cookies.get(anonymousCookie));
+            refreshAnonymous();
           } catch {
             // Custom cookie managers may throw while reading.
           }

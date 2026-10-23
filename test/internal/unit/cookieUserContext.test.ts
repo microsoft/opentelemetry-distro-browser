@@ -44,6 +44,41 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+it.each(["hook", "browser"] as const)(
+  "retries a failed anonymous %s read without replacing identity or notifying a new user",
+  (source) => {
+    const existing = encode({ anonymousId: "existing-user", acquisitionTimestamp: 42 });
+    let unavailable = true;
+    const read = vi.fn((name: string) => {
+      if (unavailable && (source === "browser" || name === anonymousCookie)) {
+        throw new Error("cookie read unavailable");
+      }
+      return name === anonymousCookie ? existing : "";
+    });
+    if (source === "browser") {
+      vi.spyOn(document, "cookie", "get").mockImplementation(() => {
+        const value = read(anonymousCookie);
+        return `${anonymousCookie}=${value}`;
+      });
+    }
+    const write = vi.fn();
+    const cookies = createCookieManager({
+      ...(source === "hook" ? { getCookie: read } : {}),
+      setCookie: write,
+    });
+    const onNewUser = vi.fn();
+    const { context, provider } = createCookieUserContext(true, cookies, "", onNewUser);
+    expect(provider.getAnonymousUserId()).toBeUndefined();
+    context.setEnabled(true);
+    expect(write).not.toHaveBeenCalled();
+    expect(onNewUser).not.toHaveBeenCalled();
+    unavailable = false;
+    expect(provider.getAnonymousUserId()).toBe("existing-user");
+    expect(write).not.toHaveBeenCalled();
+    expect(onNewUser).not.toHaveBeenCalled();
+  },
+);
+
 it.each([false, true])(
   "invokes legacy cleanup only for explicit logout and disable (initially enabled: %s)",
   (enabled) => {

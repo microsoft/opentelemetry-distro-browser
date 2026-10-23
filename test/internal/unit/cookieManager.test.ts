@@ -13,6 +13,26 @@ afterEach(() => {
   document.cookie = "otel-cookie-manager-test=; max-age=0; path=/";
 });
 
+it("keeps internal failed-read status distinct from successful missing and ignored cookies", () => {
+  const getCookie = vi.fn((_name: string): string => {
+    throw new Error("cookie access failed");
+  });
+  const manager = createCookieManager({ getCookie, ignoreCookies: ["ignored"] });
+  expect(manager.get("name")).toBe("");
+  expect(manager.read("name")).toEqual({ success: false });
+  expect(manager.read("ignored")).toEqual({ success: true, value: "" });
+  expect(getCookie).toHaveBeenCalledTimes(2);
+  getCookie.mockReturnValue("");
+  expect(manager.read("name")).toEqual({ success: true, value: "" });
+  getCookie.mockReturnValue("existing");
+  expect(manager.read("name")).toEqual({ success: true, value: "existing" });
+  manager.setEnabled(false);
+  manager.set("name", "deferred");
+  getCookie.mockClear();
+  expect(manager.read("name")).toEqual({ success: true, value: "deferred" });
+  expect(getCookie).not.toHaveBeenCalled();
+});
+
 it("reads, writes, and deletes actual browser cookies without touching web storage", () => {
   const local = vi.spyOn(window, "localStorage", "get");
   const session = vi.spyOn(window, "sessionStorage", "get");
