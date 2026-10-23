@@ -17,7 +17,7 @@ import type { AzureMonitorLogRecordExporter } from "./exporter/log.js";
 import type { AzureMonitorSpanExporter } from "./exporter/trace.js";
 import { createAzureMonitorProcessors } from "./exporter/createAzureMonitorProcessors.js";
 import { parseConnectionString } from "./exporter/connectionStringParser.js";
-import { PageViewInstrumentation } from "./instrumentation/pageView/index.js";
+import { generatePageViewId, PageViewInstrumentation } from "./instrumentation/pageView/index.js";
 import { PageViewCorrelation } from "./instrumentation/pageView/pageViewCorrelation.js";
 import {
   claimInstrumentations,
@@ -43,6 +43,42 @@ import type {
   MicrosoftOpenTelemetryBrowser,
   MicrosoftOpenTelemetryBrowserOptions,
 } from "./types.js";
+
+/** Fork opener-copied visit state once, while retaining later same-tab document handoffs. */
+function preparePageVisitStorage(): boolean {
+  try {
+    const storage = window.sessionStorage;
+    const ownerKey = "otel.pageVisitOwner";
+    const owner = storage.getItem(ownerKey);
+    let copied = false;
+    try {
+      const opener = window.opener as Window | null;
+      // Frames use their top-level tab's owner. Unlike a visit ID, this marker survives
+      // opener navigation before the new tab initializes its telemetry.
+      copied =
+        !!owner &&
+        !!opener &&
+        !opener.closed &&
+        opener.top?.sessionStorage.getItem(ownerKey) === owner;
+    } catch {
+      // A closed or cross-origin opener is inaccessible. Do not break an established tab's
+      // persistence just because its opener subsequently navigates away.
+    }
+    if (copied) {
+      // Snapshot keys before removal: Web Storage enumeration may reorder on mutation.
+      const keys = Array.from({ length: storage.length }, (_, index) => storage.key(index));
+      for (const key of keys) {
+        if (key?.startsWith("otel.pageVisit.")) storage.removeItem(key);
+      }
+    }
+    if (!owner || copied) storage.setItem(ownerKey, generatePageViewId());
+    return true;
+  } catch {
+    // Never consume a predecessor if ownership setup or copied-state cleanup failed.
+    diag.warn("Page visit storage unavailable; using memory.");
+    return false;
+  }
+}
 
 /**
  * Builds the instrumentations this distribution owns and turns on by itself.
@@ -98,7 +134,8 @@ function createOwnedInstrumentations(
             window.parent !== window ||
             (options.azureMonitor &&
               typeof options.azureMonitor.connectionString !== "string" &&
-              !options.storage?.namePrefix)
+              !options.storage?.namePrefix) ||
+            (pageView.autoTrackPageVisitTime && !preparePageVisitStorage())
               ? null
               : undefined,
         },

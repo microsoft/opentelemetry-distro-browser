@@ -13,10 +13,15 @@ export interface PageVisitNamespaceSnapshot {
   records: RecordedLog[];
   storage: Record<string, string>;
   pageStart: number;
+  storageOwner: string | null;
+  applicationState: string | null;
+  windowName: string;
+  hasOpener: boolean;
 }
 
 declare global {
   interface Window {
+    startPageVisitNamespaceFixture(): Promise<void>;
     pageVisitNamespaceFixture: {
       snapshot(): PageVisitNamespaceSnapshot;
       navigate(): Promise<void>;
@@ -87,6 +92,10 @@ async function start(): Promise<void> {
           .map((key) => [key, sessionStorage.getItem(key)!]),
       ),
       pageStart: pageStart!,
+      storageOwner: sessionStorage.getItem("otel.pageVisitOwner"),
+      applicationState: sessionStorage.getItem("pageVisitNamespace.application"),
+      windowName: window.name,
+      hasOpener: window.opener !== null,
     }),
     async navigate() {
       const settled = nextPageView();
@@ -99,6 +108,12 @@ async function start(): Promise<void> {
   document.body.dataset.state = "ready";
 }
 
-void start().catch((error: unknown) => {
-  document.body.dataset.state = `failed: ${String(error)}`;
-});
+window.startPageVisitNamespaceFixture = () =>
+  start().catch((error: unknown) => {
+    document.body.dataset.state = `failed: ${String(error)}`;
+  });
+if (new URL(location.href).searchParams.has("deferStart")) {
+  document.body.dataset.state = "waiting";
+} else {
+  void window.startPageVisitNamespaceFixture();
+}

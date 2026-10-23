@@ -294,6 +294,14 @@ cannot establish browsing-context ownership. Child frames therefore neither cons
 the parent's visit state, and do not bridge full-document navigations. Their SPA visits still work.
 This restriction applies to page-visit persistence, not other SDK-managed storage.
 
+New tabs opened with `window.open()` can receive a copy of the opener's `sessionStorage`. Before
+restoring visits, the SDK compares a stable storage-owner marker with the accessible same-origin
+opener's marker. A matching copy loses only its page-visit entries and receives a new owner marker;
+it does not report the opener's still-active visit. Later same-tab navigations and reloads in the
+popup retain persistence, even if its opener has navigated. Application storage and `window.name`
+are not changed. If the opener is already closed or cross-origin before the popup first initializes
+tracking, the SDK cannot compare their markers and identify the copied state.
+
 No visit log or metric is emitted on `pagehide`, hidden visibility or unload. A final visit with no
 next instrumented page is skipped. On back/forward cache (BFCache) restore, the tracker reads the
 persistent successor visit rather than reusing the restored page's old in-memory visit, avoiding

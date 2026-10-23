@@ -38,6 +38,81 @@ function expectPreviousVisit(
 
 describe("page visit persistence namespaces in real browsing contexts", () => {
   it.each([
+    { namePrefix: undefined, connectionString: "string", navigateOpenerBeforeStart: false },
+    {
+      namePrefix: "popup-destination-",
+      connectionString: "promise",
+      navigateOpenerBeforeStart: false,
+    },
+    { namePrefix: undefined, connectionString: "string", navigateOpenerBeforeStart: true },
+    {
+      namePrefix: "popup-destination-",
+      connectionString: "promise",
+      navigateOpenerBeforeStart: true,
+    },
+  ])(
+    "rejects copied opener visits but preserves popup handoffs (%j)",
+    async (scenario) => {
+      const parameters = {
+        connectionString: scenario.connectionString,
+        ...(scenario.namePrefix === undefined ? {} : { namePrefix: scenario.namePrefix }),
+      };
+      const { documents, popup } = await commands.inspectPageVisitNamespaces(
+        [fixture("Opener document", parameters), fixture("Next opener document", parameters)],
+        {
+          urls: [
+            fixture("Popup document", parameters),
+            fixture("Next popup document", parameters),
+            fixture("Next popup document", parameters),
+          ],
+          navigateOpenerBeforeStart: scenario.navigateOpenerBeforeStart,
+        },
+      );
+
+      expect(visits(documents[0])).toEqual([]);
+      expect(popup).toBeDefined();
+      // Prove the browser copied the live opener's predecessor before the SDK started.
+      expect(popup!.copiedStorage).toMatchObject(documents[0].storage);
+      expect(visits(popup!.documents[0])).toEqual([]);
+      expect(popup!.documents[0].hasOpener).toBe(true);
+      expect(popup!.documents[0].storageOwner).toBeTruthy();
+      expect(popup!.documents[0].storageOwner).not.toBe(documents[0].storageOwner);
+      expect(popup!.openerAfterStart).toEqual(
+        documents[scenario.navigateOpenerBeforeStart ? 1 : 0],
+      );
+      expectPreviousVisit(documents[0], documents[1]);
+      expect(documents[1].storageOwner).toBe(documents[0].storageOwner);
+      for (const [index, document] of popup!.documents.entries()) {
+        expect(document.storageOwner).toBe(popup!.documents[0].storageOwner);
+        expect(document.applicationState).toBe("preserved");
+        expect(document.windowName).toBe("page-visit-popup");
+        expect(Object.keys(document.storage)).toEqual(Object.keys(documents[0].storage));
+        if (index > 0) expectPreviousVisit(popup!.documents[index - 1], document);
+      }
+    },
+    30_000,
+  );
+
+  it.each(["closed", "cross-origin"] as const)(
+    "preserves established popup ownership when its opener becomes %s",
+    async (openerAfterStart) => {
+      const { documents, popup } = await commands.inspectPageVisitNamespaces(
+        [fixture("Opener document")],
+        {
+          urls: [fixture("Popup document"), fixture("Next popup document")],
+          openerAfterStart,
+        },
+      );
+
+      expect(visits(popup!.documents[0])).toEqual([]);
+      expect(popup!.openerAfterStart).toEqual(documents[0]);
+      expect(popup!.documents[1].storageOwner).toBe(popup!.documents[0].storageOwner);
+      expectPreviousVisit(popup!.documents[0], popup!.documents[1]);
+    },
+    30_000,
+  );
+
+  it.each([
     ["string", "promise"],
     ["promise", "string"],
   ])("bridges %s -> %s documents with one destination-specific prefix", async (first, second) => {

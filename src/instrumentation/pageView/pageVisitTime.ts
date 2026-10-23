@@ -15,7 +15,14 @@ function sameVisit(first: Visit | undefined, second: Visit | undefined): boolean
 export class PageVisitTime {
   #current: Visit | undefined;
   #startup:
-    { previous?: Visit; owner?: Visit; reports: { visit: Visit; duration: number }[] } | undefined;
+    | {
+        previous?: Visit;
+        owner?: Visit;
+        persisted?: Visit;
+        stale?: Visit;
+        reports: { visit: Visit; duration: number }[];
+      }
+    | undefined;
 
   public constructor(
     private readonly storage: KeyValueStorage | null,
@@ -45,14 +52,21 @@ export class PageVisitTime {
     return undefined;
   }
 
+  #removeIfOwned(visit: Visit | undefined): void {
+    if (visit && sameVisit(visit, this.#read())) this.storage?.removeItem(this.key);
+  }
+
   public start(page: PageView): void {
     const restored = !this.#current;
     const previous = this.#current ?? this.#read();
     if (this.#startup && !this.#startup.owner) this.#startup.previous = previous;
     this.#current = undefined;
-    this.storage?.removeItem(this.key);
     // Commit the successor before reporting: re-entrant processors must not emit this twice.
-    this.update(page);
+    // Web Storage replacement is atomic: a failed write must retain an unreported predecessor.
+    if (!this.update(page) && !sameVisit(previous, page)) {
+      if (this.#startup) this.#startup.stale ??= previous;
+      else this.#removeIfOwned(previous);
+    }
     if (!previous || sameVisit(previous, page)) return;
     const duration = page.startTimeUnixMs - previous.startTimeUnixMs;
     if (!Number.isFinite(duration) || duration < 0) return;
@@ -64,7 +78,7 @@ export class PageVisitTime {
     else this.report(visit, duration);
   }
 
-  public update(page: PageView): void {
+  public update(page: PageView): boolean {
     this.#current = {
       id: page.id,
       name: page.name,
@@ -72,7 +86,12 @@ export class PageVisitTime {
       startTimeUnixMs: page.startTimeUnixMs,
     };
     if (this.#startup) this.#startup.owner = this.#current;
-    this.storage?.setItem(this.key, JSON.stringify(this.#current));
+    const persisted = this.storage?.setItem(this.key, JSON.stringify(this.#current)) ?? false;
+    if (persisted && this.#startup) {
+      this.#startup.persisted = this.#current;
+      this.#startup.stale = undefined;
+    }
+    return persisted;
   }
 
   /** Distribution startup opts in before collection; standalone reporting stays immediate. */
@@ -84,6 +103,8 @@ export class PageVisitTime {
     const startup = this.#startup;
     // Clear before application callbacks can re-enter commit or rollback.
     this.#startup = undefined;
+    // A failed successor write may have left a predecessor that is now consumed.
+    this.#removeIfOwned(startup?.stale);
     for (const { visit, duration } of startup?.reports ?? []) this.report(visit, duration);
   }
 
@@ -93,7 +114,7 @@ export class PageVisitTime {
     this.#startup = undefined;
     this.#current = undefined;
     // A later document or owner may have replaced our entry, even with the same trace ID.
-    if (!startup.owner || !sameVisit(startup.owner, this.#read())) return;
+    if (!startup.persisted || !sameVisit(startup.persisted, this.#read())) return;
     if (startup.previous) this.storage?.setItem(this.key, JSON.stringify(startup.previous));
     else this.storage?.removeItem(this.key);
   }

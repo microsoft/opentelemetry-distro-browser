@@ -1046,13 +1046,25 @@ describe("page visit time through useMicrosoftOpenTelemetry", () => {
     expect(visitKeys()).toEqual([visitKey(namePrefix, 0)]);
   });
 
-  it.each(["custom processors", "pending connection string"])(
-    "restores a seeded predecessor after a later instrumentation fails with %s",
-    async (destination) => {
-      const namePrefix = `visit-enable-rollback-${destination}-`;
+  it.each([
+    ["custom processors", false],
+    ["pending connection string", false],
+    ["custom processors", true],
+    ["pending connection string", true],
+  ] as const)(
+    "restores a seeded predecessor after a later instrumentation fails with %s (quota failure=%s)",
+    async (destination, quotaFailure) => {
+      const namePrefix = `visit-enable-rollback-${destination}-${quotaFailure}-`;
       const key = visitKey(namePrefix, 0);
       const previous = seedVisit(key);
       const saved = storage.getItem(key);
+      const persist = storage.setItem.bind(storage);
+      const write = vi.spyOn(storage, "setItem").mockImplementation((name, value) => {
+        if (quotaFailure && name === key) {
+          throw new DOMException("Visit storage full", "QuotaExceededError");
+        }
+        persist(name, value);
+      });
       const accepted: ReadWriteLogRecord[] = [];
       const options: MicrosoftOpenTelemetryBrowserOptions = {
         storage: { namePrefix },
@@ -1080,10 +1092,13 @@ describe("page visit time through useMicrosoftOpenTelemetry", () => {
             {
               ...createProbe(),
               enable() {
-                expect(JSON.parse(storage.getItem(key)!)).toMatchObject({
-                  name: `failed:${location.pathname}`,
-                  startTimeUnixMs: performance.timeOrigin,
-                });
+                if (quotaFailure) expect(storage.getItem(key)).toBe(saved);
+                else {
+                  expect(JSON.parse(storage.getItem(key)!)).toMatchObject({
+                    name: `failed:${location.pathname}`,
+                    startTimeUnixMs: performance.timeOrigin,
+                  });
+                }
                 expect(
                   accepted.filter((record) => record.eventName === "browser.page_visit"),
                 ).toEqual([]);
@@ -1097,8 +1112,14 @@ describe("page visit time through useMicrosoftOpenTelemetry", () => {
       expect(storage.getItem(key)).toBe(saved);
       expect(accepted.filter((record) => record.eventName === "browser.page_visit")).toEqual([]);
       expect(getSharedRegistry().pageVisitSlots?.has(visitNamespace(namePrefix))).toBe(false);
+      expect(write).toHaveBeenCalledWith(key, expect.any(String));
+      write.mockRestore();
       const retry = await startVisits("retry", options);
       expect(visitKeys()).toEqual([key]);
+      expect(JSON.parse(storage.getItem(key)!)).toMatchObject({
+        name: `retry:${location.pathname}`,
+        startTimeUnixMs: performance.timeOrigin,
+      });
       expect(retry.visits()).toHaveLength(1);
       expect(retry.visits()).toMatchObject([
         {
@@ -1258,7 +1279,7 @@ describe("page visit time through useMicrosoftOpenTelemetry", () => {
       expect(visitKeys()).toHaveLength(1);
       const alphaKey = visitKeys()[0]!;
       expect(alphaKey).toContain("visit-alpha-");
-      expect(reads).toHaveBeenCalledExactlyOnceWith(alphaKey);
+      expect(reads.mock.calls.map(([key]) => key)).toEqual(["otel.pageVisitOwner", alphaKey]);
       const alphaSaved = storage.getItem(alphaKey)!;
       expect(JSON.parse(alphaSaved)).toMatchObject({
         name: `alpha:${initialPath}`,
@@ -1275,7 +1296,7 @@ describe("page visit time through useMicrosoftOpenTelemetry", () => {
       expect(visitKeys()).toHaveLength(2);
       const betaKey = visitKeys().find((key) => key !== alphaKey)!;
       expect(betaKey).toContain("visit-beta-");
-      expect(reads).toHaveBeenCalledExactlyOnceWith(betaKey);
+      expect(reads.mock.calls.map(([key]) => key)).toEqual(["otel.pageVisitOwner", betaKey]);
       expect(storage.getItem(alphaKey)).toBe(alphaSaved);
       expect(JSON.parse(storage.getItem(betaKey)!)).toMatchObject({
         name: `beta:${initialPath}`,

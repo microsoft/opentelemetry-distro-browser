@@ -105,23 +105,27 @@ describe("PageVisitTime", () => {
     );
   });
 
-  it("commits the successor before invoking a re-entrant reporter", () => {
-    const storage = memoryStorage();
-    const next = page(2, 2_000);
-    const report = vi.fn((): void => {
-      expect(storage.getItem(key)).toEqual({
-        success: true,
-        value: JSON.stringify(visitOf(next)),
+  it.each([false, true])(
+    "consumes the predecessor before invoking a re-entrant reporter (write failure=%s)",
+    (writeFailure) => {
+      const storage = memoryStorage();
+      const next = page(2, 2_000);
+      const report = vi.fn((): void => {
+        expect(storage.getItem(key)).toEqual({
+          success: true,
+          value: writeFailure ? null : JSON.stringify(visitOf(next)),
+        });
+        tracker.start(next);
       });
+      const tracker = new PageVisitTime(storage, key, report);
+      tracker.start(page(1, 1_000));
+      if (writeFailure) vi.mocked(storage.setItem).mockReturnValue(false);
+
       tracker.start(next);
-    });
-    const tracker = new PageVisitTime(storage, key, report);
-    tracker.start(page(1, 1_000));
 
-    tracker.start(next);
-
-    expect(report).toHaveBeenCalledTimes(1);
-  });
+      expect(report).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it.each([false, true])(
     "reports separate occurrences with the same trace ID (restored=%s)",
@@ -218,6 +222,155 @@ describe("PageVisitTime", () => {
     expect(report).not.toHaveBeenCalled();
     expect(storage.getItem(key)).toEqual({ success: true, value: saved });
   });
+
+  it.each(["rollbackStartup", "stop"] as const)(
+    "%s preserves a seeded predecessor when successor writes fail and allows a retry",
+    (cleanup) => {
+      const storage = memoryStorage();
+      const previous = page(1, 1_000);
+      const saved = JSON.stringify(visitOf(previous));
+      storage.setItem(key, saved);
+      const write = vi.mocked(storage.setItem);
+      const persist = write.getMockImplementation()!;
+      write.mockReturnValue(false);
+      const report = vi.fn();
+      const tracker = new PageVisitTime(storage, key, report);
+      tracker.beginStartup();
+      tracker.start(page(2, 2_000));
+      tracker.start(page(3, 3_000));
+      tracker.update({ ...page(3, 3_000), name: "Final name" });
+
+      expect(storage.getItem(key)).toEqual({ success: true, value: saved });
+      tracker[cleanup]();
+      tracker.commitStartup();
+      expect(report).not.toHaveBeenCalled();
+      expect(storage.removeItem).not.toHaveBeenCalled();
+      expect(storage.getItem(key)).toEqual({ success: true, value: saved });
+
+      write.mockImplementation(persist);
+      tracker.beginStartup();
+      const retry = page(4, 5_000);
+      tracker.start(retry);
+      tracker.commitStartup();
+      expect(report).toHaveBeenCalledExactlyOnceWith(visitOf(previous), 4_000);
+      expect(storage.getItem(key)).toEqual({
+        success: true,
+        value: JSON.stringify(visitOf(retry)),
+      });
+      tracker.start(page(5, 8_000));
+      expect(report.mock.calls).toEqual([
+        [visitOf(previous), 4_000],
+        [visitOf(retry), 3_000],
+      ]);
+    },
+  );
+
+  it.each(["first", "last"])(
+    "rolls back the last persisted owner when the %s successor write fails",
+    (failure) => {
+      const storage = memoryStorage();
+      const saved = JSON.stringify(visitOf(page(1, 1_000)));
+      storage.setItem(key, saved);
+      const report = vi.fn();
+      const tracker = new PageVisitTime(storage, key, report);
+      tracker.beginStartup();
+      if (failure === "first") vi.mocked(storage.setItem).mockReturnValueOnce(false);
+      tracker.start(page(2, 2_000));
+      if (failure === "last") vi.mocked(storage.setItem).mockReturnValueOnce(false);
+      tracker.start(page(3, 3_000));
+      tracker.suspend();
+
+      tracker.rollbackStartup();
+
+      expect(report).not.toHaveBeenCalled();
+      expect(storage.getItem(key)).toEqual({ success: true, value: saved });
+    },
+  );
+
+  it.each([false, true])(
+    "does not replay a consumed predecessor after a failed write (managed=%s)",
+    (managed) => {
+      const storage = memoryStorage();
+      const previous = page(1, 1_000);
+      storage.setItem(key, JSON.stringify(visitOf(previous)));
+      const report = vi.fn();
+      const tracker = new PageVisitTime(storage, key, report);
+      vi.mocked(storage.setItem).mockReturnValueOnce(false);
+      if (managed) tracker.beginStartup();
+      tracker.start(page(2, 2_000));
+      if (managed) {
+        tracker.suspend();
+        tracker.commitStartup();
+      }
+
+      expect(report).toHaveBeenCalledExactlyOnceWith(visitOf(previous), 1_000);
+      expect(storage.getItem(key)).toEqual({ success: true, value: null });
+      const next = new PageVisitTime(storage, key, report);
+      next.start(page(3, 3_000));
+      expect(report).toHaveBeenCalledTimes(1);
+      next.start(page(4, 4_000));
+      expect(report.mock.calls).toEqual([
+        [visitOf(previous), 1_000],
+        [visitOf(page(3, 3_000)), 1_000],
+      ]);
+    },
+  );
+
+  it("clears a consumed persisted owner on commit after a later successor write fails", () => {
+    const storage = memoryStorage();
+    const previous = page(1, 1_000);
+    storage.setItem(key, JSON.stringify(visitOf(previous)));
+    const report = vi.fn();
+    const tracker = new PageVisitTime(storage, key, report);
+    tracker.beginStartup();
+    tracker.start(page(2, 2_000));
+    vi.mocked(storage.setItem).mockReturnValueOnce(false);
+    tracker.start(page(3, 3_000));
+
+    tracker.commitStartup();
+    new PageVisitTime(storage, key, report).start(page(4, 4_000));
+
+    expect(report.mock.calls).toEqual([
+      [visitOf(previous), 1_000],
+      [visitOf(page(2, 2_000)), 1_000],
+    ]);
+  });
+
+  it.each([
+    ["standalone", false],
+    ["commit", false],
+    ["rollback", false],
+    ["commit", true],
+    ["rollback", true],
+  ] as const)(
+    "preserves a newer owner after a failed write and %s cleanup (prior successful write=%s)",
+    (cleanup, persisted) => {
+      const storage = memoryStorage();
+      storage.setItem(key, JSON.stringify(visitOf(page(1, 1_000))));
+      const write = vi.mocked(storage.setItem);
+      const persist = write.getMockImplementation()!;
+      const report = vi.fn();
+      const tracker = new PageVisitTime(storage, key, report);
+      const successor = page(2, 2_000);
+      const newer = JSON.stringify({ ...visitOf(successor), startTimeUnixMs: 3_000 });
+      if (cleanup !== "standalone") {
+        tracker.beginStartup();
+        if (persisted) tracker.start(successor);
+      }
+      write.mockImplementationOnce(() => {
+        persist(key, newer);
+        return false;
+      });
+      tracker.start(page(3, 4_000));
+
+      if (cleanup === "commit") tracker.commitStartup();
+      else if (cleanup === "rollback") tracker.rollbackStartup();
+      tracker.stop();
+
+      expect(storage.getItem(key)).toEqual({ success: true, value: newer });
+      if (cleanup === "rollback") expect(report).not.toHaveBeenCalled();
+    },
+  );
 
   it("removes a failed startup's successor when there was no predecessor", () => {
     const storage = memoryStorage();
