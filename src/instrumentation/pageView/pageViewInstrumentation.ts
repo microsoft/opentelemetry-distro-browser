@@ -18,6 +18,8 @@ import { OPENTELEMETRY_BROWSER_VERSION } from "../../shared/constants.js";
 import { markPageContext } from "../../shared/pageOperationContext.js";
 import { createPageViewContext, generatePageViewId } from "./pageViewContext.js";
 import { redactUrl } from "../../shared/urlRedaction.js";
+import { createKeyValueStorage } from "../../storage/keyValueStorage.js";
+import { PageVisitTime } from "./pageVisitTime.js";
 import {
   ATTR_PAGE_VIEW_DURATION,
   ATTR_PAGE_VIEW_DURATION_SOURCE,
@@ -175,6 +177,8 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
    */
   #historyLength = 0;
   #explicitName: string | undefined;
+  #visit: PageVisitTime | undefined;
+  #startupPending = false;
 
   /** Aborted by `disable()` to remove every listener added while enabled. */
   #listeners: AbortController | undefined;
@@ -245,6 +249,24 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
     this.#settle(DURATION_SOURCE_PAGE_HIDE);
   }
 
+  /** @internal */
+  public beginStartup(): void {
+    this.#startupPending = true;
+    this.#visit?.beginStartup();
+  }
+
+  /** @internal */
+  public commitStartup(): void {
+    this.#startupPending = false;
+    this.#visit?.commitStartup();
+  }
+
+  /** @internal */
+  public rollbackStartup(): void {
+    this.#startupPending = false;
+    this.#visit?.rollbackStartup();
+  }
+
   #currentOperation(): SpanContext {
     const url = this.#getNavigationApi()?.currentEntry?.url ?? location.href;
     const shared = this.getConfig().sharedOperation?.();
@@ -301,6 +323,7 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
       pending.pageView = updated;
       // Republish so a correlation consumer sees the corrected name before the record is emitted.
       this.#context.setCurrentPageView(updated);
+      this.#visit?.update(updated);
     }
   }
 
@@ -320,6 +343,43 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
       this.#operationUrl = this.#getNavigationApi()?.currentEntry?.url ?? location.href;
     }
     this.enabledState = true;
+    const config = this.getConfig();
+    if (config.autoTrackPageVisitTime) {
+      this.#visit = new PageVisitTime(
+        config.visitStorage === undefined
+          ? createKeyValueStorage("sessionStorage", "Page visit storage unavailable; using memory.")
+          : config.visitStorage,
+        config.visitStorageKey ?? "otel.pageVisit",
+        (previous, duration) => {
+          const operation: SpanContext = {
+            traceId: previous.id,
+            spanId: new RandomIdGenerator().generateSpanId(),
+            traceFlags: this.isTraceSampled(previous.id) ? TraceFlags.SAMPLED : TraceFlags.NONE,
+          };
+          markPageContext(operation);
+          this.#emitLogRecord({
+            eventName: "browser.page_visit",
+            timestamp: Date.now(),
+            severityNumber: SEVERITY_NUMBER_INFO,
+            context: trace.setSpanContext(ROOT_CONTEXT, operation),
+            attributes: {
+              [ATTR_PAGE_VIEW_ID]: previous.id,
+              [ATTR_PAGE_VIEW_NAME]: previous.name,
+              ...(previous.url ? { [ATTR_URL_FULL]: previous.url } : {}),
+              "browser.page_visit.duration": duration,
+            },
+          });
+        },
+        // Only storage is untrusted. In-memory page URLs already passed both redactors.
+        // Resolve pathname-only sanitizer output before built-in absolute-URL redaction.
+        (url) =>
+          this.#guard(
+            () => this.#sanitize(new URL(url, location.href).href),
+            "Invalid stored page visit URL; dropping the URL",
+          ) ?? "",
+      );
+      if (this.#startupPending) this.#visit.beginStartup();
+    }
     this.#lastUrl = location.href;
     this.#historyLength = history.length;
 
@@ -353,6 +413,7 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
     // A soft navigation that never settles would otherwise be lost when the user leaves.
     on(window, "pagehide", () => {
       this.settleForUnload();
+      this.#visit?.suspend();
     });
 
     // A restore from the back/forward cache reuses the document, so nothing else here fires: no
@@ -373,6 +434,8 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
       return;
     }
     this.enabledState = false;
+    this.#visit?.stop();
+    this.#visit = undefined;
     this.#operation = undefined;
     this.#operationName = undefined;
 
@@ -750,6 +813,7 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
     this.#pending = pending;
     // Publish before the record is emitted, so signals produced during the navigation correlate.
     this.#context.setCurrentPageView(pageView);
+    this.#visit?.start(pageView);
     return pending;
   }
 
@@ -883,6 +947,7 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
     };
     pending.pageView = updated;
     this.#context.setCurrentPageView(updated);
+    this.#visit?.update(updated);
     return updated;
   }
 
@@ -927,6 +992,10 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
       },
     };
 
+    this.#emitLogRecord(logRecord);
+  }
+
+  #emitLogRecord(logRecord: LogRecord): void {
     const hook = this.getConfig().applyCustomLogRecordData;
     if (hook) {
       this.#guard(() => hook(logRecord), "applyCustomLogRecordData hook failed");

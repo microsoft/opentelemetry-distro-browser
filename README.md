@@ -176,12 +176,15 @@ resource:
     "samplingPercentage": 50,
     "session": { "enabled": true },
     "userContext": { "enabled": true },
-    "pageView": { "redactedQueryParams": ["token"] }
+    "pageView": { "redactedQueryParams": ["token"], "autoTrackPageVisitTime": true }
   },
   "instrumentationOptions": { "errors": { "enabled": true }, "webVitals": { "enabled": true } },
   "resourceAttributes": { "service.name": "my-web-app", "service.version": "1.2.3" }
 }
 ```
+
+`cfg.pageView.autoTrackPageVisitTime` opts into previous-page visit timing; it defaults to `false`.
+See [Page visit time](#page-visit-time) for its measurement and storage behavior.
 
 Options that take functions, such as page-view hooks, processors, and context managers, require the
 npm package.
@@ -236,6 +239,25 @@ remains available in memory.
 | ----------------- | --------- | ------- | ----------------------------------------------------------------------------- |
 | `connectionString` | `string` | —       | Application Insights connection string, including sovereign-cloud endpoints  |
 | `disableBeacon`   | `boolean` | `false` | Disables the `sendBeacon` fallback used when a page unloads                    |
+
+### Page visit time
+
+Set `pageView: { autoTrackPageVisitTime: true }` at initialization to report the previous page's
+visit when the next page view starts. This is off by default and adds no telemetry unless enabled.
+It emits a portable `browser.page_visit` log with the previous page's name, sanitized URL, page-view
+ID and duration in milliseconds. Azure Monitor exports it as a separate `PageVisitTime` custom
+metric, not as the page-view load duration or an OpenTelemetry Metrics API instrument.
+
+Visit time runs from one page-view start to the next, including hidden-tab time; it is not active
+engagement time. No visit metric is emitted on `pagehide`, hidden visibility or unload, so the final
+visit is skipped if no next instrumented page starts.
+
+Same-origin, same-tab full navigations use `sessionStorage`, respecting `storage.enabled` and
+`storage.namePrefix`. If storage is disabled or unavailable, only in-memory SPA timing remains;
+back/forward cache away time cannot be bridged. For multiple instances sending to the same
+destination, keep initialization order consistent across pages; distinct `storage.namePrefix`
+values are recommended. See the [configuration reference](docs/configuration-reference.md#page-visit-time)
+and [event schema](docs/event-catalogue.md#page-visit-browserpage_visit).
 
 ### Browser instrumentations
 

@@ -1,7 +1,8 @@
 import { defineConfig, type TestUserConfig } from "vitest/config";
 import config, { browserInstances } from "./vitest.config.js";
 
-const historyHeavySuite = "test/internal/unit/pageViewInstrumentation.test.ts";
+const pageViewSuite = "test/internal/unit/pageViewInstrumentation.test.ts";
+const pageVisitSuite = "test/internal/unit/pageVisitInstrumentation.test.ts";
 type BrowserInstance = NonNullable<NonNullable<TestUserConfig["browser"]>["instances"]>[number];
 
 export default defineConfig({
@@ -14,8 +15,9 @@ export default defineConfig({
       instances: browserInstances.flatMap<BrowserInstance>((instance) =>
         instance.browser === "webkit"
           ? [
-              { ...instance, exclude: [historyHeavySuite] },
-              { ...instance, name: "webkit-page-view", include: [historyHeavySuite] },
+              { ...instance, exclude: [pageViewSuite, pageVisitSuite] },
+              { ...instance, name: "webkit-page-view", include: [pageViewSuite] },
+              { ...instance, name: "webkit-page-visit", include: [pageVisitSuite] },
             ]
           : [instance],
       ),

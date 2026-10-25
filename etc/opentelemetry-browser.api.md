@@ -138,6 +138,7 @@ export const OPENTELEMETRY_BROWSER_VERSION: string;
 // @public
 export interface PageViewInstrumentationConfig {
     readonly applyCustomLogRecordData?: (logRecord: LogRecord) => void;
+    readonly autoTrackPageVisitTime?: boolean;
     readonly enabled?: boolean;
     readonly redactedQueryParams?: readonly string[];
     readonly routeResolver?: () => string | undefined;

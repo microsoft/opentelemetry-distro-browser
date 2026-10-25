@@ -69,6 +69,7 @@ export interface SdkLoaderConfig {
   /** The data-only settings of `MicrosoftOpenTelemetryBrowserOptions.pageView`. */
   readonly pageView?: {
     readonly enabled?: boolean;
+    readonly autoTrackPageVisitTime?: boolean;
     readonly redactedQueryParams?: readonly string[];
     readonly softNavigationSettleTimeoutMs?: number;
     readonly useNavigationApiIfAvailable?: boolean;
@@ -212,6 +213,7 @@ const optionFields: Record<string, Record<string, FieldKind>> = {
   storage: { enabled: "boolean", namePrefix: "text" },
   pageView: {
     enabled: "boolean",
+    autoTrackPageVisitTime: "boolean",
     redactedQueryParams: "strings",
     softNavigationSettleTimeoutMs: "number",
     useNavigationApiIfAvailable: "boolean",

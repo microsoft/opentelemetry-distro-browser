@@ -158,10 +158,10 @@ aliases are added.
 
 ### Browser storage
 
-| Option               | Type      | Default | Behavior                                                                                                                                                                                                    |
-| -------------------- | --------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `storage.enabled`    | `boolean` | `true`  | `false` blocks all SDK-managed browser storage access for this handle, including later identity-control calls and the unsent telemetry buffer. Sessions use memory; managed anonymous identity is disabled. |
-| `storage.namePrefix` | `string`  | `""`    | Literal prefix for `opentelemetry-session`, `opentelemetry-user` and unsent telemetry buffer keys. For example, `"shop-"` produces `shop-opentelemetry-session` and `shop-opentelemetry-user`.              |
+| Option               | Type      | Default | Behavior                                                                                                                                                                                                                                                 |
+| -------------------- | --------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `storage.enabled`    | `boolean` | `true`  | `false` blocks all SDK-managed browser storage access for this handle, including later identity-control calls, the unsent telemetry buffer and page-visit persistence. Sessions and SPA visit timing use memory; managed anonymous identity is disabled. |
+| `storage.namePrefix` | `string`  | `""`    | Literal prefix for `opentelemetry-session`, `opentelemetry-user`, unsent telemetry buffer and page-visit state keys. For example, `"shop-"` produces `shop-opentelemetry-session` and `shop-opentelemetry-user`.                                         |
 
 Settings are captured at initialization and apply independently to each handle. A prefix isolates
 stored sessions and identities for applications on the same origin; it is not a security boundary.
@@ -174,8 +174,8 @@ change another handle's policy. Setting it to `false` takes precedence over `ses
 still be set and cleared in memory. Disabling storage does not erase existing data, disable telemetry
 collection or stop network requests. Custom processors/exporters must enforce their own storage policy.
 
-Sessions and identities use localStorage; unsent Azure Monitor telemetry uses sessionStorage. No
-cookies are created. Application Insights `cookieCfg` and cookie domain/path settings are separate
+Sessions and identities use localStorage; unsent Azure Monitor telemetry and opt-in page-visit state
+use sessionStorage. No cookies are created. Application Insights `cookieCfg` and cookie domain/path settings are separate
 cookie controls, not Web Storage settings. Its `enableSessionStorageBuffer` corresponds to the
 unsent telemetry buffer described under Azure Monitor, which is always on here unless
 `storage.enabled` is false.
@@ -236,15 +236,16 @@ storage enabled. The SDK does not replay storage operations from the disabled pe
 
 ## Page-view options
 
-| Option                                   | Type                             | Default and behavior                                                                                                                          |
-| ---------------------------------------- | -------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| `pageView.enabled`                       | `boolean`                        | `true`. `false` disables both built-in collection and its operation-correlation fallback; it does not remove code from bundles.               |
-| `pageView.routeResolver`                 | `() => string \| undefined`      | Unset. Return a route pattern such as `/orders/:id`, not a concrete customer URL. Called when navigation is observed and again at settlement. |
-| `pageView.redactedQueryParams`           | `readonly string[]`              | Built-in list below. A supplied list **replaces**, not extends, that list. Names are case-sensitive.                                          |
-| `pageView.sanitizeUrl`                   | `(url: string) => string`        | Unset. Sanitizes the page URL and referrer after built-in redaction.                                                                          |
-| `pageView.applyCustomLogRecordData`      | `(logRecord: LogRecord) => void` | Unset. Mutates the page-view log immediately before emission.                                                                                 |
-| `pageView.softNavigationSettleTimeoutMs` | `number`, milliseconds           | `10000`. Upper bound for settling soft navigations before emitting a capped duration.                                                         |
-| `pageView.useNavigationApiIfAvailable`   | `boolean`                        | `false`. Prefer the experimental Navigation API when present, otherwise use History-based observation.                                        |
+| Option                                   | Type                             | Default and behavior                                                                                                                                               |
+| ---------------------------------------- | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `pageView.enabled`                       | `boolean`                        | `true`. `false` disables both built-in collection and its operation-correlation fallback; it does not remove code from bundles.                                    |
+| `pageView.autoTrackPageVisitTime`        | `boolean`                        | `false`. Emit a separate `browser.page_visit` log for the previous page when the next page view starts. Requires built-in page views and a log pipeline to export. |
+| `pageView.routeResolver`                 | `() => string \| undefined`      | Unset. Return a route pattern such as `/orders/:id`, not a concrete customer URL. Called when navigation is observed and again at settlement.                      |
+| `pageView.redactedQueryParams`           | `readonly string[]`              | Built-in list below. A supplied list **replaces**, not extends, that list. Names are case-sensitive.                                                               |
+| `pageView.sanitizeUrl`                   | `(url: string) => string`        | Unset. Sanitizes the page URL and referrer after built-in redaction.                                                                                               |
+| `pageView.applyCustomLogRecordData`      | `(logRecord: LogRecord) => void` | Unset. Mutates the page-view log immediately before emission.                                                                                                      |
+| `pageView.softNavigationSettleTimeoutMs` | `number`, milliseconds           | `10000`. Upper bound for settling soft navigations before emitting a capped duration.                                                                              |
+| `pageView.useNavigationApiIfAvailable`   | `boolean`                        | `false`. Prefer the experimental Navigation API when present, otherwise use History-based observation.                                                             |
 
 Default sensitive parameter names are `sig`, `Signature`, `AWSAccessKeyId`, `X-Goog-Signature`,
 `X-Amz-Signature`, `X-Amz-Credential`, `X-Amz-Security-Token`, `code`, `token`, `access_token`,
@@ -260,6 +261,52 @@ The default name falls back from the route resolver to `document.title`, then `l
 Use route patterns for aggregation. Soft-navigation duration is a heuristic, not a document-load
 measurement. Pending page views are finalized when hidden, including tab switches; returning to a
 visible tab does not itself start another page view. See [duration sources](event-catalogue.md#page-view-duration-sources).
+
+### Page visit time
+
+Enable `pageView.autoTrackPageVisitTime` to measure elapsed milliseconds from the previous page-view
+start to the next page-view start. This includes hidden time, not just active engagement, and is
+separate from the page-view load/settle duration. The option defaults to `false`, so existing
+applications emit no extra telemetry. The portable `browser.page_visit` log carries the previous
+page's name, sanitized URL, page-view ID and elapsed duration; Azure Monitor maps it to the separate
+`PageVisitTime` custom metric. See the [event schema](event-catalogue.md#page-visit-browserpage_visit).
+
+SPA transitions use in-memory state. Full navigations on the same origin in the same tab use
+`sessionStorage` to hand the previous visit to the next instrumented page, respecting
+`storage.enabled` and `storage.namePrefix`. With no nonempty prefix, a string connection string
+automatically isolates state by destination. A nonempty `storage.namePrefix` is the entire
+destination identity for page-visit state, for both string and deferred connection strings. Dedicate
+each explicit prefix to one destination and keep it consistent across pages; changing the connection
+string's form does not change the visit namespace. Reusing a prefix for different destinations can
+mix their visits.
+
+Each namespace has instance slots. Multiple instances sharing a namespace must initialize in a
+consistent order across pages so their slots match; use distinct `storage.namePrefix` values to
+isolate them.
+When storage is disabled or unavailable, timing falls back to in-memory SPA transitions only.
+For a deferred Azure Monitor connection string, supply an explicit, destination-specific
+`storage.namePrefix` to enable cross-document persistence before resolution. Without it, timing
+stays in memory so an unknown destination cannot consume another destination's visit.
+
+Child frames always keep page-visit timing in memory, even with an explicit prefix. Same-origin
+frames share their parent's `sessionStorage`, but have independent instance slots; a prefix alone
+cannot establish browsing-context ownership. Child frames therefore neither consume nor overwrite
+the parent's visit state, and do not bridge full-document navigations. Their SPA visits still work.
+This restriction applies to page-visit persistence, not other SDK-managed storage.
+
+New tabs opened with `window.open()` can receive a copy of the opener's `sessionStorage`. Before
+restoring visits, the SDK compares a stable storage-owner marker with the accessible same-origin
+opener's marker. A matching copy loses only its page-visit entries and receives a new owner marker;
+it does not report the opener's still-active visit. Later same-tab navigations and reloads in the
+popup retain persistence, even if its opener has navigated. Application storage and `window.name`
+are not changed. If the opener is already closed or cross-origin before the popup first initializes
+tracking, the SDK cannot compare their markers and identify the copied state.
+
+No visit log or metric is emitted on `pagehide`, hidden visibility or unload. A final visit with no
+next instrumented page is skipped. On back/forward cache (BFCache) restore, the tracker reads the
+persistent successor visit rather than reusing the restored page's old in-memory visit, avoiding
+duplicate reporting. Without storage, the tracker drops its visit on `pagehide` and cannot bridge
+BFCache away time.
 
 ## Browser instrumentation options
 
@@ -335,19 +382,19 @@ unsent is retried by the next page load in the same tab through the `sessionStor
 `getSdkLoaderScript()` is exported from the ESM-only `@microsoft/opentelemetry-browser/snippet` entry.
 It generates a script; it does not itself initialize telemetry in the current page.
 
-| Option                                                                       | Default and behavior                                                                                                         |
-| ---------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| `connectionString`                                                           | Required non-empty string; becomes `cfg.azureMonitor.connectionString`.                                                      |
-| `src`                                                                        | This package version's immutable CDN IIFE URL. Custom URLs must expose `Microsoft.OpenTelemetry` as a classic script global. |
-| `crossOrigin`                                                                | `"anonymous"`. Applied to the injected script.                                                                               |
-| `integrity`                                                                  | Unset. Supply integrity metadata for the exact version and artifact.                                                         |
-| `loadDelay`                                                                  | Immediate injection. A nonnegative delay in milliseconds adds nonblocking delayed loading.                                   |
-| `cdnFallback`                                                                | `false`. Retry backup Azure Monitor CDN hosts; requires a recognized CDN source URL.                                         |
-| `reportLoadFailure`                                                          | `false`. Report an `SDKLoadFailed` exception after bundle load attempts fail.                                                |
-| `samplingPercentage`, `azureMonitor.disableBeacon`, `session`, `userContext` | Same meanings as initialization options above.                                                                               |
-| `pageView`                                                                   | Data-only settings: `enabled`, `redactedQueryParams`, `softNavigationSettleTimeoutMs`, `useNavigationApiIfAvailable`.        |
-| `instrumentationOptions`                                                     | JSON-only helper settings. Omitted: fetch/XHR defaults.                                                                      |
-| `resourceAttributes`                                                         | String, number or boolean attributes converted into a resource by the bundle.                                                |
+| Option                                                                       | Default and behavior                                                                                                                                              |
+| ---------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `connectionString`                                                           | Required non-empty string; becomes `cfg.azureMonitor.connectionString`.                                                                                           |
+| `src`                                                                        | This package version's immutable CDN IIFE URL. Custom URLs must expose `Microsoft.OpenTelemetry` as a classic script global.                                      |
+| `crossOrigin`                                                                | `"anonymous"`. Applied to the injected script.                                                                                                                    |
+| `integrity`                                                                  | Unset. Supply integrity metadata for the exact version and artifact.                                                                                              |
+| `loadDelay`                                                                  | Immediate injection. A nonnegative delay in milliseconds adds nonblocking delayed loading.                                                                        |
+| `cdnFallback`                                                                | `false`. Retry backup Azure Monitor CDN hosts; requires a recognized CDN source URL.                                                                              |
+| `reportLoadFailure`                                                          | `false`. Report an `SDKLoadFailed` exception after bundle load attempts fail.                                                                                     |
+| `samplingPercentage`, `azureMonitor.disableBeacon`, `session`, `userContext` | Same meanings as initialization options above.                                                                                                                    |
+| `pageView`                                                                   | Data-only settings: `enabled`, `autoTrackPageVisitTime` (default `false`), `redactedQueryParams`, `softNavigationSettleTimeoutMs`, `useNavigationApiIfAvailable`. |
+| `instrumentationOptions`                                                     | JSON-only helper settings. Omitted: fetch/XHR defaults.                                                                                                           |
+| `resourceAttributes`                                                         | String, number or boolean attributes converted into a resource by the bundle.                                                                                     |
 
 The generator accepts JSON-serializable settings, not functions or regular expressions. Processors,
 exporters, context managers, propagators and resource detectors require npm-based initialization.
