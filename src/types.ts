@@ -123,7 +123,8 @@ export interface MicrosoftOpenTelemetryBrowserTraceOptions {
 }
 
 /**
- * Session options, captured at initialization. Lifetimes must be finite and nonnegative.
+ * Session options. Lifetimes can be updated through updateCfg; enabled/persist are startup-only.
+ * Lifetimes must be finite and nonnegative.
  * Managed session IDs are added only when neither the record nor its resource has a non-empty
  * string `session.id`. Azure Monitor export prefers a valid record value over the resource.
  * @public
@@ -151,6 +152,10 @@ export interface MicrosoftOpenTelemetryBrowserSessionOptions {
  * @public
  */
 export interface MicrosoftOpenTelemetryBrowserOptions {
+  /** Application Insights inactivity lifetime in milliseconds. Zero restores 30 minutes. */
+  sessionRenewalMs?: number | undefined;
+  /** Application Insights maximum session lifetime in milliseconds. Zero restores 24 hours. */
+  sessionExpirationMs?: number | undefined;
   /**
    * Fixed percentage of traces and Azure Monitor log records retained, from 0 through 100.
    * Omit this option to use the OpenTelemetry SDK's parent-based always-on trace sampler and to
@@ -305,10 +310,14 @@ export interface MicrosoftOpenTelemetryBrowserUserContext {
  */
 export interface MicrosoftOpenTelemetryBrowser {
   /**
-   * Updates this instance's samplingPercentage without replacing providers or processors.
+   * Updates this instance's sampling percentage and session lifetimes without replacing providers.
    * The percentage must be finite and between 0 and 100. Explicit undefined restores the
    * parent-based trace sampler and disables percentage sampling for Azure Monitor logs.
    * Updates affect subsequent sampling decisions, not telemetry already sampled or queued.
+   * Session durations use seconds, with zero disabling expiration. The sessionRenewalMs and
+   * sessionExpirationMs aliases use milliseconds; zero restores the corresponding native default.
+   * Lifetimes retain current session timestamps and take effect on the next managed activity.
+   * Enabling sessions, persistence and browser storage remain startup-only settings.
    *
    * mergeExisting defaults to true, preserving omitted fields. False replaces the supported
    * runtime configuration, resetting omitted fields to their defaults; startup options are unchanged.

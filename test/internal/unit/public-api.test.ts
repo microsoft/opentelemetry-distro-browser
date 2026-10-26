@@ -40,6 +40,8 @@ it("exposes distro-owned configuration and lifecycle contracts", () => {
     | "instrumentations"
     | "pageView"
     | "session"
+    | "sessionRenewalMs"
+    | "sessionExpirationMs"
     | "storage"
     | "userContext"
     | "traces"
@@ -63,6 +65,18 @@ it("exposes distro-owned configuration and lifecycle contracts", () => {
   expectTypeOf<MicrosoftOpenTelemetryBrowserOptions["session"]>().toEqualTypeOf<
     MicrosoftOpenTelemetryBrowserSessionOptions | undefined
   >();
+  expectTypeOf<MicrosoftOpenTelemetryBrowserOptions["sessionRenewalMs"]>().toEqualTypeOf<
+    number | undefined
+  >();
+  expectTypeOf<MicrosoftOpenTelemetryBrowserOptions["sessionExpirationMs"]>().toEqualTypeOf<
+    number | undefined
+  >();
+  expectTypeOf<
+    Pick<MicrosoftOpenTelemetryBrowserOptions, "sessionRenewalMs" | "sessionExpirationMs">
+  >().toEqualTypeOf<{
+    sessionRenewalMs?: number | undefined;
+    sessionExpirationMs?: number | undefined;
+  }>();
   expectTypeOf<MicrosoftOpenTelemetryBrowserOptions["userContext"]>().toEqualTypeOf<
     { enabled?: boolean } | undefined
   >();
@@ -72,6 +86,12 @@ it("exposes distro-owned configuration and lifecycle contracts", () => {
   expectTypeOf<keyof MicrosoftOpenTelemetryBrowserSessionOptions>().toEqualTypeOf<
     "enabled" | "persist" | "inactivityTimeout" | "maxDuration"
   >();
+  expectTypeOf<MicrosoftOpenTelemetryBrowserSessionOptions>().toEqualTypeOf<{
+    enabled?: boolean;
+    persist?: boolean;
+    inactivityTimeout?: number;
+    maxDuration?: number;
+  }>();
   expectTypeOf<
     Pick<MicrosoftOpenTelemetryBrowserSessionOptions, "inactivityTimeout" | "maxDuration">
   >().toEqualTypeOf<Pick<SessionManagerConfig, "inactivityTimeout" | "maxDuration">>();
@@ -110,16 +130,27 @@ it("exposes distro-owned configuration and lifecycle contracts", () => {
   >().toEqualTypeOf<MicrosoftOpenTelemetryBrowserUserContext>();
 });
 
-it("exposes only sampling updates on the runtime configuration API", () => {
+it("exposes sampling and session lifetime updates on the runtime configuration API", () => {
   expectTypeOf<keyof MicrosoftOpenTelemetryBrowser>().toEqualTypeOf<
     "updateCfg" | "userContext" | "forceFlush" | "shutdown"
   >();
-  expectTypeOf<
-    keyof MicrosoftOpenTelemetryBrowserConfigurationUpdate
-  >().toEqualTypeOf<"samplingPercentage">();
+  expectTypeOf<keyof MicrosoftOpenTelemetryBrowserConfigurationUpdate>().toEqualTypeOf<
+    "samplingPercentage" | "session" | "sessionRenewalMs" | "sessionExpirationMs"
+  >();
   expectTypeOf<MicrosoftOpenTelemetryBrowserConfigurationUpdate>().toEqualTypeOf<{
     samplingPercentage?: number | undefined;
+    session?:
+      | {
+          inactivityTimeout?: number | undefined;
+          maxDuration?: number | undefined;
+        }
+      | undefined;
+    sessionRenewalMs?: number | undefined;
+    sessionExpirationMs?: number | undefined;
   }>();
+  expectTypeOf<
+    keyof NonNullable<MicrosoftOpenTelemetryBrowserConfigurationUpdate["session"]>
+  >().toEqualTypeOf<"inactivityTimeout" | "maxDuration">();
   expectTypeOf<MicrosoftOpenTelemetryBrowser["updateCfg"]>().toEqualTypeOf<
     (
       patch: MicrosoftOpenTelemetryBrowserConfigurationUpdate,
