@@ -129,42 +129,218 @@ function legacyUserStorage(namePrefix: string) {
   return { storage, key, otherKey, legacy };
 }
 
-it.each(["", "shop-"])(
-  "preserves the backup after a transient anonymous-cookie hook failure (prefix=%j)",
-  async (prefix) => {
-    const key = `${prefix}opentelemetry-session`;
-    const now = Date.now();
-    const backup = JSON.stringify({
-      id: "restored-after-read-failure",
-      startTimestamp: now,
-      lastActivityTimestamp: now,
-    });
-    preserve(key, backup);
-    const anonymous = encodeURIComponent(
-      JSON.stringify({ anonymousId: "existing-user", acquisitionTimestamp: now }),
-    );
-    const write = vi.fn();
-    let failed = false;
-    const getCookie = vi.fn((name: string) => {
-      if (name !== `${prefix}opentelemetry-user`) return "";
-      if (!failed) {
+function sessionRecoveryFixture(prefix: string, failedCookie: "session" | "user") {
+  const sessionKey = `${prefix}opentelemetry-session`;
+  const userKey = `${prefix}opentelemetry-user`;
+  const otherPrefix = prefix ? "" : "shop-";
+  const otherSessionKey = `${otherPrefix}opentelemetry-session`;
+  const now = Date.now();
+  const backupSession = {
+    id: "0123456789abcdef0123456789abcdef",
+    startTimestamp: now - 2000,
+    lastActivityTimestamp: now - 1000,
+  };
+  const cookieSession = {
+    id: "fedcba9876543210fedcba9876543210",
+    startTimestamp: now - 1000,
+    lastActivityTimestamp: now - 500,
+  };
+  const backup = JSON.stringify(backupSession);
+  const otherBackup = JSON.stringify({
+    ...backupSession,
+    id: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  });
+  preserve(sessionKey, backup);
+  preserve(otherSessionKey, otherBackup);
+  const anonymous = encodeURIComponent(
+    JSON.stringify({ anonymousId: "existing-user", acquisitionTimestamp: now - 2000 }),
+  );
+  const otherCookies = new Map([
+    [otherSessionKey, encodeURIComponent(otherBackup)],
+    [
+      `${otherPrefix}opentelemetry-user`,
+      encodeURIComponent(
+        JSON.stringify({ anonymousId: "other-user", acquisitionTimestamp: now - 2000 }),
+      ),
+    ],
+    [
+      `${otherPrefix}opentelemetry-auth-user`,
+      encodeURIComponent(JSON.stringify({ authenticatedUserId: "other-login" })),
+    ],
+  ]);
+  const cookies = new Map(otherCookies);
+  let failed = false;
+  const cookieCfg = {
+    getCookie: vi.fn((name: string) => {
+      if (name === `${prefix}opentelemetry-${failedCookie}` && !failed) {
         failed = true;
         throw new Error("transient cookie read failure");
       }
-      return anonymous;
-    });
+      return cookies.get(name) ?? "";
+    }),
+    setCookie: vi.fn((name: string, formatted: string) => {
+      cookies.set(name, formatted.split(";")[0]!);
+    }),
+    delCookie: vi.fn((name: string) => {
+      cookies.delete(name);
+    }),
+  };
+  return {
+    sessionKey,
+    userKey,
+    backupSession,
+    cookieSession,
+    backup,
+    anonymous,
+    cookies,
+    cookieCfg,
+    expectOtherPrefixUnchanged() {
+      expect(localStorage.getItem(otherSessionKey)).toBe(otherBackup);
+      for (const [name, value] of otherCookies) expect(cookies.get(name)).toBe(value);
+      for (const operation of [cookieCfg.setCookie, cookieCfg.delCookie]) {
+        expect(operation.mock.calls.every(([name]) => name.startsWith(prefix))).toBe(true);
+        expect(operation.mock.calls.some(([name]) => otherCookies.has(name))).toBe(false);
+      }
+    },
+  };
+}
+
+it.each(["", "shop-"])(
+  "restores the authoritative cookie after a session-cookie read failure without replacing it from backup (prefix=%j)",
+  async (prefix) => {
+    const fixture = sessionRecoveryFixture(prefix, "session");
+    const { sessionKey, userKey, backup, cookieSession, anonymous, cookies, cookieCfg } = fixture;
+    const authoritative = encodeURIComponent(JSON.stringify(cookieSession));
+    cookies.set(userKey, anonymous);
+    cookies.set(sessionKey, authoritative);
     const { handle, emit } = await initialize({
       storage: { namePrefix: prefix },
-      cookieCfg: { getCookie, setCookie: write },
+      cookieCfg,
     });
-    expect(localStorage.getItem(key)).toBe(backup);
-    expect(write.mock.calls.some(([name]) => name === `${prefix}opentelemetry-user`)).toBe(false);
+    expect(cookieCfg.getCookie.mock.calls.filter(([name]) => name === sessionKey)).toHaveLength(1);
+    expect(cookieCfg.setCookie).not.toHaveBeenCalled();
+    expect(cookieCfg.delCookie).not.toHaveBeenCalled();
+    expect(cookies.get(sessionKey)).toBe(authoritative);
+    expect(localStorage.getItem(sessionKey)).toBe(backup);
+
     expect(emit()).toMatchObject({
-      "session.id": "restored-after-read-failure",
+      "session.id": cookieSession.id,
       "enduser.pseudo.id": "existing-user",
     });
-    expect(localStorage.getItem(key)).toBe(backup);
+    expect(JSON.parse(decodeURIComponent(cookies.get(sessionKey)!))).toMatchObject({
+      id: cookieSession.id,
+      startTimestamp: cookieSession.startTimestamp,
+    });
+    expect(cookies.get(userKey)).toBe(anonymous);
+    expect(localStorage.getItem(sessionKey)).toBe(backup);
     await handle.shutdown();
+    expect(JSON.parse(localStorage.getItem(sessionKey)!)).toMatchObject({
+      id: cookieSession.id,
+      startTimestamp: cookieSession.startTimestamp,
+    });
+    fixture.expectOtherPrefixUnchanged();
+  },
+);
+
+it.each(["", "shop-"])(
+  "invalidates an already restored backup before first enrichment when late anonymous recovery finds no cookies (prefix=%j)",
+  async (prefix) => {
+    const fixture = sessionRecoveryFixture(prefix, "user");
+    const { sessionKey, userKey, backupSession, backup, cookies, cookieCfg } = fixture;
+    const readStorage = vi.spyOn(Storage.prototype, "getItem");
+    const { handle, emit } = await initialize({
+      storage: { namePrefix: prefix },
+      cookieCfg,
+    });
+    expect(cookieCfg.getCookie.mock.calls.filter(([name]) => name === userKey)).toHaveLength(1);
+    expect(cookieCfg.getCookie).toHaveBeenCalledWith(sessionKey);
+    expect(readStorage).toHaveBeenCalledWith(sessionKey);
+    expect(localStorage.getItem(sessionKey)).toBe(backup);
+    expect(cookies.has(userKey)).toBe(false);
+    expect(cookies.has(sessionKey)).toBe(false);
+    expect(cookieCfg.setCookie).not.toHaveBeenCalled();
+
+    // emit() starts the span before the log and checks that both receive the same attributes.
+    const attributes = emit();
+    expect(attributes["session.id"]).toMatch(/^[0-9a-f]{32}$/);
+    expect(attributes["session.id"]).not.toBe(backupSession.id);
+    expect(attributes["enduser.pseudo.id"]).toMatch(/^[0-9a-f]{32}$/);
+    expect(JSON.parse(decodeURIComponent(cookies.get(userKey)!))).toMatchObject({
+      anonymousId: attributes["enduser.pseudo.id"],
+    });
+    expect(JSON.parse(decodeURIComponent(cookies.get(sessionKey)!))).toMatchObject({
+      id: attributes["session.id"],
+    });
+    expect(localStorage.getItem(sessionKey)).toBeNull();
+    await handle.shutdown();
+    expect(JSON.parse(localStorage.getItem(sessionKey)!)).toMatchObject({
+      id: attributes["session.id"],
+    });
+    fixture.expectOtherPrefixUnchanged();
+  },
+);
+
+it.each(["", "shop-"])(
+  "preserves a cookie-derived session when late anonymous recovery finds no identity (prefix=%j)",
+  async (prefix) => {
+    const fixture = sessionRecoveryFixture(prefix, "user");
+    const { sessionKey, userKey, backup, cookieSession, cookies, cookieCfg } = fixture;
+    const authoritative = encodeURIComponent(JSON.stringify(cookieSession));
+    cookies.set(sessionKey, authoritative);
+    const { handle, emit } = await initialize({
+      storage: { namePrefix: prefix },
+      cookieCfg,
+    });
+    expect(cookieCfg.getCookie.mock.calls.filter(([name]) => name === userKey)).toHaveLength(1);
+    expect(cookies.has(userKey)).toBe(false);
+    expect(cookies.get(sessionKey)).toBe(authoritative);
+    expect(localStorage.getItem(sessionKey)).toBe(backup);
+    expect(cookieCfg.setCookie).not.toHaveBeenCalled();
+
+    const attributes = emit();
+    expect(attributes["session.id"]).toBe(cookieSession.id);
+    expect(attributes["enduser.pseudo.id"]).toMatch(/^[0-9a-f]{32}$/);
+    expect(JSON.parse(decodeURIComponent(cookies.get(userKey)!))).toMatchObject({
+      anonymousId: attributes["enduser.pseudo.id"],
+    });
+    expect(JSON.parse(decodeURIComponent(cookies.get(sessionKey)!))).toMatchObject({
+      id: cookieSession.id,
+      startTimestamp: cookieSession.startTimestamp,
+    });
+    await handle.shutdown();
+    expect(JSON.parse(localStorage.getItem(sessionKey)!)).toMatchObject({
+      id: cookieSession.id,
+      startTimestamp: cookieSession.startTimestamp,
+    });
+    fixture.expectOtherPrefixUnchanged();
+  },
+);
+
+it.each(["", "shop-"])(
+  "preserves the backup when late anonymous recovery restores an existing identity (prefix=%j)",
+  async (prefix) => {
+    const fixture = sessionRecoveryFixture(prefix, "user");
+    const { sessionKey, userKey, backupSession, backup, anonymous, cookies, cookieCfg } = fixture;
+    cookies.set(userKey, anonymous);
+    const { handle, emit } = await initialize({
+      storage: { namePrefix: prefix },
+      cookieCfg,
+    });
+    expect(localStorage.getItem(sessionKey)).toBe(backup);
+    expect(cookieCfg.setCookie).not.toHaveBeenCalled();
+    expect(cookieCfg.getCookie.mock.calls.filter(([name]) => name === userKey)).toHaveLength(1);
+    expect(emit()).toMatchObject({
+      "session.id": backupSession.id,
+      "enduser.pseudo.id": "existing-user",
+    });
+    expect(cookies.get(userKey)).toBe(anonymous);
+    expect(localStorage.getItem(sessionKey)).toBe(backup);
+    await handle.shutdown();
+    expect(JSON.parse(localStorage.getItem(sessionKey)!)).toMatchObject({
+      id: backupSession.id,
+      startTimestamp: backupSession.startTimestamp,
+    });
+    fixture.expectOtherPrefixUnchanged();
   },
 );
 

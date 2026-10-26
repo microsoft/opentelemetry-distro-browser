@@ -112,6 +112,52 @@ it("falls back to a missing cookie's storage backup and migrates it on activity"
   expect(storage.setItem).not.toHaveBeenCalled();
 });
 
+it.each(["existing", "missing", "malformed"])(
+  "keeps failed session reads unresolved until recovery (%s cookie)",
+  async (state) => {
+    const { storage } = fakeBackends();
+    storage.getItem.mockReturnValue({
+      success: true,
+      value: JSON.stringify({ id: "backup", startTimestamp: Date.now() }),
+    });
+    const values = new Map<string, string>();
+    if (state === "existing") {
+      values.set(key, encode({ id: "authoritative", startTimestamp: Date.now() }));
+    } else if (state === "malformed") values.set(key, "%");
+    let unavailable = true;
+    const setCookie = vi.fn((name: string, formatted: string) => {
+      values.set(name, formatted.split(";")[0]!);
+    });
+    const cookies = createCookieManager({
+      getCookie(name) {
+        if (unavailable) throw new Error("cookie read unavailable");
+        return values.get(name) ?? "";
+      },
+      setCookie,
+    });
+    const session = createSession({}, storage, cookies);
+    await session.start();
+    expect(session.getSessionId()).toBeNull();
+    session.backup();
+    expect(storage.getItem).not.toHaveBeenCalled();
+    expect(storage.setItem).not.toHaveBeenCalled();
+    expect(setCookie).not.toHaveBeenCalled();
+
+    unavailable = false;
+    const id = session.getSessionId();
+    if (state === "existing") expect(id).toBe("authoritative");
+    else if (state === "missing") expect(id).toBe("backup");
+    else expect(id).toMatch(/^[0-9a-f]{32}$/);
+    expect(session.getSessionId()).toBe(id);
+    expect(decode(values.get(key)!)).toHaveProperty("id", id);
+    expect(storage.getItem).toHaveBeenCalledTimes(state === "missing" ? 1 : 0);
+    session.backup();
+    expect(JSON.parse(storage.setItem.mock.calls.at(-1)![1])).toHaveProperty("id", id);
+    session.shutdown();
+    cookies.shutdown();
+  },
+);
+
 it("never restores a discarded user backup even when its removal fails", async () => {
   const { cookies, storage } = fakeBackends();
   storage.getItem.mockReturnValue({
