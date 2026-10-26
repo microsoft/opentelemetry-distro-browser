@@ -4,12 +4,23 @@
 import { validateSamplingPercentage } from "../sampling.js";
 
 /**
- * Supported runtime updates. Undefined restores the default parent-based sampling policy.
+ * Supported runtime updates. Explicit undefined restores the corresponding native default.
  * @public
  */
 export interface MicrosoftOpenTelemetryBrowserConfigurationUpdate {
   /** Finite percentage from 0 through 100. Omission retains the current value when merging. */
   samplingPercentage?: number | undefined;
+  /** Session lifetimes in seconds. Zero disables the corresponding expiration check. */
+  session?:
+    | {
+        inactivityTimeout?: number | undefined;
+        maxDuration?: number | undefined;
+      }
+    | undefined;
+  /** Application Insights inactivity lifetime in milliseconds; zero restores 30 minutes. */
+  sessionRenewalMs?: number | undefined;
+  /** Application Insights maximum lifetime in milliseconds; zero restores 24 hours. */
+  sessionExpirationMs?: number | undefined;
 }
 
 /**
@@ -21,39 +32,103 @@ export interface MicrosoftOpenTelemetryBrowserConfigurationUpdateResult {
   readonly changedPaths: readonly string[];
 }
 
-/** Captures data before queuing, without invoking application getters. */
-function samplingPercentage(
-  patch: MicrosoftOpenTelemetryBrowserConfigurationUpdate,
-): { value: number | undefined } | undefined {
-  const prototype: unknown =
-    patch && typeof patch === "object" ? Object.getPrototypeOf(patch) : undefined;
-  if (prototype !== Object.prototype && prototype !== null) {
-    throw new TypeError("Configuration must be a plain object.");
-  }
-  for (const key of Reflect.ownKeys(patch)) {
-    if (key !== "samplingPercentage") {
-      throw new TypeError(`Unsupported configuration path: ${String(key)}.`);
-    }
-  }
-  const descriptor = Object.getOwnPropertyDescriptor(patch, "samplingPercentage");
-  if (descriptor && !("value" in descriptor)) {
-    throw new TypeError("samplingPercentage must be a data property.");
-  }
-  const value: unknown = descriptor?.value;
-  if (value !== undefined && typeof value !== "number") {
-    throw new TypeError("samplingPercentage must be a number.");
-  }
-  if (value !== undefined) validateSamplingPercentage(value);
-  // Descriptors are fresh data objects, so later patch mutations cannot change the captured value.
-  return descriptor as { value: number | undefined } | undefined;
+const defaults = { inactivityTimeout: 1800, maxDuration: 86400 };
+type Lifetimes = typeof defaults;
+interface CapturedUpdate extends Partial<Lifetimes> {
+  samplingPercentage?: number | undefined;
 }
 
-/** Sampling-only instance controller; publication has no external lifecycle side effects. */
+/** Captures own data properties before queuing, without invoking application getters. */
+function fields(value: unknown, path: string, allowed: readonly string[]): Record<string, unknown> {
+  const prototype: unknown =
+    value && typeof value === "object" ? Object.getPrototypeOf(value) : undefined;
+  if (prototype !== Object.prototype && prototype !== null) {
+    throw new TypeError(`${path} must be a plain object.`);
+  }
+  const result: Record<string, unknown> = {};
+  for (const key of Reflect.ownKeys(value as object)) {
+    if (typeof key !== "string" || !allowed.includes(key)) {
+      throw new TypeError(`Unsupported configuration path: ${path}${String(key)}.`);
+    }
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!descriptor || !("value" in descriptor)) {
+      throw new TypeError(`${path}${key} must be a data property.`);
+    }
+    result[key] = descriptor.value as unknown;
+  }
+  return result;
+}
+
+function capture(patch: MicrosoftOpenTelemetryBrowserConfigurationUpdate): CapturedUpdate {
+  const input = fields(patch, "", [
+    "samplingPercentage",
+    "session",
+    "sessionRenewalMs",
+    "sessionExpirationMs",
+  ]);
+  const result: CapturedUpdate = {};
+  if (Object.hasOwn(input, "samplingPercentage")) {
+    const value = input.samplingPercentage;
+    if (value !== undefined && typeof value !== "number") {
+      throw new TypeError("samplingPercentage must be a number.");
+    }
+    result.samplingPercentage = value === undefined ? undefined : validateSamplingPercentage(value);
+  }
+  const session = Object.hasOwn(input, "session")
+    ? input.session === undefined
+      ? { inactivityTimeout: undefined, maxDuration: undefined }
+      : fields(input.session, "session.", Object.keys(defaults))
+    : {};
+  for (const key of Object.keys(defaults) as (keyof Lifetimes)[]) {
+    const alias = key === "inactivityTimeout" ? "sessionRenewalMs" : "sessionExpirationMs";
+    function duration(value: unknown, name: string): number {
+      if (value === undefined) return defaults[key];
+      if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+        throw new RangeError(
+          `${name} must be a finite, nonnegative number of ${name === alias ? "milliseconds" : "seconds"}.`,
+        );
+      }
+      if (name !== alias || value === 0) return name === alias ? defaults[key] : value;
+      const seconds = value / 1000;
+      if (seconds === 0) throw new RangeError(`${name} is too small to represent in seconds.`);
+      return seconds;
+    }
+    if (Object.hasOwn(session, key)) result[key] = duration(session[key], `session.${key}`);
+    if (Object.hasOwn(input, alias)) {
+      const value = duration(input[alias], alias);
+      if (Object.hasOwn(result, key) && result[key] !== value) {
+        throw new TypeError(`Conflicting configuration paths: session.${key} and ${alias}.`);
+      }
+      result[key] = value;
+    }
+  }
+  return result;
+}
+
+function snapshot(
+  update: CapturedUpdate,
+  previous?: { readonly samplingPercentage: number | undefined; readonly session: Lifetimes },
+) {
+  return Object.freeze({
+    samplingPercentage: Object.hasOwn(update, "samplingPercentage")
+      ? update.samplingPercentage
+      : previous?.samplingPercentage,
+    session: Object.freeze({
+      inactivityTimeout:
+        update.inactivityTimeout ??
+        previous?.session.inactivityTimeout ??
+        defaults.inactivityTimeout,
+      maxDuration: update.maxDuration ?? previous?.session.maxDuration ?? defaults.maxDuration,
+    }),
+  });
+}
+
+/** Instance controller; publishing validated lifetime policies never touches sessions or storage. */
 export function createRuntimeConfiguration(
   initial: MicrosoftOpenTelemetryBrowserConfigurationUpdate,
   isStopped: () => boolean,
 ) {
-  let current = Object.freeze({ samplingPercentage: samplingPercentage(initial)?.value });
+  let current = snapshot(capture(initial));
   let revision = 0;
   let queue = Promise.resolve();
 
@@ -63,12 +138,12 @@ export function createRuntimeConfiguration(
       patch: MicrosoftOpenTelemetryBrowserConfigurationUpdate,
       mergeExisting = true,
     ): Promise<MicrosoftOpenTelemetryBrowserConfigurationUpdateResult> {
-      let update: ReturnType<typeof samplingPercentage>;
+      let update: CapturedUpdate;
       try {
         if (typeof mergeExisting !== "boolean") {
           throw new TypeError("mergeExisting must be a boolean.");
         }
-        update = samplingPercentage(patch);
+        update = capture(patch);
       } catch (error) {
         return Promise.reject(
           error instanceof Error
@@ -78,15 +153,20 @@ export function createRuntimeConfiguration(
       }
       const operation = queue.then(() => {
         if (isStopped()) throw new Error("Telemetry instance is stopped.");
-        const value = update || !mergeExisting ? update?.value : current.samplingPercentage;
-        const changed = value !== current.samplingPercentage;
-        if (changed) {
-          current = Object.freeze({ samplingPercentage: value });
+        const next = snapshot(update, mergeExisting ? current : undefined);
+        const changedPaths: string[] = [];
+        if (next.samplingPercentage !== current.samplingPercentage)
+          changedPaths.push("samplingPercentage");
+        for (const key of Object.keys(defaults) as (keyof Lifetimes)[]) {
+          if (next.session[key] !== current.session[key]) changedPaths.push(`session.${key}`);
+        }
+        if (changedPaths.length) {
+          current = next;
           revision++;
         }
         return Object.freeze({
           revision,
-          changedPaths: Object.freeze(changed ? ["samplingPercentage"] : []),
+          changedPaths: Object.freeze(changedPaths),
         });
       });
       // Invalid or stopped updates must not poison later queued work.

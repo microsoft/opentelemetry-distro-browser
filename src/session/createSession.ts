@@ -26,6 +26,7 @@ export function createSession(
     "localStorage",
     "Session storage unavailable; using an in-memory session.",
   ),
+  readLifetimes?: () => { readonly inactivityTimeout: number; readonly maxDuration: number },
 ) {
   const inactivityTimeout = lifetimeSeconds(
     options.inactivityTimeout,
@@ -38,11 +39,13 @@ export function createSession(
   let lastActivityTimestamp = Date.now();
 
   function expired(session: Session, now: number): boolean {
+    const policy = readLifetimes?.() ?? { inactivityTimeout, maxDuration };
     return (
       now < session.startTimestamp ||
       now < lastActivityTimestamp ||
-      (inactivityTimeout > 0 && (now - lastActivityTimestamp) / 1000 >= inactivityTimeout) ||
-      (maxDuration > 0 && (now - session.startTimestamp) / 1000 >= maxDuration)
+      (policy.inactivityTimeout > 0 &&
+        (now - lastActivityTimestamp) / 1000 >= policy.inactivityTimeout) ||
+      (policy.maxDuration > 0 && (now - session.startTimestamp) / 1000 >= policy.maxDuration)
     );
   }
 

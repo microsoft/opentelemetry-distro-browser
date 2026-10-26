@@ -6,6 +6,8 @@ All notable changes to this package are documented in this file.
 
 ### Added
 
+- Support per-instance runtime session lifetime updates and Application Insights millisecond aliases
+  `sessionRenewalMs` and `sessionExpirationMs` at initialization and through `updateCfg`.
 - Support per-instance runtime sampling updates through dynamic configuration
 - Add opt-in `pageView.autoTrackPageVisitTime` to report previous-page visit duration as an
   Application Insights `PageVisitTime` metric across SPA and full-page navigation.
