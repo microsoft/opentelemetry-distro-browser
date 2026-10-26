@@ -7,6 +7,7 @@ import {
   createSessionManager,
 } from "@opentelemetry/browser-sdk/session";
 import type { Session, SessionStore } from "@opentelemetry/browser-sdk/session";
+import type { CookieReadResult } from "../storage/cookieManager.js";
 import { createKeyValueStorage, type KeyValueStorage } from "../storage/keyValueStorage.js";
 import type {
   MicrosoftOpenTelemetryBrowserCookieManager,
@@ -36,7 +37,9 @@ export function createSession(
     "localStorage",
     "Session storage unavailable; using an in-memory session.",
   ),
-  cookies?: MicrosoftOpenTelemetryBrowserCookieManager,
+  cookies?: MicrosoftOpenTelemetryBrowserCookieManager & {
+    read?: (name: string) => CookieReadResult;
+  },
   cookieName = storageKey,
 ) {
   const inactivityTimeout = lifetimeSeconds(
@@ -51,6 +54,8 @@ export function createSession(
   let currentSession: Session | undefined;
   let lastCookieWrite: number | undefined;
   let ignoreBackup = false;
+  let readFailed = false;
+  let restoredFromBackup = false;
 
   function expired(session: Session, now: number): boolean {
     return (
@@ -110,71 +115,85 @@ export function createSession(
     }
   }
 
+  function restore(): Session | null {
+    if (!persist) return null;
+    // The upstream store collapses malformed JSON and stored null into an absent key.
+    let value: string | null = null;
+    if (cookies) {
+      try {
+        const result = cookies.read
+          ? cookies.read(cookieName)
+          : { success: true as const, value: cookies.get(cookieName) };
+        readFailed = !result.success;
+        if (!result.success) return null;
+        value = result.value || null;
+      } catch {
+        readFailed = true;
+        return null;
+      }
+    }
+    const fromBackup = value === null;
+    if (value === null) {
+      if (ignoreBackup) return null;
+      const result = storage?.getItem(storageKey);
+      if (!result?.success || result.value === null) return null;
+      value = result.value;
+    } else {
+      try {
+        value = decodeURIComponent(value);
+      } catch {
+        // A present malformed cookie is authoritative; do not resurrect a storage backup.
+        return null;
+      }
+    }
+    let session: unknown;
+    try {
+      session = JSON.parse(value);
+    } catch (error) {
+      if (!(error instanceof SyntaxError)) throw error;
+    }
+    if (
+      typeof session === "object" &&
+      session !== null &&
+      "id" in session &&
+      typeof session.id === "string" &&
+      session.id.length > 0 &&
+      "startTimestamp" in session &&
+      typeof session.startTimestamp === "number" &&
+      Number.isFinite(session.startTimestamp) &&
+      session.startTimestamp >= 0 &&
+      session.startTimestamp <= Date.now()
+    ) {
+      const lastActivity =
+        "lastActivityTimestamp" in session ? session.lastActivityTimestamp : session.startTimestamp;
+      if (
+        typeof lastActivity === "number" &&
+        Number.isFinite(lastActivity) &&
+        lastActivity >= session.startTimestamp &&
+        lastActivity <= Date.now()
+      ) {
+        lastActivityTimestamp = lastActivity;
+        const restored = { id: session.id, startTimestamp: session.startTimestamp };
+        if (expired(restored, Date.now())) return null;
+        currentSession = restored;
+        restoredFromBackup = fromBackup;
+        return restored;
+      }
+    }
+    diag.warn("Invalid stored session; creating a new session.");
+    return null;
+  }
+
   const store: SessionStore = {
     get() {
-      if (!persist) return Promise.resolve(null);
-      // The upstream store collapses malformed JSON and stored null into an absent key.
-      let value: string | null = null;
-      if (cookies) {
-        try {
-          value = cookies.get(cookieName) || null;
-        } catch {
-          return Promise.resolve(null);
-        }
-      }
-      if (value === null) {
-        if (ignoreBackup) return Promise.resolve(null);
-        const result = storage?.getItem(storageKey);
-        if (!result?.success || result.value === null) return Promise.resolve(null);
-        value = result.value;
-      } else {
-        try {
-          value = decodeURIComponent(value);
-        } catch {
-          // A present malformed cookie is authoritative; do not resurrect a storage backup.
-          return Promise.resolve(null);
-        }
-      }
-      let session: unknown;
-      try {
-        session = JSON.parse(value);
-      } catch (error) {
-        if (!(error instanceof SyntaxError)) throw error;
-      }
-      if (
-        typeof session === "object" &&
-        session !== null &&
-        "id" in session &&
-        typeof session.id === "string" &&
-        session.id.length > 0 &&
-        "startTimestamp" in session &&
-        typeof session.startTimestamp === "number" &&
-        Number.isFinite(session.startTimestamp) &&
-        session.startTimestamp >= 0 &&
-        session.startTimestamp <= Date.now()
-      ) {
-        const lastActivity =
-          "lastActivityTimestamp" in session
-            ? session.lastActivityTimestamp
-            : session.startTimestamp;
-        if (
-          typeof lastActivity === "number" &&
-          Number.isFinite(lastActivity) &&
-          lastActivity >= session.startTimestamp &&
-          lastActivity <= Date.now()
-        ) {
-          lastActivityTimestamp = lastActivity;
-          const restored = { id: session.id, startTimestamp: session.startTimestamp };
-          if (expired(restored, Date.now())) return Promise.resolve(null);
-          currentSession = restored;
-          return Promise.resolve(restored);
-        }
-      }
-      diag.warn("Invalid stored session; creating a new session.");
-      return Promise.resolve(null);
+      return Promise.resolve(restore());
     },
     save(session) {
+      // Upstream creates a provisional session after a failed read. Do not persist it or
+      // expose it as authoritative; the next enrichment retries the synchronous restore.
+      if (readFailed) return Promise.resolve();
       currentSession = session;
+      restoredFromBackup = false;
       lastActivityTimestamp = session.startTimestamp;
       save(session, true);
       return Promise.resolve();
@@ -193,6 +212,12 @@ export function createSession(
     /** A missing user cookie must not resurrect the previous user's session backup. */
     discardBackup() {
       ignoreBackup = true;
+      if (restoredFromBackup) {
+        currentSession = undefined;
+        restoredFromBackup = false;
+        manager.shutdown();
+        manager = createManager();
+      }
       if (persist) storage?.removeItem(storageKey);
     },
     /** Saves the latest activity to the optional Web Storage backup without creating a session. */
@@ -200,9 +225,16 @@ export function createSession(
       if (persist && currentSession) storage?.setItem(storageKey, serialize(currentSession));
     },
     getSessionId() {
-      const session = manager.getSession();
+      if (readFailed) {
+        restore();
+        if (readFailed) return null;
+        manager.shutdown();
+        manager = createManager();
+      }
+      const session = currentSession ?? manager.getSession();
       const now = Date.now();
       if (expired(session, now)) {
+        currentSession = undefined;
         manager.shutdown();
         manager = createManager();
         return manager.getSession().id;
