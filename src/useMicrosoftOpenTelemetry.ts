@@ -16,7 +16,8 @@ import { beginUnloading, endUnloading } from "./exporter/common.js";
 import type { AzureMonitorLogRecordExporter } from "./exporter/log.js";
 import type { AzureMonitorSpanExporter } from "./exporter/trace.js";
 import { createAzureMonitorProcessors } from "./exporter/createAzureMonitorProcessors.js";
-import { PageViewInstrumentation } from "./instrumentation/pageView/index.js";
+import { parseConnectionString } from "./exporter/connectionStringParser.js";
+import { generatePageViewId, PageViewInstrumentation } from "./instrumentation/pageView/index.js";
 import { PageViewCorrelation } from "./instrumentation/pageView/pageViewCorrelation.js";
 import {
   claimInstrumentations,
@@ -43,6 +44,42 @@ import type {
   MicrosoftOpenTelemetryBrowserOptions,
 } from "./types.js";
 
+/** Fork opener-copied visit state once, while retaining later same-tab document handoffs. */
+function preparePageVisitStorage(): boolean {
+  try {
+    const storage = window.sessionStorage;
+    const ownerKey = "otel.pageVisitOwner";
+    const owner = storage.getItem(ownerKey);
+    let copied = false;
+    try {
+      const opener = window.opener as Window | null;
+      // Frames use their top-level tab's owner. Unlike a visit ID, this marker survives
+      // opener navigation before the new tab initializes its telemetry.
+      copied =
+        !!owner &&
+        !!opener &&
+        !opener.closed &&
+        opener.top?.sessionStorage.getItem(ownerKey) === owner;
+    } catch {
+      // A closed or cross-origin opener is inaccessible. Do not break an established tab's
+      // persistence just because its opener subsequently navigates away.
+    }
+    if (copied) {
+      // Snapshot keys before removal: Web Storage enumeration may reorder on mutation.
+      const keys = Array.from({ length: storage.length }, (_, index) => storage.key(index));
+      for (const key of keys) {
+        if (key?.startsWith("otel.pageVisit.")) storage.removeItem(key);
+      }
+    }
+    if (!owner || copied) storage.setItem(ownerKey, generatePageViewId());
+    return true;
+  } catch {
+    // Never consume a predecessor if ownership setup or copied-state cleanup failed.
+    diag.warn("Page visit storage unavailable; using memory.");
+    return false;
+  }
+}
+
 /**
  * Builds the instrumentations this distribution owns and turns on by itself.
  *
@@ -62,15 +99,46 @@ function createOwnedInstrumentations(
   options: MicrosoftOpenTelemetryBrowserOptions,
   sharedOperation: () => SpanContext | undefined,
   samplingPercentage: () => number,
+  reserveVisitStorageKey: (namespace: string) => string,
 ): PageViewInstrumentation[] {
   if (typeof document === "undefined" || typeof location === "undefined") return [];
 
   const owned: PageViewInstrumentation[] = [];
   const pageView = options.pageView ?? {};
   if (pageView.enabled !== false) {
+    let visitStorageKey: string | undefined;
+    if (pageView.autoTrackPageVisitTime) {
+      const namePrefix = options.storage?.namePrefix ?? "";
+      // An explicit prefix identifies the destination even before a deferred string resolves.
+      const destination =
+        !namePrefix && typeof options.azureMonitor?.connectionString === "string"
+          ? parseConnectionString(options.azureMonitor.connectionString)
+          : undefined;
+      const namespace = JSON.stringify([
+        namePrefix,
+        destination?.instrumentationKey?.toLowerCase(),
+        destination?.ingestionEndpoint,
+      ]);
+      visitStorageKey = reserveVisitStorageKey(namespace);
+    }
     owned.push(
       new PageViewInstrumentation(
-        { ...pageView, enabled: false, sharedOperation },
+        {
+          ...pageView,
+          enabled: false,
+          sharedOperation,
+          visitStorageKey,
+          visitStorage:
+            options.storage?.enabled === false ||
+            // Same-origin frames share sessionStorage, but slot ownership is realm-local.
+            window.parent !== window ||
+            (options.azureMonitor &&
+              typeof options.azureMonitor.connectionString !== "string" &&
+              !options.storage?.namePrefix) ||
+            (pageView.autoTrackPageVisitTime && !preparePageVisitStorage())
+              ? null
+              : undefined,
+        },
         options.traces?.contextManager?.active() ?? context.active(),
         (traceId) => isTraceSampled(traceId, samplingPercentage()),
       ),
@@ -175,22 +243,9 @@ export async function useMicrosoftOpenTelemetry(
   };
   // While another instance supplies page correlation, page views adopt its operation.
   const correlationState: { current?: PageViewCorrelation } = {};
-  const owned = createOwnedInstrumentations(
-    { ...options, pageView },
-    () => getPageOperation(correlationState.current),
-    () => readSamplingPercentage() ?? 100,
-  );
-  const pageViewInstrumentation = owned[0];
-  const correlation = pageViewInstrumentation
-    ? new PageViewCorrelation(
-        () => pageViewInstrumentation.getOperationContext(),
-        pageViewInstrumentation.pageViews,
-        (traceId) => pageViewInstrumentation.getOperationName(traceId),
-      )
-    : undefined;
-  correlationState.current = correlation;
-  // Publish the initial page operation before caller instrumentations can emit.
-  const instrumentations = [...owned, ...(options.instrumentations ?? [])];
+  let pageViewInstrumentation: PageViewInstrumentation | undefined;
+  let correlation: PageViewCorrelation | undefined;
+  let releasePageVisitSlot: (() => void) | undefined;
   let instance: TelemetryInstance | undefined;
   let processorsTransferred = false;
   let initialized = false;
@@ -260,9 +315,12 @@ export async function useMicrosoftOpenTelemetry(
     });
     void (async () => {
       stopping = true;
-      stopAzureMonitorStartup?.();
       const errors: unknown[] = [];
       for (const cleanup of [
+        () => {
+          if (!initialized) pageViewInstrumentation?.rollbackStartup();
+        },
+        () => stopAzureMonitorStartup?.(),
         () => instance?.detach(),
         () => {
           void correlation?.shutdown();
@@ -322,7 +380,13 @@ export async function useMicrosoftOpenTelemetry(
         errors.push(error);
       }
       throwErrors(errors, "Telemetry shutdown failed");
-    })().then(resolve, reject);
+    })()
+      .finally(() => {
+        const release = releasePageVisitSlot;
+        releasePageVisitSlot = undefined;
+        release?.();
+      })
+      .then(resolve, reject);
     return shutdownPromise;
   }
 
@@ -334,6 +398,37 @@ export async function useMicrosoftOpenTelemetry(
   };
 
   try {
+    // Reserve before construction or callbacks can re-enter startup, with rollback already armed.
+    const owned = createOwnedInstrumentations(
+      { ...options, pageView },
+      () => getPageOperation(correlationState.current),
+      () => readSamplingPercentage() ?? 100,
+      (namespace) => {
+        const namespaces = (getSharedRegistry().pageVisitSlots ??= new Map<string, Set<number>>());
+        const slots = namespaces.get(namespace) ?? new Set<number>();
+        namespaces.set(namespace, slots);
+        let slot = 0;
+        while (slots.has(slot)) slot++;
+        slots.add(slot);
+        releasePageVisitSlot = () => {
+          slots.delete(slot);
+          if (!slots.size) namespaces.delete(namespace);
+        };
+        return `otel.pageVisit.${namespace}.${slot}`;
+      },
+    );
+    const pageInstrumentation = (pageViewInstrumentation = owned[0]);
+    pageInstrumentation?.beginStartup();
+    correlation = pageInstrumentation
+      ? new PageViewCorrelation(
+          () => pageInstrumentation.getOperationContext(),
+          pageInstrumentation.pageViews,
+          (traceId) => pageInstrumentation.getOperationName(traceId),
+        )
+      : undefined;
+    correlationState.current = correlation;
+    // Publish the initial page operation before caller instrumentations can emit.
+    const instrumentations = [...owned, ...(options.instrumentations ?? [])];
     if (azureMonitor) {
       const { span, log, stop, startDiagnostics } = createAzureMonitorProcessors(
         azureMonitor,
@@ -406,6 +501,7 @@ export async function useMicrosoftOpenTelemetry(
     }
     instance.commit();
     initialized = true;
+    pageViewInstrumentation?.commitStartup();
   } catch (error) {
     try {
       await shutdown();

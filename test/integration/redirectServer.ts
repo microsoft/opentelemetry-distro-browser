@@ -16,17 +16,27 @@ export default async function setup(project: TestProject): Promise<() => Promise
   const ingestedEnvelopes = new Map<string, unknown[]>();
   const ingestedReferrers = new Map<string, string[]>();
   const throttledRuns = new Set<string>();
-  let redirectRequests = 0;
-  let finalRequests = 0;
+  // Browser projects share this server; keep each test run's request counts independent.
+  const requestCounts = new Map<string, { redirectRequests: number; finalRequests: number }>();
+  const getCounts = (url: URL) => {
+    const runId = url.searchParams.get("runId") ?? "";
+    let counts = requestCounts.get(runId);
+    if (!counts) {
+      counts = { redirectRequests: 0, finalRequests: 0 };
+      requestCounts.set(runId, counts);
+    }
+    return counts;
+  };
 
   const finalServer = createServer((request, response) => {
+    const url = new URL(request.url ?? "/", "http://localhost");
     setCorsHeaders(response);
     if (request.method === "OPTIONS") {
       response.writeHead(204).end();
       return;
     }
-    if (request.method === "POST" && request.url === "/v2.1/track") {
-      finalRequests++;
+    if (request.method === "POST" && url.pathname === "/v2.1/track") {
+      getCounts(url).finalRequests++;
       response.writeHead(200, { "content-type": "application/json" });
       response.end(JSON.stringify({ itemsAccepted: 1, itemsReceived: 1, errors: [] }));
       return;
@@ -105,19 +115,20 @@ export default async function setup(project: TestProject): Promise<() => Promise
   project.provide("ingestionEndpoint", `${ingestionOrigin}/ingest/`);
 
   const redirectServer = createServer((request, response) => {
+    const url = new URL(request.url ?? "/", "http://localhost");
     setCorsHeaders(response);
     if (request.method === "OPTIONS") {
       response.writeHead(204).end();
       return;
     }
-    if (request.method === "POST" && request.url === "/v2.1/track") {
-      redirectRequests++;
-      response.writeHead(307, { location: `${finalOrigin}/v2.1/track` }).end();
+    if (request.method === "POST" && url.pathname === "/v2.1/track") {
+      getCounts(url).redirectRequests++;
+      response.writeHead(307, { location: `${finalOrigin}/v2.1/track${url.search}` }).end();
       return;
     }
-    if (request.method === "GET" && request.url === "/counts") {
+    if (request.method === "GET" && url.pathname === "/counts") {
       response.writeHead(200, { "content-type": "application/json" });
-      response.end(JSON.stringify({ redirectRequests, finalRequests }));
+      response.end(JSON.stringify(getCounts(url)));
       return;
     }
     if (request.method === "GET" && request.url === "/headers") {

@@ -46,6 +46,12 @@ export function setSessionStorage(storage: Storage | undefined): void {
 }
 
 beforeEach(() => {
+  // Vitest hosts unit suites in an iframe. These synthetic-storage tests model a top-level
+  // document; real frame/storage ownership is exercised by the integration fixtures instead.
+  Object.defineProperty(window, "parent", {
+    configurable: true,
+    get: () => window,
+  });
   testSessionStorage.clear();
   setSessionStorage(testSessionStorage);
 });

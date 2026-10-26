@@ -50,6 +50,7 @@ import type {
   CustomEventData,
   ExceptionData,
   MessageData,
+  MetricData,
   PageViewData,
   PageViewPerformanceData,
   SeverityLevel,
@@ -66,6 +67,18 @@ const promotedLogAttributes = /* @__PURE__ */ new Set([
   NAVIGATION_DURATION,
   ...USER_ATTRIBUTES,
   AZURE_MONITOR_SAMPLE_RATE,
+]);
+const promotedPageVisitAttributes = /* @__PURE__ */ new Set([
+  EXCEPTION_MESSAGE,
+  EXCEPTION_STACKTRACE,
+  EXCEPTION_TYPE,
+  NAVIGATION_DURATION,
+  ...USER_ATTRIBUTES,
+  AZURE_MONITOR_SAMPLE_RATE,
+  "browser.page_visit.duration",
+  ATTR_PAGE_VIEW_NAME,
+  ATTR_PAGE_VIEW_ID,
+  URL_FULL,
 ]);
 const promotedPageViewAttributes = /* @__PURE__ */ new Set([
   EXCEPTION_MESSAGE,
@@ -389,10 +402,14 @@ export function createExceptionDetails(
 export function logToEnvelope(
   logRecord: ReadableLogRecord,
   instrumentationKey: string,
-): AzureMonitorEnvelope<MessageData | ExceptionData | PageViewData | CustomEventData> {
+): AzureMonitorEnvelope<MessageData | ExceptionData | PageViewData | CustomEventData | MetricData> {
   const customFields = mapAttributes(
     logRecord.attributes as Attributes,
-    isPageView(logRecord.eventName) ? promotedPageViewAttributes : promotedLogAttributes,
+    isPageView(logRecord.eventName)
+      ? promotedPageViewAttributes
+      : logRecord.eventName === "browser.page_visit"
+        ? promotedPageVisitAttributes
+        : promotedLogAttributes,
     true,
   );
   const sampleRate = getSampleRate(logRecord.attributes as Attributes);
@@ -406,8 +423,9 @@ export function logToEnvelope(
   );
   const severityLevel = mapSeverity(logRecord.severityNumber);
   const time = hrTimeToDate(logRecord.hrTime);
+  const visitDuration = logRecord.attributes["browser.page_visit.duration"];
   let baseType: AzureMonitorEnvelope["data"]["baseType"];
-  let baseData: MessageData | ExceptionData | PageViewData | CustomEventData;
+  let baseData: MessageData | ExceptionData | PageViewData | CustomEventData | MetricData;
 
   if (logRecord.eventName === "exception" || logRecord.attributes[EXCEPTION_TYPE]) {
     baseType = "ExceptionData";
@@ -472,6 +490,33 @@ export function logToEnvelope(
         referrerValue === undefined
           ? customFields.properties
           : truncateCustomDimensions({ ...customFields.properties, refUri: referrerValue }),
+    };
+  } else if (
+    logRecord.eventName === "browser.page_visit" &&
+    typeof visitDuration === "number" &&
+    Number.isFinite(visitDuration) &&
+    visitDuration >= 0
+  ) {
+    const pageUrl = logRecord.attributes[URL_FULL];
+    baseType = "MetricData";
+    baseData = {
+      ver: 2,
+      metrics: [
+        {
+          name: "PageVisitTime",
+          kind: 0,
+          value: visitDuration,
+          count: 1,
+          min: visitDuration,
+          max: visitDuration,
+        },
+      ],
+      ...customFields,
+      properties: truncateCustomDimensions({
+        ...customFields.properties,
+        PageName: serializeAttribute(logRecord.attributes[ATTR_PAGE_VIEW_NAME] ?? ""),
+        ...(typeof pageUrl === "string" && pageUrl.length > 0 ? { PageUrl: pageUrl } : {}),
+      }),
     };
   } else if (logRecord.eventName && logRecord.eventName !== "browser.console") {
     baseType = "EventData";

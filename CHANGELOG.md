@@ -8,6 +8,8 @@ All notable changes to this package are documented in this file.
 
 - Add internal customer SDK Stats reporting with isolated diagnostics and lifecycle handling.
 - Support per-instance runtime sampling updates through dynamic configuration
+- Add opt-in `pageView.autoTrackPageVisitTime` to report previous-page visit duration as an
+  Application Insights `PageVisitTime` metric across SPA and full-page navigation.
 - Validate releases end to end: `npm run test:e2e` sends telemetry from the npm and CDN builds to
   real Azure Monitor ingestion in Chromium, Firefox, and WebKit; `npm run test:build` rejects
   post-ES2022 built-ins in browser bundles; and `npm run cdn:verify`, run after `cdn:publish`, checks
@@ -31,6 +33,9 @@ false` blocks SDK-managed storage access, including later identity-control calls
 
 ### Changed
 
+- Require Node.js 22.23.4+, 24.22.1+, or 26.12.1+ for repository tooling to address
+  CVE-2026-111497. Enforce patched minimums in CI and installs, and reject unsupported
+  runtimes before CDN verification/publishing and performance network operations.
 - Shrink the minified CDN bundles by minifying them with SWC, which also shortens `_`-prefixed
   private properties, and by trimming exporter code. `opentelemetry-browser.min.js` drops from
   164.64 kB to 150.70 kB minified (50.40 kB to 48.22 kB gzip).

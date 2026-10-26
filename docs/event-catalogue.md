@@ -19,6 +19,7 @@ automatic log events use INFO severity (`9`) and have no required body.
 | Telemetry          | Signal/name                         | Default               | Source module                                                                                       |
 | ------------------ | ----------------------------------- | --------------------- | --------------------------------------------------------------------------------------------------- |
 | Page view          | Log `browser.page_view`             | On                    | [Distribution page-view implementation](../src/instrumentation/pageView/pageViewInstrumentation.ts) |
+| Page visit         | Log `browser.page_visit`            | Opt-in                | Distribution page-view tracking; `pageView.autoTrackPageVisitTime`                                  |
 | Fetch              | CLIENT span, normalized HTTP method | On when helper called | `@opentelemetry/browser-instrumentation/experimental/fetch`                                         |
 | XHR                | CLIENT span, normalized HTTP method | On when helper called | `@opentelemetry/browser-instrumentation/experimental/xhr`                                           |
 | Console            | Log `browser.console`               | Opt-in                | `@opentelemetry/browser-instrumentation/experimental/console`                                       |
@@ -96,6 +97,30 @@ not every field or every other instrumentation.
 
 Do not combine document-load and soft-navigation populations when computing percentiles. Capped,
 interrupted and hidden-page durations are truncated/lower-bound observations, not completed loads.
+
+## Page visit: `browser.page_visit`
+
+Emitted for the previous page when the next page view starts, only when
+`pageView.autoTrackPageVisitTime: true` (default `false`). This is a portable log event, not an
+OpenTelemetry Metrics API instrument or an extra field on `browser.page_view`.
+
+| Attribute                     | Type/unit        | Meaning                                                          |
+| ----------------------------- | ---------------- | ---------------------------------------------------------------- |
+| `browser.page_view.name`      | string           | Previous page's resolved name.                                   |
+| `url.full`                    | string, optional | Previous page's sanitized URL; omitted if sanitization drops it. |
+| `browser.page_visit.duration` | number, ms       | Elapsed time from the previous page-view start to the next.      |
+| `browser.page_view.id`        | string           | Previous page's page-view ID.                                    |
+
+The duration includes hidden time and is not active engagement time or page-load/settle duration.
+No visit is emitted on `pagehide`, hidden visibility or unload. If no next instrumented page starts,
+the final visit is skipped. With the default `false`, no extra telemetry is emitted.
+
+Same-origin, same-tab full navigations persist visit state in `sessionStorage`, subject to
+`storage.enabled` and `storage.namePrefix`. Disabled or unavailable storage leaves in-memory SPA
+timing only. On BFCache restore, persistent successor state is read instead of the restored page's
+old in-memory visit to avoid duplicate reporting. Without storage, the tracker drops its visit on
+`pagehide` and cannot bridge BFCache away time. See [page-visit configuration](configuration-reference.md#page-visit-time)
+for per-destination instance slots, initialization ordering and prefix isolation.
 
 ## HTTP operations: fetch and XHR
 
@@ -272,14 +297,15 @@ Table names follow the [Azure Monitor telemetry data model](https://learn.micros
 | --------------------------------------------------------------- | --------------------------------------------- | -------------------------------------------- |
 | `browser.page_view`                                             | `PageViewData`                                | `pageViews` / `AppPageViews`                 |
 | Page view with all five valid performance fields                | Additional `PageviewPerformanceData` envelope | `browserTimings` / `AppBrowserTimings`       |
+| `browser.page_visit`                                            | `MetricData`, `PageVisitTime` custom metric   | `customMetrics` / `AppMetrics`               |
 | `browser.navigation`                                            | `PageViewData`                                | `pageViews` / `AppPageViews`                 |
 | Fetch/XHR CLIENT span                                           | `RemoteDependencyData`, HTTP dependency       | `dependencies` / `AppDependencies`           |
 | `exception`, or a log with `exception.type`                     | `ExceptionData`                               | `exceptions` / `AppExceptions`               |
 | `browser.console`, or an unnamed ordinary log                   | `MessageData`                                 | `traces` / `AppTraces`                       |
 | Other named logs, including timing, click and Web Vitals events | `EventData`                                   | `customEvents` / `AppEvents`                 |
 
-Exception classification takes precedence over other log classifications. Named events are custom
-events regardless of severity; console remains a trace message. Span events named `exception`
+Exception classification takes precedence over other log classifications. Other named events are
+custom events regardless of severity; console remains a trace message. Span events named `exception`
 export as correlated `ExceptionData`; other span events export as `MessageData` trace messages,
 with the event name as the message. They are not `EventData` custom events. Span kind controls other manual span
 projections; do not assume every manual span becomes a request.
@@ -289,6 +315,11 @@ custom properties. Built-in page-view diagnostic/ordinal fields are omitted from
 and measurements; custom application attributes remain. Numeric attributes generally map to custom
 measurements and other values to custom dimensions, subject to Azure Monitor field limits. Session,
 identity and operation context map to their dedicated tags/columns rather than duplicate properties.
+
+Page visits map to a separate `MetricData` envelope named `PageVisitTime`, with `PageName` and
+`PageUrl` properties taken from the previous page's name and sanitized URL. Its metric value, minimum
+and maximum all equal `browser.page_visit.duration` in milliseconds, with count `1`. This does not
+change the `PageViewData` duration or initialize an OpenTelemetry Metrics provider.
 
 For example, to inspect Web Vitals from the Application Insights Logs view:
 

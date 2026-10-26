@@ -298,6 +298,7 @@ const configuredOptions = {
   storage: { enabled: false, namePrefix: "shop-" },
   pageView: {
     enabled: true,
+    autoTrackPageVisitTime: true,
     redactedQueryParams: ["token"],
     softNavigationSettleTimeoutMs: 500,
     useNavigationApiIfAvailable: true,
@@ -390,6 +391,27 @@ it("passes configured options to the bundle", async () => {
   }
 });
 
+it.each([true, false])("serializes page visit time opt-in unchanged as %s", async (enabled) => {
+  const src = createBundleUrl("return Promise.resolve({})");
+  const { inlineScript, initialization } = executeLoader({
+    src,
+    connectionString: "InstrumentationKey=test",
+    pageView: { autoTrackPageVisitTime: enabled },
+  });
+  try {
+    await initialization;
+    expect(loaderWindow.snippetOptions).toEqual({
+      azureMonitor: { connectionString: "InstrumentationKey=test" },
+      pageView: { autoTrackPageVisitTime: enabled },
+      instrumentations: [],
+    });
+  } finally {
+    inlineScript.remove();
+    removeLoadedScript(src);
+    URL.revokeObjectURL(src);
+  }
+});
+
 it("keeps the connection string when azureMonitor is configured", () => {
   const generated = getSdkLoaderScript({
     src: "https://example.test/sdk.js",
@@ -474,6 +496,11 @@ it.each([
     "a nonnegative number when provided",
   ],
   ["userContext.enabled", { userContext: { enabled: "false" } }, "a boolean when provided"],
+  [
+    "pageView.autoTrackPageVisitTime",
+    { pageView: { autoTrackPageVisitTime: "true" } },
+    "a boolean when provided",
+  ],
   [
     "pageView.redactedQueryParams",
     { pageView: { redactedQueryParams: "token" } },

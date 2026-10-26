@@ -63,7 +63,7 @@ Every executable published entry point has absolute minified, gzip and Brotli bu
 
 | Entry point          |  Minified |     Gzip |   Brotli |
 | -------------------- | --------: | -------: | -------: |
-| `.`                  | 131.25 kB | 41.50 kB | 36.75 kB |
+| `.`                  | 135.75 kB | 42.75 kB | 37.75 kB |
 | `./instrumentations` |     64 kB |    24 kB |    22 kB |
 | `./snippet`          |   6.25 kB |  2.75 kB |   2.5 kB |
 
@@ -77,10 +77,10 @@ comparison remains informational and does not replace the absolute gate.
 emits them, so it must run after a production build. Their budgets block in every release channel,
 including alpha:
 
-| Artifact                                                   | Minified |  Gzip |   Brotli |
-| ---------------------------------------------------------- | -------: | ----: | -------: |
-| `opentelemetry-browser.{iife,umd}.min.js`                  | 171.5 kB | 53 kB | 46.25 kB |
-| `opentelemetry-browser-instrumentations.{iife,umd}.min.js` |    63 kB | 19 kB |    17 kB |
+| Artifact                                                   | Minified |     Gzip | Brotli |
+| ---------------------------------------------------------- | -------: | -------: | -----: |
+| `opentelemetry-browser.{iife,umd}.min.js`                  |   174 kB | 53.75 kB |  47 kB |
+| `opentelemetry-browser-instrumentations.{iife,umd}.min.js` |    63 kB |    19 kB |  17 kB |
 
 SWC minifies the browser bundles and shortens `_`-prefixed properties, the TypeScript `private`
 convention used by OpenTelemetry, so source code keeps descriptive names. Members that
