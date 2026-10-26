@@ -75,7 +75,14 @@ export function reportWithoutTelemetry(report: () => void): void {
         if (original === wrapped) continue;
         console[name] = original;
         restore.push(() => {
-          if (console[name] === original) console[name] = wrapped;
+          if (console[name] !== original) return;
+          // Teardown may remove the shared patch while its wrapper is bypassed.
+          console[name] =
+            patch &&
+            wrapped === patch.wrapper &&
+            registry?.browserPatches?.targets.get(console)?.get(name) !== patch
+              ? patch.original
+              : wrapped;
         });
       }
       /* eslint-enable no-console, @typescript-eslint/unbound-method */

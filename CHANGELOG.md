@@ -7,6 +7,7 @@ All notable changes to this package are documented in this file.
 ### Added
 
 - Add internal customer SDK Stats reporting with isolated diagnostics and lifecycle handling.
+  Preserve console instrumentation teardown performed by diagnostic callbacks.
 - Support per-instance runtime sampling updates through dynamic configuration
 - Add opt-in `pageView.autoTrackPageVisitTime` to report previous-page visit duration as an
   Application Insights `PageVisitTime` metric across SPA and full-page navigation.

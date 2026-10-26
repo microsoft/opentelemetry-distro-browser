@@ -34,7 +34,7 @@ afterEach(async () => {
 });
 
 it.each(["index.js", "index.min.js", "iife.min"] as const)(
-  "keeps stats diagnostics out of standalone-first console pipelines through %s",
+  "keeps stats diagnostics out of standalone-first console pipelines across teardown and restart through %s",
   async (file) => {
     context.disable();
     const transport = vi.fn<typeof fetch>(
@@ -84,9 +84,14 @@ it.each(["index.js", "index.min.js", "iife.min"] as const)(
         instrumentations,
       });
       handles.push(handle);
-      const sharedWarn = console.warn;
+      let sharedWarn = console.warn;
       expect(sharedWarn).not.toBe(standaloneWarn);
-      vi.spyOn(diagnostics, "warn").mockImplementation((...args) => console.warn(...args));
+      vi.spyOn(diagnostics, "warn")
+        .mockImplementation((...args) => console.warn(...args))
+        .mockImplementationOnce((...args) => {
+          console.warn(...args);
+          for (const instrumentation of instrumentations) instrumentation.disable();
+        });
       for (let index = 1; index <= 2; index++) {
         console.warn("application warning");
         await handle.forceFlush();
@@ -99,7 +104,14 @@ it.each(["index.js", "index.min.js", "iife.min"] as const)(
         expect(pipeline.logExporter.getFinishedLogRecords().map((record) => record.body)).toEqual(
           Array<string>(index).fill("application warning"),
         );
-        expect(console.warn).toBe(sharedWarn);
+        if (index === 1) {
+          expect(console.warn).toBe(standaloneWarn);
+          for (const instrumentation of instrumentations) instrumentation.enable();
+          expect(console.warn).not.toBe(sharedWarn);
+          sharedWarn = console.warn;
+        } else {
+          expect(console.warn).toBe(sharedWarn);
+        }
       }
       await handle.shutdown();
       expect(console.warn).toBe(standaloneWarn);

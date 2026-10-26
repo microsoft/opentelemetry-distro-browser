@@ -9,6 +9,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { createCustomerSdkStats } from "../../../src/exporter/customerSdkStats.js";
 import { createInternalSdkStats, reportFailure } from "../../../src/exporter/sdkStats.js";
 import { useMicrosoftOpenTelemetry } from "../../../src/index.js";
+import { claimInstrumentations } from "../../../src/instrumentation/sharedBrowserPatches.js";
 import { startTelemetryInstance } from "../../../src/routing/telemetryInstance.js";
 import {
   getRegisteredGlobal,
@@ -162,6 +163,80 @@ it.each(["normal", "throwing", "nested"] as const)(
     expect(console.warn).toBe(standaloneWarn);
   },
 );
+
+it.each(["normal", "throwing", "nested"] as const)(
+  "preserves console teardown during %s diagnostics and suppresses diagnostics after restart",
+  async (mode) => {
+    context.disable();
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { exporter, provider, instrumentation: standalone } = createConsolePipeline();
+    owners.push(provider);
+    instrumentations.push(standalone);
+    const standaloneWarn = console.warn;
+    const pipeline = createInMemoryPipeline();
+    const shared = new ConsoleInstrumentation({ enabled: false, logMethods: ["warn"] });
+    const handle = await useMicrosoftOpenTelemetry({
+      spanProcessors: [],
+      logRecordProcessors: pipeline.options.logRecordProcessors,
+      pageView: { enabled: false },
+      session: { enabled: false },
+      storage: { enabled: false },
+      instrumentations: [shared],
+    });
+    owners.push(handle, pipeline);
+    const patch = getSharedRegistry().browserPatches?.targets.get(console)?.get("warn");
+    expect(patch?.wrapper).toBe(console.warn);
+    vi.spyOn(diag, "warn").mockImplementationOnce(() => {
+      console.warn("stats failure before teardown");
+      shared.disable();
+      if (mode === "nested") {
+        reportWithoutTelemetry(() => console.warn("nested stats failure"));
+      }
+      if (mode === "throwing") throw new Error("diagnostic logger failed");
+    });
+    expect(() => reportFailure(new Error("stats failed"))).not.toThrow();
+    expect(getSharedRegistry().browserPatches?.targets.get(console)?.has("warn")).toBe(false);
+    expect(console.warn).toBe(standaloneWarn);
+    expect(isReportingSdkStats()).toBe(false);
+    console.warn("standalone after teardown");
+    shared.enable();
+    expect(console.warn).not.toBe(patch?.wrapper);
+    console.warn("application after restart");
+    vi.mocked(diag.warn).mockImplementation((...args) => console.warn(...args));
+    reportFailure(new Error("stats failed after restart"));
+    await Promise.all([provider.forceFlush(), handle.forceFlush()]);
+    expect(exporter.getFinishedLogRecords().map((record) => record.body)).toEqual([
+      "standalone after teardown",
+      "application after restart",
+    ]);
+    expect(pipeline.logExporter.getFinishedLogRecords().map((record) => record.body)).toEqual([
+      "application after restart",
+    ]);
+    await handle.shutdown();
+    expect(console.warn).toBe(standaloneWarn);
+  },
+);
+
+it("preserves a shared console patch still owned by another instrumentation after diagnostics", () => {
+  const { provider, instrumentation: standalone } = createConsolePipeline();
+  owners.push(provider);
+  instrumentations.push(standalone);
+  const standaloneWarn = console.warn;
+  const first = new ConsoleInstrumentation({ enabled: false, logMethods: ["warn"] });
+  const second = new ConsoleInstrumentation({ enabled: false, logMethods: ["warn"] });
+  const release = claimInstrumentations([first, second]);
+  owners.push({ shutdown: async () => release() });
+  first.enable();
+  second.enable();
+  const sharedWarn = console.warn;
+  reportWithoutTelemetry(() => first.disable());
+  expect(console.warn).toBe(sharedWarn);
+  expect(
+    getSharedRegistry().browserPatches?.targets.get(console)?.get("warn")?.subscribers.size,
+  ).toBe(1);
+  second.disable();
+  expect(console.warn).toBe(standaloneWarn);
+});
 
 it("restores console instrumentation when a stats diagnostic logger throws", () => {
   const instrumentation = new ConsoleInstrumentation({ enabled: false, logMethods: ["warn"] });
