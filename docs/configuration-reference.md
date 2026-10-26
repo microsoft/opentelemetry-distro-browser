@@ -159,9 +159,9 @@ aliases are added.
 
 ### Browser storage
 
-| Option               | Type      | Default | Behavior                                                                                                                                                                                                                                                                                  |
-| -------------------- | --------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `storage.enabled`    | `boolean` | `true`  | `false` blocks SDK-managed Web Storage access for this handle, including the localStorage session backup, legacy identity cleanup, unsent telemetry buffer and page-visit persistence, not cookies. SPA visit timing then uses memory. |
+| Option               | Type      | Default | Behavior                                                                                                                                                                                                                                                          |
+| -------------------- | --------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `storage.enabled`    | `boolean` | `true`  | `false` blocks SDK-managed Web Storage access for this handle, including the localStorage session backup, legacy identity cleanup, unsent telemetry buffer and page-visit persistence, not cookies. SPA visit timing then uses memory.                            |
 | `storage.namePrefix` | `string`  | `""`    | Literal prefix for cookie names `opentelemetry-user`, `opentelemetry-auth-user` and `opentelemetry-session`, and session, legacy identity, unsent telemetry buffer and page-visit Web Storage keys. For example, `"shop-"` produces `shop-opentelemetry-session`. |
 
 Settings are captured at initialization and apply independently to each handle. A prefix namespaces
@@ -459,7 +459,6 @@ unsent is retried by the next page load in the same tab through the `sessionStor
 `getSdkLoaderScript()` is exported from the ESM-only `@microsoft/opentelemetry-browser/snippet` entry.
 It generates a script; it does not itself initialize telemetry in the current page.
 
-<<<<<<< HEAD
 | Option                                                                       | Default and behavior                                                                                                                                              |
 | ---------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `connectionString`                                                           | Required non-empty string; becomes `cfg.azureMonitor.connectionString`.                                                                                           |
@@ -470,26 +469,11 @@ It generates a script; it does not itself initialize telemetry in the current pa
 | `cdnFallback`                                                                | `false`. Retry backup Azure Monitor CDN hosts; requires a recognized CDN source URL.                                                                              |
 | `reportLoadFailure`                                                          | `false`. Report an `SDKLoadFailed` exception after bundle load attempts fail.                                                                                     |
 | `samplingPercentage`, `azureMonitor.disableBeacon`, `session`, `userContext` | Same meanings as initialization options above.                                                                                                                    |
+| `storage`                                                                    | Same `enabled` and `namePrefix` settings as initialization options above.                                                                                         |
+| `cookieCfg`                                                                  | Data-only settings: `enabled`, `domain`, `path`, `ignoreCookies`, `blockedCookies`, `disableCookieDefer`. Cookie hooks are not supported by the snippet.          |
 | `pageView`                                                                   | Data-only settings: `enabled`, `autoTrackPageVisitTime` (default `false`), `redactedQueryParams`, `softNavigationSettleTimeoutMs`, `useNavigationApiIfAvailable`. |
 | `instrumentationOptions`                                                     | JSON-only helper settings. Omitted: fetch/XHR defaults.                                                                                                           |
 | `resourceAttributes`                                                         | String, number or boolean attributes converted into a resource by the bundle.                                                                                     |
-=======
-| Option                                                                       | Default and behavior                                                                                                                                     |
-| ---------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `connectionString`                                                           | Required non-empty string; becomes `cfg.azureMonitor.connectionString`.                                                                                  |
-| `src`                                                                        | This package version's immutable CDN IIFE URL. Custom URLs must expose `Microsoft.OpenTelemetry` as a classic script global.                             |
-| `crossOrigin`                                                                | `"anonymous"`. Applied to the injected script.                                                                                                           |
-| `integrity`                                                                  | Unset. Supply integrity metadata for the exact version and artifact.                                                                                     |
-| `loadDelay`                                                                  | Immediate injection. A nonnegative delay in milliseconds adds nonblocking delayed loading.                                                               |
-| `cdnFallback`                                                                | `false`. Retry backup Azure Monitor CDN hosts; requires a recognized CDN source URL.                                                                     |
-| `reportLoadFailure`                                                          | `false`. Report an `SDKLoadFailed` exception after bundle load attempts fail.                                                                            |
-| `samplingPercentage`, `azureMonitor.disableBeacon`, `session`, `userContext` | Same meanings as initialization options above.                                                                                                           |
-| `storage`                                                                    | Same `enabled` and `namePrefix` settings as initialization options above.                                                                                |
-| `cookieCfg`                                                                  | Data-only settings: `enabled`, `domain`, `path`, `ignoreCookies`, `blockedCookies`, `disableCookieDefer`. Cookie hooks are not supported by the snippet. |
-| `pageView`                                                                   | Data-only settings: `enabled`, `redactedQueryParams`, `softNavigationSettleTimeoutMs`, `useNavigationApiIfAvailable`.                                    |
-| `instrumentationOptions`                                                     | JSON-only helper settings. Omitted: fetch/XHR defaults.                                                                                                  |
-| `resourceAttributes`                                                         | String, number or boolean attributes converted into a resource by the bundle.                                                                            |
->>>>>>> 1c3fb98 (Add Application Insights-aligned cookie persistence)
 
 The generator accepts JSON-serializable settings, not functions or regular expressions. Processors,
 exporters, context managers, propagators and resource detectors require npm-based initialization.

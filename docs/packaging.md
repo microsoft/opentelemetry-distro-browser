@@ -63,7 +63,7 @@ Every executable published entry point has absolute minified, gzip and Brotli bu
 
 | Entry point          | Minified |     Gzip |   Brotli |
 | -------------------- | -------: | -------: | -------: |
-| `.`                  |   136 kB | 43.25 kB | 38.25 kB |
+| `.`                  |   140 kB |  44.5 kB | 39.25 kB |
 | `./instrumentations` |    64 kB |    24 kB |    22 kB |
 | `./snippet`          |  6.75 kB |     3 kB |   2.5 kB |
 
@@ -79,7 +79,7 @@ including alpha:
 
 | Artifact                                                   | Minified |     Gzip | Brotli |
 | ---------------------------------------------------------- | -------: | -------: | -----: |
-| `opentelemetry-browser.{iife,umd}.min.js`                  |   174 kB | 53.75 kB |  47 kB |
+| `opentelemetry-browser.{iife,umd}.min.js`                  |   174 kB |    54 kB | 47.25 kB |
 | `opentelemetry-browser-instrumentations.{iife,umd}.min.js` |    63 kB |    19 kB |  17 kB |
 
 SWC minifies the browser bundles and shortens `_`-prefixed properties, the TypeScript `private`
