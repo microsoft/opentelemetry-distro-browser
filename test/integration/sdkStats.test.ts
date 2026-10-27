@@ -4,12 +4,14 @@
 import { context, diag, propagation, trace } from "@opentelemetry/api";
 import { logs } from "@opentelemetry/api-logs";
 import { FetchInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/fetch";
+import { ConsoleInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/console";
 import { afterEach, expect, inject, it, vi } from "vitest";
-import type { MicrosoftOpenTelemetryBrowser } from "../../src/types.js";
+import type { BrowserInstrumentation, MicrosoftOpenTelemetryBrowser } from "../../src/types.js";
 import type { AzureMonitorEnvelope } from "../../src/exporter/telemetryModels.js";
 import { assertAzureMonitorEnvelope, TEST_INSTRUMENTATION_KEY } from "../fixtures/azureMonitor.js";
-import { createInMemoryPipeline } from "../fixtures/telemetry.js";
+import { createConsolePipeline, createInMemoryPipeline } from "../fixtures/telemetry.js";
 import { SDK_STATS_ENDPOINT } from "../fixtures/sdkStats.js";
+import { loadBrowserScript } from "../fixtures/browserBundle.js";
 
 const SECOND_KEY = "22222222-2222-2222-2222-222222222222";
 const handles: MicrosoftOpenTelemetryBrowser[] = [];
@@ -30,6 +32,114 @@ afterEach(async () => {
     referrerPolicy = undefined;
   }
 });
+
+it.each(
+  (["index.js", "index.min.js", "iife.min"] as const).flatMap((file) =>
+    [false, true].map((restartDuringReport) => ({ file, restartDuringReport })),
+  ),
+)(
+  "keeps stats diagnostics out of standalone-first console pipelines through $file with in-callback restart $restartDuringReport",
+  async ({ file, restartDuringReport }) => {
+    context.disable();
+    const transport = vi.fn<typeof fetch>(
+      async (url) => new Response(null, { status: url === SDK_STATS_ENDPOINT ? 503 : 200 }),
+    );
+    vi.stubGlobal("fetch", transport);
+    const { exporter, provider, instrumentation: standalone } = createConsolePipeline();
+    const standaloneWarn = console.warn;
+    const scripts: HTMLScriptElement[] = [];
+    let handle: MicrosoftOpenTelemetryBrowser | undefined;
+    try {
+      let initialize: typeof import("../../src/index.js").useMicrosoftOpenTelemetry;
+      let diagnostics = diag;
+      let instrumentations: BrowserInstrumentation[];
+      if (file === "iife.min") {
+        scripts.push(await loadBrowserScript("opentelemetry-browser.iife.min.js"));
+        scripts.push(await loadBrowserScript("opentelemetry-browser-instrumentations.iife.min.js"));
+        const bundle = window.Microsoft?.OpenTelemetry;
+        const instrumentationBundle = window.Microsoft?.OpenTelemetryInstrumentations;
+        if (!bundle || !instrumentationBundle) throw new Error("Minified bundles did not load");
+        initialize = bundle.useMicrosoftOpenTelemetry;
+        diagnostics = bundle.diag;
+        instrumentations = await instrumentationBundle.getInstrumentations({
+          fetch: { enabled: false },
+          xhr: { enabled: false },
+          console: { enabled: true, logMethods: ["warn"] },
+        });
+      } else {
+        const modulePath = `../../dist/esm/${file}`;
+        const moduleUrl = new URL(modulePath, import.meta.url);
+        const distro: typeof import("../../src/index.js") = await import(
+          /* @vite-ignore */ moduleUrl.href
+        );
+        initialize = distro.useMicrosoftOpenTelemetry;
+        instrumentations = [new ConsoleInstrumentation({ enabled: false, logMethods: ["warn"] })];
+      }
+      const pipeline = createInMemoryPipeline();
+      handle = await initialize({
+        azureMonitor: {
+          connectionString: `InstrumentationKey=${TEST_INSTRUMENTATION_KEY};IngestionEndpoint=https://customer.example.test`,
+        },
+        spanProcessors: [],
+        logRecordProcessors: pipeline.options.logRecordProcessors,
+        pageView: { enabled: false },
+        session: { enabled: false },
+        storage: { enabled: false },
+        instrumentations,
+      });
+      handles.push(handle);
+      let sharedWarn = console.warn;
+      expect(sharedWarn).not.toBe(standaloneWarn);
+      vi.spyOn(diagnostics, "warn")
+        .mockImplementation((...args) => console.warn(...args))
+        .mockImplementationOnce((...args) => {
+          console.warn(...args);
+          for (const instrumentation of instrumentations) instrumentation.disable();
+          if (restartDuringReport) {
+            for (const instrumentation of instrumentations) instrumentation.enable();
+          }
+        });
+      for (let index = 1; index <= 2; index++) {
+        console.warn("application warning");
+        await handle.forceFlush();
+        await provider.forceFlush();
+        expect(transport).toHaveBeenCalledTimes(index * 2);
+        expect(diagnostics.warn).toHaveBeenCalledTimes(index);
+        expect(exporter.getFinishedLogRecords().map((record) => record.body)).toEqual(
+          Array<string>(index).fill("application warning"),
+        );
+        expect(pipeline.logExporter.getFinishedLogRecords().map((record) => record.body)).toEqual(
+          Array<string>(index).fill("application warning"),
+        );
+        if (index === 1) {
+          if (!restartDuringReport) {
+            expect(console.warn).toBe(standaloneWarn);
+            for (const instrumentation of instrumentations) instrumentation.enable();
+          }
+          expect(console.warn).not.toBe(sharedWarn);
+          sharedWarn = console.warn;
+        } else {
+          expect(console.warn).toBe(sharedWarn);
+        }
+      }
+      await handle.shutdown();
+      expect(console.warn).toBe(standaloneWarn);
+      console.warn("standalone after shutdown");
+      await provider.forceFlush();
+      expect(exporter.getFinishedLogRecords().map((record) => record.body)).toEqual([
+        "application warning",
+        "application warning",
+        "standalone after shutdown",
+      ]);
+    } finally {
+      await handle?.shutdown();
+      standalone.disable();
+      await provider.shutdown();
+      for (const script of scripts) script.remove();
+      if (file === "iife.min") delete window.Microsoft;
+    }
+  },
+);
 
 it.each([
   { file: "index.js", eu: false },

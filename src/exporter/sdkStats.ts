@@ -1,12 +1,13 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-import { diag } from "@opentelemetry/api";
-import { callWithTimeout } from "@opentelemetry/core";
+import { context, diag } from "@opentelemetry/api";
+import { callWithTimeout, suppressTracing } from "@opentelemetry/core";
+import { reportWithoutTelemetry } from "../shared/globalOwnership.js";
 import { OPENTELEMETRY_BROWSER_VERSION } from "../shared/constants.js";
 import { createEnvelope, getSdkVersion, isUnloading } from "./common.js";
 import { isSupportedEndpoint, isValidInstrumentationKey } from "./connectionStringParser.js";
-import { Sender } from "./sender.js";
+import { Sender, type SendRequest } from "./sender.js";
 import { getInternalSdkStatsConfiguration } from "./sdkStatsConfiguration.js";
 import type { AzureMonitorEnvelope, MetricData } from "./telemetryModels.js";
 
@@ -165,20 +166,16 @@ export function createInternalSdkStats(
       if (value < 0 || (sampleRate < 100 && Math.random() * 100 >= sampleRate)) return;
       const [name, code] = key.split(":");
       envelopes.push(
-        createEnvelope(
+        createSdkStatsEnvelope(
           currentRoute.instrumentationKey,
           time,
-          { "ai.internal.sdkVersion": getSdkVersion() },
-          "MetricData",
+          name,
+          value,
           {
-            ver: 2,
-            metrics: [{ name, kind: 0, value }],
-            properties: {
-              ...properties,
-              ...(code === undefined
-                ? {}
-                : { [name === "Exception_Count" ? "exceptionType" : "statusCode"]: code }),
-            },
+            ...properties,
+            ...(code === undefined
+              ? {}
+              : { [name === "Exception_Count" ? "exceptionType" : "statusCode"]: code }),
           },
           sampleRate,
         ),
@@ -195,29 +192,63 @@ export function createInternalSdkStats(
     }));
     const controller = (sending = new AbortController());
     try {
-      const result = await callWithTimeout(
-        statsSender.send({
-          body: new TextEncoder().encode(JSON.stringify(envelopes)),
-          contentType: "application/json",
-          unloading,
-          signal: controller.signal,
-          retry: false,
-        }),
-        10_000,
-      );
-      if (
-        result.transport === "fetch" &&
-        (result.statusCode < 200 || result.statusCode >= 300 || result.statusCode === 206)
-      ) {
-        throw new Error(`SDK stats ingestion failed: HTTP ${result.statusCode}.`);
-      }
+      await sendSdkStats(statsSender, envelopes, controller, unloading);
     } finally {
-      controller.abort();
       sending = undefined;
     }
   }
 
   return { updateEndpoint, countResponse, countException, forceFlush, shutdown };
+}
+
+export function createSdkStatsEnvelope(
+  instrumentationKey: string,
+  time: string,
+  name: string,
+  value: number,
+  properties: Record<string, string>,
+  sampleRate?: number,
+): AzureMonitorEnvelope<MetricData> {
+  return createEnvelope(
+    instrumentationKey,
+    time,
+    { "ai.internal.sdkVersion": getSdkVersion() },
+    "MetricData",
+    { ver: 2, metrics: [{ name, kind: 0, value }], properties },
+    sampleRate,
+  );
+}
+
+/** Sends stats outside customer pipelines and counters, aborting the request on completion. */
+export async function sendSdkStats(
+  sender: Sender,
+  envelopes: readonly AzureMonitorEnvelope<MetricData>[],
+  controller: AbortController,
+  unloading: boolean,
+  callbacks?: Pick<SendRequest, "onResponse" | "onPartial">,
+): Promise<void> {
+  try {
+    const result = await callWithTimeout(
+      sender.send({
+        ...callbacks,
+        body: new TextEncoder().encode(JSON.stringify(envelopes)),
+        contentType: "application/json",
+        envelopes,
+        unloading,
+        signal: controller.signal,
+        retry: false,
+      }),
+      10_000,
+    );
+    if (
+      result.transport === "fetch" &&
+      (result.statusCode < 200 || result.statusCode >= 300 || result.statusCode === 206)
+    ) {
+      throw new Error(`SDK stats ingestion failed: HTTP ${result.statusCode}.`);
+    }
+  } finally {
+    controller.abort();
+  }
 }
 
 function resolveRoute(
@@ -236,9 +267,11 @@ function resolveRoute(
   return { instrumentationKey: options.instrumentationKey, endpoint: url.href };
 }
 
-function reportFailure(error: unknown): void {
+export function reportFailure(error: unknown, message = "SDK stats export failed"): void {
   try {
-    diag.warn("SDK stats export failed", error);
+    reportWithoutTelemetry(() =>
+      context.with(suppressTracing(context.active()), () => diag.warn(message, error)),
+    );
   } catch {
     // Logger failures must not interrupt cleanup.
   }

@@ -100,6 +100,7 @@ it("sends the reference metric names, status buckets, average duration and separ
   await stats.forceFlush();
 
   expect(transport).toHaveBeenCalledOnce();
+  expect(transport.mock.calls[0][1]?.signal?.aborted).toBe(true);
   expect(transport.mock.calls[0][1]).toMatchObject({
     credentials: "omit",
     referrerPolicy: "no-referrer",
@@ -196,6 +197,7 @@ it("reports transport failures without fetching configuration or replaying the f
   await stats.forceFlush();
   expect(metrics()).toEqual({ Request_Duration: 30, Request_Success_Count: 1 });
   expect(transport).toHaveBeenCalledTimes(2);
+  expect(transport.mock.calls.every(([, init]) => init?.signal?.aborted)).toBe(true);
   expect(
     transport.mock.calls.every(([url, init]) => url === STATS_ENDPOINT && init?.method === "POST"),
   ).toBe(true);
@@ -353,6 +355,7 @@ it.each([400, 206, 503])(
     await clock.advance(3_600_000);
     await stats.forceFlush();
     expect(transport).toHaveBeenCalledOnce();
+    expect(transport.mock.calls[0][1]?.signal?.aborted).toBe(true);
   },
 );
 

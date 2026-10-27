@@ -6,6 +6,9 @@ All notable changes to this package are documented in this file.
 
 ### Added
 
+- Add internal customer SDK Stats reporting with isolated diagnostics and lifecycle handling.
+  Retain retryable customer stats counts in memory for the next report, and preserve console
+  instrumentation teardown and synchronous restart inside diagnostic callbacks.
 - Support per-instance runtime session lifetime updates and Application Insights millisecond aliases
   `sessionRenewalMs` and `sessionExpirationMs` at initialization and through `updateCfg`.
 - Support per-instance runtime sampling updates through dynamic configuration
