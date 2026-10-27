@@ -7,7 +7,7 @@ import { reportWithoutTelemetry } from "../shared/globalOwnership.js";
 import { OPENTELEMETRY_BROWSER_VERSION } from "../shared/constants.js";
 import { createEnvelope, getSdkVersion, isUnloading } from "./common.js";
 import { isSupportedEndpoint, isValidInstrumentationKey } from "./connectionStringParser.js";
-import { Sender } from "./sender.js";
+import { Sender, type SendRequest } from "./sender.js";
 import { getInternalSdkStatsConfiguration } from "./sdkStatsConfiguration.js";
 import type { AzureMonitorEnvelope, MetricData } from "./telemetryModels.js";
 
@@ -225,12 +225,15 @@ export async function sendSdkStats(
   envelopes: readonly AzureMonitorEnvelope<MetricData>[],
   controller: AbortController,
   unloading: boolean,
+  callbacks?: Pick<SendRequest, "onResponse" | "onPartial">,
 ): Promise<void> {
   try {
     const result = await callWithTimeout(
       sender.send({
+        ...callbacks,
         body: new TextEncoder().encode(JSON.stringify(envelopes)),
         contentType: "application/json",
+        envelopes,
         unloading,
         signal: controller.signal,
         retry: false,

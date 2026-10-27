@@ -4,6 +4,7 @@
 import { SpanKind } from "@opentelemetry/api";
 import type { LogRecordExporter, ReadableLogRecord } from "@opentelemetry/sdk-logs";
 import type { SpanExporter } from "@opentelemetry/sdk-trace-base";
+import { isRetriable } from "./breezeUtils.js";
 import { getSdkVersion, isUnloading } from "./common.js";
 import { Sender } from "./sender.js";
 import { createSdkStatsEnvelope, reportFailure, sendSdkStats } from "./sdkStats.js";
@@ -16,7 +17,9 @@ import type { AzureMonitorEnvelope, MetricData } from "./telemetryModels.js";
  * @remarks
  * Transport counters count envelopes. Queue and sampling drops count source records.
  * Standalone exporters observe only export outcomes.
- * Reports bypass application pipelines, time out after 10 seconds and are not retried or stored.
+ * Reports bypass application pipelines and time out after 10 seconds.
+ * Retryable counts remain in memory for the next report, but are not persisted across page loads.
+ * Shutdown makes one final attempt after any in-flight report, then discards remaining counts.
  * @public
  */
 export interface AzureMonitorSdkStatsOptions {
@@ -146,10 +149,10 @@ export function createCustomerSdkStats(
     timer = undefined;
     if (!counts.size || stopped) return Promise.resolve();
     const time = new Date().toISOString();
-    const envelopes: AzureMonitorEnvelope<MetricData>[] = [];
+    const pending = new Map<AzureMonitorEnvelope<MetricData>, readonly [string, number]>();
     for (const [key, value] of counts) {
       const [outcome, telemetryType, code] = key.split(":");
-      envelopes.push(
+      pending.set(
         createSdkStatsEnvelope(instrumentationKey, time, `Item_${outcome}_Count`, value, {
           telemetryType,
           language: "JavaScript",
@@ -157,12 +160,28 @@ export function createCustomerSdkStats(
           computeType: "unknown",
           ...(code ? { [outcome === "Retry" ? "retryCode" : "dropCode"]: code } : {}),
         }),
+        [key, value],
       );
     }
     counts.clear();
     const controller = new AbortController();
-    flushing = sendSdkStats(sender, envelopes, controller, isUnloading())
-      .catch((error: unknown) => reportFailure(error, "Customer SDK stats export failed"))
+    flushing = sendSdkStats(sender, [...pending.keys()], controller, isUnloading(), {
+      onResponse: (status) => {
+        if (!isRetriable(status)) pending.clear();
+      },
+      onPartial: (remaining) => {
+        const retriable = new Set(remaining);
+        for (const envelope of pending.keys()) {
+          if (!retriable.has(envelope)) pending.delete(envelope);
+        }
+      },
+    })
+      .catch((error: unknown) => {
+        for (const [key, value] of pending.values()) {
+          counts.set(key, (counts.get(key) ?? 0) + value);
+        }
+        reportFailure(error, "Customer SDK stats export failed");
+      })
       .finally(() => {
         flushing = undefined;
         schedule();
