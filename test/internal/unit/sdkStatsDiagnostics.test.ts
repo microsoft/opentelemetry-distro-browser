@@ -164,9 +164,13 @@ it.each(["normal", "throwing", "nested"] as const)(
   },
 );
 
-it.each(["normal", "throwing", "nested"] as const)(
-  "preserves console teardown during %s diagnostics and suppresses diagnostics after restart",
-  async (mode) => {
+it.each(
+  ["normal", "throwing", "nested"].flatMap((mode) =>
+    [false, true].map((restartDuringReport) => ({ mode, restartDuringReport })),
+  ),
+)(
+  "preserves console wrappers for $mode diagnostics with in-callback restart $restartDuringReport",
+  async ({ mode, restartDuringReport }) => {
     context.disable();
     vi.spyOn(console, "warn").mockImplementation(() => {});
     const { exporter, provider, instrumentation: standalone } = createConsolePipeline();
@@ -189,33 +193,81 @@ it.each(["normal", "throwing", "nested"] as const)(
     vi.spyOn(diag, "warn").mockImplementationOnce(() => {
       console.warn("stats failure before teardown");
       shared.disable();
+      if (restartDuringReport) shared.enable();
       if (mode === "nested") {
         reportWithoutTelemetry(() => console.warn("nested stats failure"));
       }
       if (mode === "throwing") throw new Error("diagnostic logger failed");
     });
     expect(() => reportFailure(new Error("stats failed"))).not.toThrow();
-    expect(getSharedRegistry().browserPatches?.targets.get(console)?.has("warn")).toBe(false);
-    expect(console.warn).toBe(standaloneWarn);
+    if (restartDuringReport) {
+      const replacement = getSharedRegistry().browserPatches?.targets.get(console)?.get("warn");
+      expect(replacement).not.toBe(patch);
+      expect(replacement?.original).toBe(standaloneWarn);
+      expect(replacement?.descriptor).toEqual(patch?.descriptor);
+      expect(console.warn).toBe(replacement?.wrapper);
+    } else {
+      expect(getSharedRegistry().browserPatches?.targets.get(console)?.has("warn")).toBe(false);
+      expect(console.warn).toBe(standaloneWarn);
+      console.warn("standalone after teardown");
+      shared.enable();
+    }
     expect(isReportingSdkStats()).toBe(false);
-    console.warn("standalone after teardown");
-    shared.enable();
     expect(console.warn).not.toBe(patch?.wrapper);
     console.warn("application after restart");
     vi.mocked(diag.warn).mockImplementation((...args) => console.warn(...args));
     reportFailure(new Error("stats failed after restart"));
     await Promise.all([provider.forceFlush(), handle.forceFlush()]);
-    expect(exporter.getFinishedLogRecords().map((record) => record.body)).toEqual([
-      "standalone after teardown",
+    const standaloneMessages = [
+      ...(restartDuringReport ? [] : ["standalone after teardown"]),
       "application after restart",
-    ]);
+    ];
+    expect(exporter.getFinishedLogRecords().map((record) => record.body)).toEqual(
+      standaloneMessages,
+    );
     expect(pipeline.logExporter.getFinishedLogRecords().map((record) => record.body)).toEqual([
       "application after restart",
     ]);
     await handle.shutdown();
     expect(console.warn).toBe(standaloneWarn);
+    expect(Object.getOwnPropertyDescriptor(console, "warn")).toEqual(patch?.descriptor);
+    console.warn("standalone after shutdown");
+    await provider.forceFlush();
+    expect(exporter.getFinishedLogRecords().map((record) => record.body)).toEqual([
+      ...standaloneMessages,
+      "standalone after shutdown",
+    ]);
   },
 );
+
+it("preserves an explicit console replacement installed during a diagnostic restart", () => {
+  const { provider, instrumentation: standalone } = createConsolePipeline();
+  owners.push(provider);
+  instrumentations.push(standalone);
+  const standaloneWarn = console.warn;
+  const shared = new ConsoleInstrumentation({ enabled: false, logMethods: ["warn"] });
+  const release = claimInstrumentations([shared]);
+  owners.push({ shutdown: async () => release() });
+  const replacement = vi.fn();
+  shared.enable();
+  try {
+    reportWithoutTelemetry(() => {
+      shared.disable();
+      console.warn = replacement;
+      shared.enable();
+    });
+    expect(getSharedRegistry().browserPatches?.targets.get(console)?.get("warn")?.original).toBe(
+      replacement,
+    );
+    console.warn("application warning");
+    expect(replacement).toHaveBeenCalledExactlyOnceWith("application warning");
+    shared.disable();
+    expect(console.warn).toBe(replacement);
+  } finally {
+    shared.disable();
+    console.warn = standaloneWarn;
+  }
+});
 
 it("preserves a shared console patch still owned by another instrumentation after diagnostics", () => {
   const { provider, instrumentation: standalone } = createConsolePipeline();

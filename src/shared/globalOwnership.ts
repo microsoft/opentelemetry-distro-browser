@@ -73,16 +73,21 @@ export function reportWithoutTelemetry(report: () => void): void {
           else break;
         }
         if (original === wrapped) continue;
+        const descriptor =
+          patch && wrapped === patch.wrapper
+            ? patch.descriptor
+            : Object.getOwnPropertyDescriptor(console, name);
         console[name] = original;
         restore.push(() => {
-          if (console[name] !== original) return;
-          // Teardown may remove the shared patch while its wrapper is bypassed.
-          console[name] =
-            patch &&
-            wrapped === patch.wrapper &&
-            registry?.browserPatches?.targets.get(console)?.get(name) !== patch
-              ? patch.original
-              : wrapped;
+          const current = registry?.browserPatches?.targets.get(console)?.get(name);
+          const restored =
+            patch && wrapped === patch.wrapper && current !== patch ? patch.original : wrapped;
+          // A restart must not retain the temporarily unwrapped method for calls or teardown.
+          if (current && current !== patch && current.original === original) {
+            current.original = restored;
+            current.descriptor = descriptor;
+          }
+          if (console[name] === original) console[name] = restored;
         });
       }
       /* eslint-enable no-console, @typescript-eslint/unbound-method */

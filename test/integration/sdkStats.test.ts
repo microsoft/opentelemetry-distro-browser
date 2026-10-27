@@ -33,9 +33,13 @@ afterEach(async () => {
   }
 });
 
-it.each(["index.js", "index.min.js", "iife.min"] as const)(
-  "keeps stats diagnostics out of standalone-first console pipelines across teardown and restart through %s",
-  async (file) => {
+it.each(
+  (["index.js", "index.min.js", "iife.min"] as const).flatMap((file) =>
+    [false, true].map((restartDuringReport) => ({ file, restartDuringReport })),
+  ),
+)(
+  "keeps stats diagnostics out of standalone-first console pipelines through $file with in-callback restart $restartDuringReport",
+  async ({ file, restartDuringReport }) => {
     context.disable();
     const transport = vi.fn<typeof fetch>(
       async (url) => new Response(null, { status: url === SDK_STATS_ENDPOINT ? 503 : 200 }),
@@ -91,6 +95,9 @@ it.each(["index.js", "index.min.js", "iife.min"] as const)(
         .mockImplementationOnce((...args) => {
           console.warn(...args);
           for (const instrumentation of instrumentations) instrumentation.disable();
+          if (restartDuringReport) {
+            for (const instrumentation of instrumentations) instrumentation.enable();
+          }
         });
       for (let index = 1; index <= 2; index++) {
         console.warn("application warning");
@@ -105,8 +112,10 @@ it.each(["index.js", "index.min.js", "iife.min"] as const)(
           Array<string>(index).fill("application warning"),
         );
         if (index === 1) {
-          expect(console.warn).toBe(standaloneWarn);
-          for (const instrumentation of instrumentations) instrumentation.enable();
+          if (!restartDuringReport) {
+            expect(console.warn).toBe(standaloneWarn);
+            for (const instrumentation of instrumentations) instrumentation.enable();
+          }
           expect(console.warn).not.toBe(sharedWarn);
           sharedWarn = console.warn;
         } else {
@@ -115,6 +124,13 @@ it.each(["index.js", "index.min.js", "iife.min"] as const)(
       }
       await handle.shutdown();
       expect(console.warn).toBe(standaloneWarn);
+      console.warn("standalone after shutdown");
+      await provider.forceFlush();
+      expect(exporter.getFinishedLogRecords().map((record) => record.body)).toEqual([
+        "application warning",
+        "application warning",
+        "standalone after shutdown",
+      ]);
     } finally {
       await handle?.shutdown();
       standalone.disable();
