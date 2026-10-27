@@ -462,13 +462,15 @@ export async function useMicrosoftOpenTelemetry(
       );
       stopAzureMonitorStartup = stop;
       startAzureMonitorDiagnostics = startDiagnostics;
+      // Caller processors run first, as in the JavaScript distribution, so their enrichment
+      // reaches Azure Monitor even when sampling forwards a copy of the record.
       if (span) {
         ownedProcessors.push(span);
-        spanProcessors = [span, ...(spanProcessors ?? [])];
+        spanProcessors = [...(spanProcessors ?? []), span];
       }
       if (log) {
         ownedProcessors.push(log);
-        logRecordProcessors = [log, ...(logRecordProcessors ?? [])];
+        logRecordProcessors = [...(logRecordProcessors ?? []), log];
       }
     }
     const noDestination = !azureMonitor && !spanProcessors && !logRecordProcessors;
