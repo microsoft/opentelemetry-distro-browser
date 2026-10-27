@@ -9,8 +9,8 @@ and [loader options](../src/snippet.ts).
 ## Initialization options
 
 Pass these options to `await useMicrosoftOpenTelemetry(options)`. Options are captured at startup;
-the [runtime update API](#runtime-sampling-updates) changes sampling only. Native
-initialization options are unchanged. Importing the package has no initialization side effects.
+the [runtime update API](#runtime-configuration-updates) can change sampling and session lifetimes.
+Other options remain startup-only. Importing the package has no initialization side effects.
 Initialize only in client-side code, before importing application code to instrument.
 
 | Option                | Type                                          | Default and behavior                                                                                                                                                                                  |
@@ -19,6 +19,8 @@ Initialize only in client-side code, before importing application code to instru
 | `resource`            | OpenTelemetry `Resource`                      | SDK defaults. Supplied attributes merge over defaults; use `service.name` and `service.version` to identify the application. Attributes resolve once; the resource schema URL is not carried through. |
 | `samplingPercentage`  | `number`                                      | Omitted: parent-based always-on trace sampling and no percentage sampling of Azure Monitor logs. See [sampling](#sampling).                                                                           |
 | `session`             | `MicrosoftOpenTelemetryBrowserSessionOptions` | Enabled and persisted, with 30-minute inactivity expiry and 24-hour maximum lifetime.                                                                                                                 |
+| `sessionRenewalMs`    | `number`, milliseconds                        | Application Insights alias for `session.inactivityTimeout`. Default: `1800000` (30 minutes); `0` restores this default. See [session options](#session-options).                                      |
+| `sessionExpirationMs` | `number`, milliseconds                        | Application Insights alias for `session.maxDuration`. Default: `86400000` (24 hours); `0` restores this default. See [session options](#session-options).                                             |
 | `storage`             | `{ enabled?: boolean; namePrefix?: string }`  | Enabled, with unprefixed keys. See [browser storage](#browser-storage).                                                                                                                               |
 | `userContext`         | `{ enabled?: boolean }`                       | Enabled: managed anonymous identity and authenticated identity set through the handle persist in same-origin storage.                                                                                 |
 | `traces`              | `MicrosoftOpenTelemetryBrowserTraceOptions`   | Synchronous context tracking, W3C Trace Context and Baggage propagation.                                                                                                                              |
@@ -122,37 +124,62 @@ automatically inherit Azure Monitor's log percentage filtering; supply any requi
 yourself. This includes built-in page-view logs: their operation's sampled flag does not itself
 prevent emission to custom log processors. There is no `traces.sampler` option.
 
-### Runtime sampling updates
+### Runtime configuration updates
 
-The returned handle exposes
-`updateCfg(patch: { samplingPercentage?: number }, mergeExisting = true)` returning
-`Promise<MicrosoftOpenTelemetryBrowserConfigurationUpdateResult>`. The frozen result contains
-readonly `revision` and `changedPaths`. A changed value increments the per-instance revision and
-returns `["samplingPercentage"]`; a no-op retains the revision and returns `[]`.
+The returned handle exposes `updateCfg(patch, mergeExisting = true)`, accepting
+`MicrosoftOpenTelemetryBrowserConfigurationUpdate` and returning
+`Promise<MicrosoftOpenTelemetryBrowserConfigurationUpdateResult>`. Supported paths are
+`samplingPercentage`, `session.inactivityTimeout` and `session.maxDuration`, plus the exact root
+aliases `sessionRenewalMs` and `sessionExpirationMs`. The aliases also work at initialization;
+see [session options](#session-options) for units, defaults and conflict handling.
 
-Only finite percentages from `0` through `100`, inclusive, or explicit `undefined` are accepted.
-Merge mode retains the current value when the field is omitted. Explicit `undefined`, or omission
-with `mergeExisting: false`, restores default parent-based trace sampling and removes Azure Monitor
-log percentage filtering; it does **not** restore the startup percentage or mean numeric `100`.
+- Merge mode (the default) preserves omitted fields, including nested session fields.
+  `{ session: {} }` is a no-op.
+- Explicit `samplingPercentage: undefined` restores parent-based trace sampling and removes Azure
+  Monitor log percentage filtering, not the startup percentage or numeric `100`.
+- An explicit `undefined` native lifetime or alias resets that lifetime to its native default:
+  30 minutes for inactivity, 24 hours for maximum duration. `session: undefined` resets both
+  lifetimes without changing sampling.
+- Passing `false` as the second argument replaces **only the supported runtime subset**. All
+  omitted sampling and lifetime fields reset to their defaults, including omitted nested fields;
+  startup-only options are unchanged.
 
-Updates affect subsequent span starts, default Azure Monitor log emissions and new page operations.
-Existing span/page decisions and queued logs are not resampled. A later correlated log can use a
-newer policy than its span; custom log processors still need their own filtering. Providers and
-already acquired tracers/loggers remain bound to the same instance. Updates serialize per instance,
-and input is validated and captured before queueing. Invalid values, accessors, non-plain objects
-and every other update path reject without changing configuration or revision. Queued and new
-updates reject once shutdown starts.
+The frozen result contains readonly `revision` and `changedPaths`. A commit changing any supported
+value increments the per-instance revision once. Changed paths use canonical names in this order:
+`samplingPercentage`, `session.inactivityTimeout`, `session.maxDuration`, even when aliases are used.
+No-op updates retain the revision and return `[]` for `changedPaths`.
+
+Sampling changes affect subsequent span starts, default Azure Monitor log emissions and new page
+operations. Existing span/page decisions and queued logs are not resampled. A later correlated log
+can use a newer policy than its span; custom log processors still need their own filtering.
+
+Session policy changes do not immediately rotate the ID, send telemetry or network requests,
+access or reset storage, replace providers, or refresh the session's start or last-activity timestamp.
+The next span start or log emission needing a managed session ID checks the new policy against
+those timestamps. Shortening a lifetime rotates the ID on that next managed activity if expiry is
+already due; extending or disabling a check can keep the current ID. Persisted session expiry is
+checked against the configured startup lifetime policy during restore. Application-supplied
+record/resource session attributes still take precedence.
+
+Providers and acquired tracers/loggers remain bound to the same instance. Updates serialize per
+instance, and input is validated and captured before queueing. Invalid values, accessors, non-plain
+objects, unsupported paths and conflicting native/alias values reject atomically without changing
+configuration or revision. Queued and new updates reject once shutdown starts.
 
 ```typescript
-const result = await telemetry.updateCfg({ samplingPercentage: 25 });
-await telemetry.updateCfg({}); // Retain the current percentage.
-await telemetry.updateCfg({ samplingPercentage: undefined }); // Restore default sampling.
-await telemetry.updateCfg({}, false); // Also restore default sampling.
+const result = await telemetry.updateCfg({ sessionRenewalMs: 60000 });
+// If changed, result.changedPaths is ["session.inactivityTimeout"].
+await telemetry.updateCfg({ session: { maxDuration: 0 } }); // Keep inactivity; disable maximum expiry.
+await telemetry.updateCfg({ sessionRenewalMs: undefined }); // Reset inactivity to 30 minutes.
+await telemetry.updateCfg({ session: undefined }); // Reset both lifetimes; keep sampling.
+await telemetry.updateCfg({}, false); // Reset sampling and both lifetimes to defaults.
 ```
 
-Session, beacon and network policy updates, runtime instrumentation registry operations and
-configuration synchronization are deferred. No root `connectionString` alias or other initializer
-aliases are added.
+`session.enabled`, `session.persist` and browser storage flags are not runtime-updateable. Lifetime
+updates cannot enable a disabled session or change persistence; `storage.enabled` and
+`storage.namePrefix` remain unchanged. Beacon/network policy, instrumentation registry operations
+and configuration synchronization are not supported by `updateCfg`. There is no root
+`connectionString` alias.
 
 ## Session and identity
 
@@ -194,8 +221,20 @@ and [send buffer](https://github.com/microsoft/ApplicationInsights-JS/blob/main/
 | `session.inactivityTimeout` | `number`, seconds | `1800`  | Time without managed-session telemetry before expiry. `0` disables inactivity expiry. |
 | `session.maxDuration`       | `number`, seconds | `86400` | Maximum lifetime, including reloads. `0` means unlimited.                             |
 
-Lifetimes must be finite and nonnegative. Managed `session.id` fills only an absent value: a
-non-empty string supplied on the record or resource takes precedence. Azure Monitor prefers a
+Lifetimes must be finite and nonnegative. At initialization and in `updateCfg`, the root Application
+Insights aliases `sessionRenewalMs` and `sessionExpirationMs` accept **milliseconds**, normalized to
+`session.inactivityTimeout` and `session.maxDuration` in **seconds**. Native `0` disables the
+corresponding expiry check; alias `0` or explicit `undefined` restores the corresponding default
+(30 minutes or 24 hours), rather than disabling expiry.
+
+Supplying a native lifetime and its alias in the same call is accepted only when their normalized
+values are equal. For example, `session: { inactivityTimeout: 60 }` with `sessionRenewalMs: 60000`
+is valid; `session: { inactivityTimeout: 0 }` with `sessionRenewalMs: 0` conflicts. A conflict fails
+initialization or rejects the whole runtime update without partial changes. Separate updates may
+replace a lifetime through either spelling.
+
+Managed `session.id` fills only an absent value: a non-empty string supplied on the record or
+resource takes precedence. Azure Monitor prefers a
 valid record-level ID over the resource ID. Inaccessible session storage falls back to memory.
 
 ### User identity options and controls

@@ -14,6 +14,7 @@ import type {
   MicrosoftOpenTelemetryBrowser,
   MicrosoftOpenTelemetryBrowserOptions,
 } from "../../src/types.js";
+import { installFakeClock } from "../fixtures/clock.js";
 import { withoutSdkStats } from "../fixtures/sdkStats.js";
 import { createInMemoryPipeline, createSpanContext } from "../fixtures/telemetry.js";
 
@@ -42,15 +43,31 @@ afterEach(async () => {
 
 async function start(options: Partial<MicrosoftOpenTelemetryBrowserOptions> = {}) {
   const pipeline = createInMemoryPipeline();
+  let tracer!: ReturnType<typeof trace.getTracer>;
+  let logger!: ReturnType<typeof logs.getLogger>;
   const handle = await useMicrosoftOpenTelemetry({
     ...pipeline.options,
     pageView: { enabled: false },
     session: { persist: false },
     userContext: { enabled: false },
     ...options,
+    instrumentations: [
+      ...(options.instrumentations ?? []),
+      {
+        setTracerProvider(provider) {
+          tracer = provider.getTracer("dynamic-configuration-bound");
+        },
+        setLoggerProvider(provider) {
+          logger = provider.getLogger("dynamic-configuration-bound");
+        },
+        getConfig: () => ({ enabled: true }),
+        enable() {},
+        disable() {},
+      },
+    ],
   });
   handles.push(handle);
-  return { ...pipeline, handle };
+  return { ...pipeline, handle, client: { tracer, logger } };
 }
 
 function clients() {
@@ -64,6 +81,255 @@ function emit(client: ReturnType<typeof clients>, name: string): void {
   client.tracer.startSpan(name, {}, ROOT_CONTEXT).end();
   client.logger.emit({ eventName: name, body: name, context: ROOT_CONTEXT });
 }
+
+it.each(["trace", "log"] as const)(
+  "exports matching session IDs when %s activity first observes runtime lifetime changes",
+  async (firstSignal) => {
+    const clock = installFakeClock();
+    const local = vi.spyOn(window, "localStorage", "get");
+    const session = vi.spyOn(window, "sessionStorage", "get");
+    const read = vi.spyOn(Storage.prototype, "getItem");
+    const write = vi.spyOn(Storage.prototype, "setItem");
+    const remove = vi.spyOn(Storage.prototype, "removeItem");
+    const pipeline = await start({
+      session: { persist: false, inactivityTimeout: 1, maxDuration: 2 },
+      storage: { enabled: false },
+    });
+    const { handle } = pipeline;
+    const { tracer, logger } = clients();
+    async function emitAndFlush(name: string) {
+      const emitTrace = () => tracer.startSpan(name, {}, ROOT_CONTEXT).end();
+      const emitLog = () => logger.emit({ eventName: name, body: name, context: ROOT_CONTEXT });
+      if (firstSignal === "trace") {
+        emitTrace();
+        emitLog();
+      } else {
+        emitLog();
+        emitTrace();
+      }
+      const flushed = handle.forceFlush();
+      await clock.advance(0);
+      await flushed;
+      const spans = pipeline.spanExporter.getFinishedSpans();
+      const records = pipeline.logExporter.getFinishedLogRecords();
+      expect(records.map((record) => record.eventName)).toEqual(spans.map((span) => span.name));
+      expect(records.map((record) => record.attributes["session.id"])).toEqual(
+        spans.map((span) => span.attributes["session.id"]),
+      );
+      const id = spans.at(-1)?.attributes["session.id"];
+      expect(id).toMatch(/^[0-9a-f]{32}$/);
+      return id;
+    }
+    try {
+      const initial = await emitAndFlush("initial");
+      await clock.advance(400);
+      expect(await emitAndFlush("recent-activity")).toBe(initial);
+      await clock.advance(2100);
+      // Both original limits have elapsed, but no activity has observed them yet.
+      await handle.updateCfg({ session: { inactivityTimeout: 3, maxDuration: 4 } });
+      expect(pipeline.spanExporter.getFinishedSpans()).toHaveLength(2);
+      expect(pipeline.logExporter.getFinishedLogRecords()).toHaveLength(2);
+      await clock.advance(899);
+      expect(await emitAndFlush("extended-with-original-timestamps")).toBe(initial);
+      await clock.advance(101);
+      await handle.updateCfg({ session: { maxDuration: 3.5 } });
+      expect(pipeline.spanExporter.getFinishedSpans()).toHaveLength(3);
+      expect(pipeline.logExporter.getFinishedLogRecords()).toHaveLength(3);
+      const maximumRotation = await emitAndFlush("shortened-maximum-boundary");
+      expect(maximumRotation).not.toBe(initial);
+      await clock.advance(500);
+      await handle.updateCfg({ session: { inactivityTimeout: 0.5, maxDuration: 0 } });
+      const inactivityRotation = await emitAndFlush("shortened-inactivity-boundary");
+      expect(inactivityRotation).not.toBe(maximumRotation);
+      await handle.updateCfg({ session: { inactivityTimeout: 0, maxDuration: 0 } });
+      await clock.advance(25 * 60 * 60_000);
+      expect(await emitAndFlush("native-zero-disables-expiration")).toBe(inactivityRotation);
+      await handle.updateCfg({ sessionRenewalMs: 0, sessionExpirationMs: 0 });
+      expect(await emitAndFlush("alias-zero-restores-default-maximum")).not.toBe(
+        inactivityRotation,
+      );
+      expect(pipeline.spanExporter.getFinishedSpans()).toHaveLength(7);
+      expect(pipeline.logExporter.getFinishedLogRecords()).toHaveLength(7);
+    } finally {
+      try {
+        const stopped = handle.shutdown();
+        await clock.advance(0);
+        await stopped;
+        expect(vi.getTimerCount()).toBe(0);
+        expect(local).not.toHaveBeenCalled();
+        expect(session).not.toHaveBeenCalled();
+        expect(read).not.toHaveBeenCalled();
+        expect(write).not.toHaveBeenCalled();
+        expect(remove).not.toHaveBeenCalled();
+      } finally {
+        clock.restore();
+      }
+    }
+  },
+);
+
+it("keeps cached span and log clients on independent sessions through lifetime extension and rotation", async () => {
+  const started = Date.now();
+  const clock = vi.spyOn(Date, "now").mockReturnValue(started);
+  const first = await start({
+    resource: resourceFromAttributes({ "service.name": "session-first" }),
+    session: { persist: false, inactivityTimeout: 1, maxDuration: 0 },
+  });
+  const cachedFirst = clients();
+  const second = await start({
+    resource: resourceFromAttributes({ "service.name": "session-second" }),
+    session: { persist: false, inactivityTimeout: 10, maxDuration: 0 },
+  });
+  // Instrumentation receives the second instance's providers, not the default global route.
+  const cachedSecond = second.client;
+  emit(cachedFirst, "initial");
+  emit(cachedSecond, "initial");
+  clock.mockReturnValue(started + 1500);
+  await first.handle.updateCfg({ session: { inactivityTimeout: 3 } });
+  emit(cachedFirst, "extended-after-old-expiry");
+  emit(cachedSecond, "unaffected-extension");
+  clock.mockReturnValue(started + 2500);
+  await first.handle.updateCfg({ session: { inactivityTimeout: 0.5 } });
+  emit(cachedFirst, "shortened");
+  emit(cachedSecond, "unaffected-shortening");
+  await first.handle.updateCfg({ session: { inactivityTimeout: 0 } });
+  clock.mockReturnValue(started + 4000);
+  await second.handle.updateCfg({ session: { maxDuration: 3 } });
+  emit(cachedFirst, "unaffected-maximum");
+  emit(cachedSecond, "shortened-maximum");
+  await Promise.all([first.handle.forceFlush(), second.handle.forceFlush()]);
+
+  const firstIds = first.spanExporter
+    .getFinishedSpans()
+    .map((span) => span.attributes["session.id"]);
+  const secondIds = second.spanExporter
+    .getFinishedSpans()
+    .map((span) => span.attributes["session.id"]);
+  expect(firstIds).toHaveLength(4);
+  expect(secondIds).toHaveLength(4);
+  expect(firstIds[0]).toMatch(/^[0-9a-f]{32}$/);
+  expect(secondIds[0]).toMatch(/^[0-9a-f]{32}$/);
+  expect(firstIds[0]).not.toBe(secondIds[0]);
+  expect(firstIds[1]).toBe(firstIds[0]);
+  expect(firstIds[2]).not.toBe(firstIds[0]);
+  expect(firstIds[3]).toBe(firstIds[2]);
+  expect(secondIds.slice(0, 3)).toEqual([secondIds[0], secondIds[0], secondIds[0]]);
+  expect(secondIds[3]).not.toBe(secondIds[0]);
+  for (const [pipeline, ids, service] of [
+    [first, firstIds, "session-first"],
+    [second, secondIds, "session-second"],
+  ] as const) {
+    expect(
+      pipeline.logExporter.getFinishedLogRecords().map((record) => record.attributes["session.id"]),
+    ).toEqual(ids);
+    for (const record of [
+      ...pipeline.spanExporter.getFinishedSpans(),
+      ...pipeline.logExporter.getFinishedLogRecords(),
+    ]) {
+      expect(record.resource.attributes["service.name"]).toBe(service);
+    }
+  }
+});
+
+it("converts startup and runtime session aliases and rejects normalized conflicts without changing sampling", async () => {
+  const started = Date.now();
+  const clock = vi.spyOn(Date, "now").mockReturnValue(started);
+  const pipeline = await start({
+    samplingPercentage: 100,
+    session: { persist: false, maxDuration: 0 },
+    sessionRenewalMs: 1000,
+  });
+  const cached = clients();
+  emit(cached, "initial");
+  clock.mockReturnValue(started + 1500);
+  await pipeline.handle.updateCfg({ sessionRenewalMs: 3000 });
+  emit(cached, "extended");
+  await expect(
+    pipeline.handle.updateCfg({
+      samplingPercentage: 0,
+      session: { inactivityTimeout: 0 },
+      sessionRenewalMs: 0,
+    }),
+  ).rejects.toThrow();
+  clock.mockReturnValue(started + 3000);
+  emit(cached, "conflict-was-atomic");
+  await pipeline.handle.updateCfg({ sessionRenewalMs: 0 });
+  clock.mockReturnValue(started + 3000 + 1800_000 - 1);
+  emit(cached, "alias-zero-is-default-not-zero-ms");
+  clock.mockReturnValue(started + 3000 + 2 * 1800_000 - 1);
+  emit(cached, "alias-default-boundary");
+  await pipeline.handle.forceFlush();
+
+  const spans = pipeline.spanExporter.getFinishedSpans();
+  expect(spans.map((span) => span.name)).toEqual([
+    "initial",
+    "extended",
+    "conflict-was-atomic",
+    "alias-zero-is-default-not-zero-ms",
+    "alias-default-boundary",
+  ]);
+  const ids = spans.map((span) => span.attributes["session.id"]);
+  expect(ids[0]).toMatch(/^[0-9a-f]{32}$/);
+  expect(ids.slice(0, 4)).toEqual([ids[0], ids[0], ids[0], ids[0]]);
+  expect(ids[4]).not.toBe(ids[0]);
+  expect(
+    pipeline.logExporter.getFinishedLogRecords().map((record) => record.attributes["session.id"]),
+  ).toEqual(ids);
+});
+
+it.each([
+  { field: "inactivityTimeout", defaultSeconds: 1800 },
+  { field: "maxDuration", defaultSeconds: 86400 },
+] as const)(
+  "replacement restores sampling and $field defaults on cached clients without restarting the session",
+  async ({ field, defaultSeconds }) => {
+    const started = Date.now();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(started);
+    const pipeline = await start({
+      samplingPercentage: 100,
+      session: { persist: false, inactivityTimeout: 0, maxDuration: 0 },
+    });
+    const cached = clients();
+    emit(cached, "initial");
+    clock.mockReturnValue(started + defaultSeconds * 1000 - 1);
+    if (field === "maxDuration") emit(cached, "recent-activity");
+    await pipeline.handle.updateCfg({}, false);
+    cached.tracer
+      .startSpan(
+        "default-unsampled-parent",
+        {},
+        trace.setSpanContext(ROOT_CONTEXT, {
+          ...createSpanContext(),
+          traceFlags: 0,
+        }),
+      )
+      .end();
+    clock.mockReturnValue(started + defaultSeconds * 1000);
+    emit(cached, "default-boundary");
+    await pipeline.handle.forceFlush();
+
+    const spans = pipeline.spanExporter.getFinishedSpans();
+    expect(spans.map((span) => span.name)).toEqual(
+      field === "maxDuration"
+        ? ["initial", "recent-activity", "default-boundary"]
+        : ["initial", "default-boundary"],
+    );
+    const ids = spans.map((span) => span.attributes["session.id"]);
+    expect(ids[0]).toMatch(/^[0-9a-f]{32}$/);
+    if (field === "maxDuration") expect(ids[1]).toBe(ids[0]);
+    expect(ids.at(-1)).not.toBe(ids[0]);
+    expect(
+      pipeline.logExporter.getFinishedLogRecords().map((record) => record.attributes["session.id"]),
+    ).toEqual(ids);
+    await pipeline.handle.shutdown();
+    await expect(pipeline.handle.updateCfg({ session: { maxDuration: 0 } })).rejects.toThrow(
+      "stopped",
+    );
+    emit(cached, "stale-client");
+    expect(pipeline.spanExporter.getFinishedSpans()).toEqual([]);
+    expect(pipeline.logExporter.getFinishedLogRecords()).toEqual([]);
+  },
+);
 
 it("keeps cached tracers and loggers bound to their instance across 0/100/reset updates", async () => {
   const first = await start({ resource: resourceFromAttributes({ "service.name": "first" }) });

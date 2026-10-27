@@ -168,8 +168,31 @@ export async function useMicrosoftOpenTelemetry(
   options: MicrosoftOpenTelemetryBrowserOptions = {},
 ): Promise<MicrosoftOpenTelemetryBrowser> {
   let stopping = false;
+  const sessionOptions = options.session;
+  const inactivityTimeout = sessionOptions?.inactivityTimeout;
+  const maxDuration = sessionOptions?.maxDuration;
+  const sessionRenewalMs = options.sessionRenewalMs;
+  const sessionExpirationMs = options.sessionExpirationMs;
   const configuration = createRuntimeConfiguration(
-    { samplingPercentage: options.samplingPercentage },
+    {
+      samplingPercentage: options.samplingPercentage,
+      session: {
+        ...((inactivityTimeout !== undefined ||
+          (sessionOptions && Object.hasOwn(sessionOptions, "inactivityTimeout"))) && {
+          inactivityTimeout,
+        }),
+        ...((maxDuration !== undefined ||
+          (sessionOptions && Object.hasOwn(sessionOptions, "maxDuration"))) && {
+          maxDuration,
+        }),
+      },
+      ...((sessionRenewalMs !== undefined || Object.hasOwn(options, "sessionRenewalMs")) && {
+        sessionRenewalMs,
+      }),
+      ...((sessionExpirationMs !== undefined || Object.hasOwn(options, "sessionExpirationMs")) && {
+        sessionExpirationMs,
+      }),
+    },
     () => stopping,
   );
   const redactedQueryParams: readonly string[] = [
@@ -189,18 +212,18 @@ export async function useMicrosoftOpenTelemetry(
     throw new TypeError("storage.enabled must be a boolean and storage.namePrefix a string.");
   }
   const session =
-    options.session?.enabled !== false
+    sessionOptions?.enabled !== false
       ? createSession(
           {
-            persist: storageEnabled ? options.session?.persist : false,
-            inactivityTimeout: options.session?.inactivityTimeout,
-            maxDuration: options.session?.maxDuration,
+            persist: storageEnabled ? sessionOptions?.persist : false,
+            ...configuration.snapshot().session,
           },
           createKeyValueStorage(
             "localStorage",
             "Session storage unavailable; using an in-memory session.",
             namePrefix,
           ),
+          () => configuration.snapshot().session,
         )
       : undefined;
   getSharedRegistry();

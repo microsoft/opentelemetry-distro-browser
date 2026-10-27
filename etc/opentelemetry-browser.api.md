@@ -80,6 +80,12 @@ export interface MicrosoftOpenTelemetryBrowser {
 // @public
 export interface MicrosoftOpenTelemetryBrowserConfigurationUpdate {
     samplingPercentage?: number | undefined;
+    session?: {
+        inactivityTimeout?: number | undefined;
+        maxDuration?: number | undefined;
+    } | undefined;
+    sessionExpirationMs?: number | undefined;
+    sessionRenewalMs?: number | undefined;
 }
 
 // @public
@@ -100,6 +106,8 @@ export interface MicrosoftOpenTelemetryBrowserOptions {
     resource?: Resource;
     samplingPercentage?: number;
     session?: MicrosoftOpenTelemetryBrowserSessionOptions;
+    sessionExpirationMs?: number | undefined;
+    sessionRenewalMs?: number | undefined;
     spanProcessors?: SpanProcessor[];
     storage?: {
         enabled?: boolean;
