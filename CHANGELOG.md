@@ -45,6 +45,10 @@ false` blocks SDK-managed storage access, including later identity-control calls
 - Shrink the minified CDN bundles by minifying them with SWC, which also shortens `_`-prefixed
   private properties, and by trimming exporter code. `opentelemetry-browser.min.js` drops from
   164.64 kB to 150.70 kB minified (50.40 kB to 48.22 kB gzip).
+- Run supplied `spanProcessors` and `logRecordProcessors` before the Azure Monitor exporter, as in
+  the JavaScript distribution. Attributes that log record processors add in `onEmit` now reach Azure
+  Monitor when `samplingPercentage` is set. Document processors as the replacement for Application
+  Insights telemetry initializers and `getPlugin`.
 
 ## 0.1.0-beta.1 - 2026-10-15
 

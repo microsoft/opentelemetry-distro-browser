@@ -113,7 +113,7 @@ it("prepends session enrichment without changing the caller's processor arrays",
   expect(upstreamHandle.shutdown).toHaveBeenCalledOnce();
 });
 
-it("adds Azure Monitor batch exporters after context enrichment and before caller processors", async () => {
+it("adds Azure Monitor batch exporters after context enrichment and caller processors", async () => {
   const pipeline = createInMemoryPipeline();
   const upstreamHandle = fakeInstance();
   vi.mocked(startTelemetryInstance).mockResolvedValueOnce(upstreamHandle);
@@ -138,15 +138,15 @@ it("adds Azure Monitor batch exporters after context enrichment and before calle
   expect(sdkOptions.spanProcessors[0]).toEqual(
     expect.objectContaining({ onStart: expect.any(Function) }),
   );
-  expect(sdkOptions.spanProcessors[1]).toBeInstanceOf(BatchSpanProcessor);
-  expect(sdkOptions.spanProcessors[2]).toBe(pipeline.spanProcessor);
+  expect(sdkOptions.spanProcessors[1]).toBe(pipeline.spanProcessor);
+  expect(sdkOptions.spanProcessors[2]).toBeInstanceOf(BatchSpanProcessor);
   expect(sdkOptions.logRecordProcessors).toHaveLength(3);
   expect(sdkOptions.logRecordProcessors[0]).toEqual(
     expect.objectContaining({ onEmit: expect.any(Function) }),
   );
-  expect(sdkOptions.logRecordProcessors[1]).toBeInstanceOf(BrowserBatchLogRecordProcessor);
-  expect(sdkOptions.logRecordProcessors[1]).toBeInstanceOf(AzureMonitorSamplingLogRecordProcessor);
-  expect(sdkOptions.logRecordProcessors[2]).toBe(pipeline.logProcessor);
+  expect(sdkOptions.logRecordProcessors[1]).toBe(pipeline.logProcessor);
+  expect(sdkOptions.logRecordProcessors[2]).toBeInstanceOf(BrowserBatchLogRecordProcessor);
+  expect(sdkOptions.logRecordProcessors[2]).toBeInstanceOf(AzureMonitorSamplingLogRecordProcessor);
   expect(
     addDocumentListener.mock.calls.filter(([eventName]) => eventName === "visibilitychange"),
   ).toHaveLength(1);

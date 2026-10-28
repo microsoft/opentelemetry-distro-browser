@@ -217,6 +217,11 @@ export interface MicrosoftOpenTelemetryBrowserOptions {
    * Monitor when `azureMonitor` is set; otherwise trace initialization is skipped. An empty array
    * always skips trace initialization. Ownership transfers when provider startup begins, including failed startup.
    * Do not share processor instances between handles.
+   *
+   * @remarks
+   * Use these in place of Application Insights telemetry initializers. They run before the Azure
+   * Monitor exporter, so attributes set in `onStart` or `onEnding` are exported. Processors are
+   * fixed at startup; to change enrichment later, read application state from the processor.
    */
   spanProcessors?: SpanProcessor[];
   /**
@@ -224,6 +229,11 @@ export interface MicrosoftOpenTelemetryBrowserOptions {
    * Monitor when `azureMonitor` is set; otherwise log initialization is skipped. An empty array
    * always skips log initialization. Ownership transfers when provider startup begins, including failed startup.
    * Do not share processor instances between handles.
+   *
+   * @remarks
+   * Use these in place of Application Insights telemetry initializers. They run before the Azure
+   * Monitor exporter, so attributes set in `onEmit` are exported. Processors are fixed at startup;
+   * to change enrichment later, read application state from the processor.
    */
   logRecordProcessors?: LogRecordProcessor[];
   /**
