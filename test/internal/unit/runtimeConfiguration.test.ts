@@ -83,7 +83,7 @@ describe("sampling configuration", () => {
     },
   );
 
-  it.each([null, [], 1, "config", new Date(), { azureMonitor: {} }])(
+  it.each([null, [], 1, "config", new Date(), { connectionString: undefined }])(
     "rejects unsupported patches: %s",
     async (value) => {
       const { controller } = create();
@@ -143,12 +143,446 @@ describe("sampling configuration", () => {
     const queued = controller.updateCfg({
       samplingPercentage: 0,
       session: { inactivityTimeout: 0, maxDuration: 0 },
+      azureMonitor: { disableBeacon: true },
     });
     stop();
     await expect(queued).rejects.toThrow("stopped");
     await expect(
       controller.updateCfg({ sessionRenewalMs: 1000, sessionExpirationMs: 2000 }),
     ).rejects.toThrow("stopped");
+    expect(controller.snapshot()).toBe(original);
+  });
+});
+
+describe("unload beacon configuration", () => {
+  const defaults = {
+    samplingPercentage: undefined,
+    session: { inactivityTimeout: 1800, maxDuration: 86400 },
+    azureMonitor: { disableBeacon: false },
+  };
+  const initial = {
+    samplingPercentage: 50,
+    session: { inactivityTimeout: 60, maxDuration: 120 },
+    azureMonitor: { disableBeacon: true },
+  };
+  const changedPaths = [
+    "samplingPercentage",
+    "session.inactivityTimeout",
+    "session.maxDuration",
+    "azureMonitor.disableBeacon",
+  ];
+
+  it.each([
+    { patch: {}, disableBeacon: false },
+    { patch: { azureMonitor: {} }, disableBeacon: false },
+    { patch: { azureMonitor: undefined }, disableBeacon: false },
+    { patch: { azureMonitor: { disableBeacon: undefined } }, disableBeacon: false },
+    { patch: { onunloadDisableBeacon: undefined }, disableBeacon: false },
+    { patch: { azureMonitor: { disableBeacon: false } }, disableBeacon: false },
+    { patch: { onunloadDisableBeacon: false }, disableBeacon: false },
+    { patch: { azureMonitor: { disableBeacon: true } }, disableBeacon: true },
+    { patch: { onunloadDisableBeacon: true }, disableBeacon: true },
+  ])("normalizes the initial policy: $patch", ({ patch, disableBeacon }) => {
+    const snapshot = create(patch).controller.snapshot();
+    expect(snapshot).toEqual({ ...defaults, azureMonitor: { disableBeacon } });
+    expect(Object.isFrozen(snapshot)).toBe(true);
+    expect(Object.isFrozen(snapshot.session)).toBe(true);
+    expect(Object.isFrozen(snapshot.azureMonitor)).toBe(true);
+    expect(() => Object.assign(snapshot.azureMonitor, { disableBeacon: !disableBeacon })).toThrow(
+      TypeError,
+    );
+  });
+
+  it.each([
+    {},
+    { azureMonitor: {} },
+    { azureMonitor: { disableBeacon: true } },
+    { onunloadDisableBeacon: true },
+    { azureMonitor: { disableBeacon: true }, onunloadDisableBeacon: true },
+  ])("retains omitted values and snapshot identity for no-op merges: %s", async (patch) => {
+    const { controller } = create(initial);
+    const original = controller.snapshot();
+    const result = await controller.updateCfg(patch);
+    expect(result).toEqual({ revision: 0, changedPaths: [] });
+    expect(controller.snapshot()).toBe(original);
+    expect(controller.snapshot().session).toBe(original.session);
+    expect(controller.snapshot().azureMonitor).toBe(original.azureMonitor);
+    expect(Object.isFrozen(original.azureMonitor)).toBe(true);
+    expect(Object.isFrozen(result)).toBe(true);
+    expect(Object.isFrozen(result.changedPaths)).toBe(true);
+  });
+
+  it.each([
+    { azureMonitor: undefined },
+    { azureMonitor: { disableBeacon: undefined } },
+    { azureMonitor: { disableBeacon: false } },
+    { onunloadDisableBeacon: undefined },
+    { onunloadDisableBeacon: false },
+  ])("resets only beacon policy when merging: %s", async (patch) => {
+    const { controller } = create(initial);
+    const original = controller.snapshot();
+    expect(await controller.updateCfg(patch)).toEqual({
+      revision: 1,
+      changedPaths: ["azureMonitor.disableBeacon"],
+    });
+    expect(controller.snapshot()).toEqual({ ...initial, azureMonitor: { disableBeacon: false } });
+    const reset = controller.snapshot();
+    expect(await controller.updateCfg(patch)).toEqual({ revision: 1, changedPaths: [] });
+    expect(controller.snapshot()).toBe(reset);
+    expect(original.azureMonitor.disableBeacon).toBe(true);
+  });
+
+  it.each([
+    { patch: {}, expected: defaults, paths: changedPaths },
+    { patch: { azureMonitor: {} }, expected: defaults, paths: changedPaths },
+    { patch: { azureMonitor: undefined }, expected: defaults, paths: changedPaths },
+    {
+      patch: { azureMonitor: { disableBeacon: undefined } },
+      expected: defaults,
+      paths: changedPaths,
+    },
+    { patch: { onunloadDisableBeacon: undefined }, expected: defaults, paths: changedPaths },
+    {
+      patch: { samplingPercentage: 25 },
+      expected: { ...defaults, samplingPercentage: 25 },
+      paths: changedPaths,
+    },
+    {
+      patch: { session: { inactivityTimeout: 60 } },
+      expected: { ...defaults, session: { inactivityTimeout: 60, maxDuration: 86400 } },
+      paths: ["samplingPercentage", "session.maxDuration", "azureMonitor.disableBeacon"],
+    },
+    {
+      patch: { azureMonitor: { disableBeacon: true } },
+      expected: { ...defaults, azureMonitor: { disableBeacon: true } },
+      paths: changedPaths.slice(0, 3),
+    },
+    {
+      patch: { onunloadDisableBeacon: true },
+      expected: { ...defaults, azureMonitor: { disableBeacon: true } },
+      paths: changedPaths.slice(0, 3),
+    },
+  ])(
+    "resets omitted supported fields on replacement: $patch",
+    async ({ patch, expected, paths }) => {
+      const { controller } = create(initial);
+      expect(await controller.updateCfg(patch, false)).toEqual({
+        revision: 1,
+        changedPaths: paths,
+      });
+      expect(controller.snapshot()).toEqual(expected);
+      const reset = controller.snapshot();
+      expect(await controller.updateCfg(patch, false)).toEqual({ revision: 1, changedPaths: [] });
+      expect(controller.snapshot()).toBe(reset);
+    },
+  );
+
+  it.each([
+    { azureMonitor: { disableBeacon: true }, onunloadDisableBeacon: true },
+    { azureMonitor: { disableBeacon: false }, onunloadDisableBeacon: false },
+    { azureMonitor: { disableBeacon: undefined }, onunloadDisableBeacon: false },
+    { azureMonitor: { disableBeacon: false }, onunloadDisableBeacon: undefined },
+    { azureMonitor: { disableBeacon: undefined }, onunloadDisableBeacon: undefined },
+    { azureMonitor: undefined, onunloadDisableBeacon: false },
+    { azureMonitor: undefined, onunloadDisableBeacon: undefined },
+    { azureMonitor: {}, onunloadDisableBeacon: true },
+  ])("accepts aliases only when supplied native values normalize equally: %s", async (patch) => {
+    const disableBeacon = patch.onunloadDisableBeacon ?? false;
+    expect(create(patch).controller.snapshot().azureMonitor).toEqual({ disableBeacon });
+    const { controller } = create({ azureMonitor: { disableBeacon: !disableBeacon } });
+    expect(await controller.updateCfg(patch)).toEqual({
+      revision: 1,
+      changedPaths: ["azureMonitor.disableBeacon"],
+    });
+    expect(controller.snapshot().azureMonitor).toEqual({ disableBeacon });
+  });
+
+  describe.each([false, true])("conflicts with reversed insertion order: %s", (reverse) => {
+    it.each([
+      { azureMonitor: { disableBeacon: true }, onunloadDisableBeacon: false },
+      { azureMonitor: { disableBeacon: false }, onunloadDisableBeacon: true },
+      { azureMonitor: { disableBeacon: undefined }, onunloadDisableBeacon: true },
+      { azureMonitor: { disableBeacon: true }, onunloadDisableBeacon: undefined },
+      { azureMonitor: undefined, onunloadDisableBeacon: true },
+    ])("rejects conflicting normalized paths atomically: %s", async (input) => {
+      const entries = Object.entries(input);
+      const patch = invalid(Object.fromEntries(reverse ? entries.reverse() : entries));
+      expect(() => create(patch)).toThrow("Conflicting configuration paths");
+      const { controller } = create(initial);
+      const original = controller.snapshot();
+      await expect(
+        controller.updateCfg({
+          ...patch,
+          samplingPercentage: 0,
+          session: { inactivityTimeout: 0, maxDuration: 0 },
+        }),
+      ).rejects.toThrow("Conflicting configuration paths");
+      expect(controller.snapshot()).toBe(original);
+      expect(await controller.updateCfg({})).toEqual({ revision: 0, changedPaths: [] });
+    });
+  });
+
+  it("lets native and alias calls overwrite each other without retaining conflicts", async () => {
+    const { controller } = create();
+    const patches = [
+      { onunloadDisableBeacon: true },
+      { azureMonitor: { disableBeacon: false } },
+      { azureMonitor: { disableBeacon: true } },
+      { onunloadDisableBeacon: undefined },
+    ];
+    for (const [index, patch] of patches.entries()) {
+      expect(await controller.updateCfg(patch)).toEqual({
+        revision: index + 1,
+        changedPaths: ["azureMonitor.disableBeacon"],
+      });
+      expect(controller.snapshot().azureMonitor.disableBeacon).toBe(index % 2 === 0);
+    }
+  });
+
+  describe.each([
+    {
+      path: "azureMonitor.disableBeacon",
+      patch: (value: unknown) => ({ azureMonitor: { disableBeacon: value } }),
+    },
+    {
+      path: "onunloadDisableBeacon",
+      patch: (value: unknown) => ({ onunloadDisableBeacon: value }),
+    },
+  ])("$path validation", ({ path, patch }) => {
+    it.each([
+      null,
+      0,
+      1,
+      NaN,
+      Infinity,
+      "true",
+      "false",
+      "",
+      {},
+      [],
+      () => true,
+      Object(true) as unknown,
+      new Date(),
+      Symbol("disableBeacon"),
+    ])("rejects non-boolean values without coercion: %s", async (value) => {
+      const update = invalid({
+        samplingPercentage: 0,
+        session: { inactivityTimeout: 0, maxDuration: 0 },
+        ...patch(value),
+      });
+      expect(() => create(update)).toThrow(path);
+      const { controller } = create(initial);
+      const original = controller.snapshot();
+      await expect(controller.updateCfg(update)).rejects.toThrow(path);
+      expect(controller.snapshot()).toBe(original);
+      expect(await controller.updateCfg({})).toEqual({ revision: 0, changedPaths: [] });
+      expect(await controller.updateCfg({ onunloadDisableBeacon: false })).toEqual({
+        revision: 1,
+        changedPaths: ["azureMonitor.disableBeacon"],
+      });
+    });
+  });
+
+  it.each([
+    { samplingPercentage: NaN },
+    { samplingPercentage: "25" },
+    { session: { inactivityTimeout: -1 } },
+    { session: { maxDuration: null } },
+    { sessionRenewalMs: -1 },
+    { sessionExpirationMs: Infinity },
+    { session: { inactivityTimeout: 0 }, sessionRenewalMs: 0 },
+  ])(
+    "does not commit a valid beacon policy alongside invalid sampling or sessions: %s",
+    async (patch) => {
+      const update = invalid({ ...initial, azureMonitor: { disableBeacon: false }, ...patch });
+      expect(() => create(update)).toThrow();
+      const { controller } = create(initial);
+      const original = controller.snapshot();
+      await expect(controller.updateCfg(update)).rejects.toThrow();
+      expect(controller.snapshot()).toBe(original);
+      expect(await controller.updateCfg({})).toEqual({ revision: 0, changedPaths: [] });
+    },
+  );
+
+  it.each([
+    null,
+    [],
+    () => ({}),
+    new Date(),
+    0,
+    "azureMonitor",
+    true,
+    Symbol("azureMonitor"),
+    Object.create({ disableBeacon: true }) as unknown,
+  ])("rejects non-plain native objects initially and at runtime: %s", async (azureMonitor) => {
+    const update = invalid({ samplingPercentage: 0, azureMonitor });
+    expect(() => create(update)).toThrow("plain object");
+    const { controller } = create(initial);
+    const original = controller.snapshot();
+    await expect(controller.updateCfg(update)).rejects.toThrow("plain object");
+    expect(controller.snapshot()).toBe(original);
+  });
+
+  it.each([
+    "connectionString",
+    "initTimeOut",
+    "initInMemoMaxSize",
+    "onunloadDisableBeacon",
+    "constructor",
+    "prototype",
+    "__proto__",
+    Symbol("disableBeacon"),
+  ])("rejects unsupported nested keys even when undefined or non-enumerable: %s", async (key) => {
+    for (const enumerable of [false, true]) {
+      for (const value of [undefined, "startup-only"]) {
+        const azureMonitor = Object.defineProperty({ disableBeacon: false }, key, {
+          value,
+          enumerable,
+        });
+        const update = invalid({ samplingPercentage: 0, azureMonitor });
+        expect(() => create(update)).toThrow("Unsupported configuration path");
+        const { controller } = create(initial);
+        const original = controller.snapshot();
+        await expect(controller.updateCfg(update)).rejects.toThrow(
+          "Unsupported configuration path",
+        );
+        expect(controller.snapshot()).toBe(original);
+        expect(await controller.updateCfg({})).toEqual({ revision: 0, changedPaths: [] });
+      }
+    }
+  });
+
+  it.each(["disableBeacon", "connectionString", Symbol("onunloadDisableBeacon")])(
+    "rejects unsupported root keys even when non-enumerable: %s",
+    async (key) => {
+      const update = invalid(
+        Object.defineProperty({ onunloadDisableBeacon: false }, key, {
+          value: undefined,
+        }),
+      );
+      expect(() => create(update)).toThrow("Unsupported configuration path");
+      const { controller } = create(initial);
+      const original = controller.snapshot();
+      await expect(controller.updateCfg(update)).rejects.toThrow("Unsupported configuration path");
+      expect(controller.snapshot()).toBe(original);
+    },
+  );
+
+  it.each(["azureMonitor", "onunloadDisableBeacon", "disableBeacon"])(
+    "rejects %s accessors without invoking application code",
+    async (key) => {
+      const getter = vi.fn(() => true);
+      const setter = vi.fn();
+      for (const enumerable of [false, true]) {
+        const target = Object.defineProperty({}, key, { get: getter, set: setter, enumerable });
+        const update = invalid(key === "disableBeacon" ? { azureMonitor: target } : target);
+        expect(() => create(update)).toThrow("data property");
+        const { controller } = create(initial);
+        const original = controller.snapshot();
+        await expect(controller.updateCfg(update)).rejects.toThrow("data property");
+        expect(controller.snapshot()).toBe(original);
+      }
+      expect(getter).not.toHaveBeenCalled();
+      expect(setter).not.toHaveBeenCalled();
+    },
+  );
+
+  it("accepts own data on null-prototype root and nested objects", async () => {
+    const azureMonitor = Object.assign(Object.create(null) as object, { disableBeacon: true });
+    const patch = Object.assign(Object.create(null) as object, {
+      azureMonitor,
+      onunloadDisableBeacon: true,
+    });
+    expect(create(patch).controller.snapshot().azureMonitor).toEqual({ disableBeacon: true });
+    const { controller } = create();
+    expect(await controller.updateCfg(patch)).toEqual({
+      revision: 1,
+      changedPaths: ["azureMonitor.disableBeacon"],
+    });
+    expect(controller.snapshot().azureMonitor).not.toBe(azureMonitor);
+    expect(Object.isFrozen(controller.snapshot().azureMonitor)).toBe(true);
+  });
+
+  it("detaches initial, queued native and alias input without freezing caller objects", async () => {
+    const azureMonitor = { disableBeacon: true };
+    const { controller } = create({ azureMonitor });
+    const original = controller.snapshot();
+    azureMonitor.disableBeacon = false;
+    expect(original.azureMonitor.disableBeacon).toBe(true);
+    expect(original.azureMonitor).not.toBe(azureMonitor);
+    expect(Object.isFrozen(azureMonitor)).toBe(false);
+
+    const patch = { azureMonitor };
+    const queued = controller.updateCfg(patch);
+    azureMonitor.disableBeacon = true;
+    patch.azureMonitor = { disableBeacon: true };
+    expect(controller.snapshot()).toBe(original);
+    expect(await queued).toEqual({ revision: 1, changedPaths: ["azureMonitor.disableBeacon"] });
+    const first = controller.snapshot();
+    expect(first.azureMonitor.disableBeacon).toBe(false);
+    expect(Object.isFrozen(first.azureMonitor)).toBe(true);
+    const alias = { onunloadDisableBeacon: true };
+    const aliasUpdate = controller.updateCfg(alias);
+    alias.onunloadDisableBeacon = false;
+    expect(await aliasUpdate).toEqual({
+      revision: 2,
+      changedPaths: ["azureMonitor.disableBeacon"],
+    });
+    expect(controller.snapshot().azureMonitor.disableBeacon).toBe(true);
+    expect(first.azureMonitor.disableBeacon).toBe(false);
+    expect(original.azureMonitor.disableBeacon).toBe(true);
+  });
+
+  it("serializes all policies with canonical path ordering regardless of alias insertion order", async () => {
+    const { controller } = create();
+    const original = controller.snapshot();
+    const first = controller.updateCfg({
+      onunloadDisableBeacon: true,
+      sessionExpirationMs: 2000,
+      sessionRenewalMs: 1000,
+      samplingPercentage: 25,
+    });
+    const noOp = controller.updateCfg({ azureMonitor: { disableBeacon: true } });
+    const second = controller.updateCfg({
+      azureMonitor: { disableBeacon: false },
+      session: { maxDuration: 0, inactivityTimeout: 0 },
+      samplingPercentage: 0,
+    });
+    expect(controller.snapshot()).toBe(original);
+    const firstResult = await first;
+    const firstSnapshot = controller.snapshot();
+    expect(firstResult).toEqual({ revision: 1, changedPaths });
+    expect(await noOp).toEqual({ revision: 1, changedPaths: [] });
+    expect(await second).toEqual({ revision: 2, changedPaths });
+    expect(firstSnapshot).toEqual({
+      samplingPercentage: 25,
+      session: { inactivityTimeout: 1, maxDuration: 2 },
+      azureMonitor: { disableBeacon: true },
+    });
+    expect(Object.isFrozen(firstSnapshot.azureMonitor)).toBe(true);
+    expect(Object.isFrozen(firstResult.changedPaths)).toBe(true);
+    expect(original).toEqual(defaults);
+    expect(controller.snapshot()).toEqual({
+      samplingPercentage: 0,
+      session: { inactivityTimeout: 0, maxDuration: 0 },
+      azureMonitor: { disableBeacon: false },
+    });
+  });
+
+  it.each([
+    { azureMonitor: { disableBeacon: true } },
+    { onunloadDisableBeacon: true },
+    { azureMonitor: undefined },
+    { azureMonitor: {} },
+  ])("rejects queued and future beacon calls once stopped: %s", async (patch) => {
+    const { controller, stop } = create(initial);
+    const original = controller.snapshot();
+    const pending = controller.updateCfg(patch);
+    const replacement = controller.updateCfg({}, false);
+    stop();
+    await expect(pending).rejects.toThrow("stopped");
+    await expect(replacement).rejects.toThrow("stopped");
+    await expect(controller.updateCfg(patch)).rejects.toThrow("stopped");
     expect(controller.snapshot()).toBe(original);
   });
 });
@@ -197,7 +631,11 @@ describe("session lifetime configuration", () => {
     },
   ])("normalizes initial lifetimes: $patch", ({ patch, session }) => {
     const { controller } = create(patch);
-    expect(controller.snapshot()).toEqual({ samplingPercentage: undefined, session });
+    expect(controller.snapshot()).toEqual({
+      samplingPercentage: undefined,
+      session,
+      azureMonitor: { disableBeacon: false },
+    });
     expect(Object.isFrozen(controller.snapshot())).toBe(true);
     expect(Object.isFrozen(controller.snapshot().session)).toBe(true);
   });
@@ -246,7 +684,11 @@ describe("session lifetime configuration", () => {
     async ({ patch, session, paths }) => {
       const { controller } = create(initial);
       expect(await controller.updateCfg(patch)).toEqual({ revision: 1, changedPaths: paths });
-      expect(controller.snapshot()).toEqual({ samplingPercentage: 50, session });
+      expect(controller.snapshot()).toEqual({
+        samplingPercentage: 50,
+        session,
+        azureMonitor: { disableBeacon: false },
+      });
       expect(await controller.updateCfg(patch)).toEqual({ revision: 1, changedPaths: [] });
     },
   );
@@ -319,7 +761,11 @@ describe("session lifetime configuration", () => {
         revision: 1,
         changedPaths: paths,
       });
-      expect(controller.snapshot()).toEqual({ samplingPercentage, session });
+      expect(controller.snapshot()).toEqual({
+        samplingPercentage,
+        session,
+        azureMonitor: { disableBeacon: false },
+      });
       expect(await controller.updateCfg(patch, false)).toEqual({ revision: 1, changedPaths: [] });
     },
   );
@@ -534,6 +980,7 @@ describe("session lifetime configuration", () => {
     expect(controller.snapshot()).toEqual({
       samplingPercentage: 25,
       session: { inactivityTimeout: 90, maxDuration: 180 },
+      azureMonitor: { disableBeacon: false },
     });
     expect(original.session).toEqual({ inactivityTimeout: 60, maxDuration: 120 });
     expect(Object.isFrozen(controller.snapshot().session)).toBe(true);
@@ -572,11 +1019,17 @@ describe("session lifetime configuration", () => {
     expect(firstSnapshot).toEqual({
       samplingPercentage: 25,
       session: { inactivityTimeout: 1, maxDuration: 2 },
+      azureMonitor: { disableBeacon: false },
     });
-    expect(original).toEqual({ samplingPercentage: undefined, session: defaults });
+    expect(original).toEqual({
+      samplingPercentage: undefined,
+      session: defaults,
+      azureMonitor: { disableBeacon: false },
+    });
     expect(controller.snapshot()).toEqual({
       samplingPercentage: 0,
       session: { inactivityTimeout: 0, maxDuration: 0 },
+      azureMonitor: { disableBeacon: false },
     });
     expect(Object.isFrozen(firstSnapshot)).toBe(true);
     expect(Object.isFrozen(firstSnapshot.session)).toBe(true);

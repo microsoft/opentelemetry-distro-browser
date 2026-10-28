@@ -101,6 +101,9 @@ it("exposes distro-owned configuration and lifecycle contracts", () => {
   expectTypeOf<keyof AzureMonitorOptions>().toEqualTypeOf<
     "connectionString" | "disableBeacon" | "initTimeOut" | "initInMemoMaxSize"
   >();
+  expectTypeOf<Pick<AzureMonitorOptions, "disableBeacon">>().toEqualTypeOf<{
+    readonly disableBeacon?: boolean;
+  }>();
   expectTypeOf<AzureMonitorOptions["connectionString"]>().toEqualTypeOf<string>();
   expectTypeOf<AzureMonitorOptions<Promise<string>>["connectionString"]>().toEqualTypeOf<
     Promise<string>
@@ -130,12 +133,17 @@ it("exposes distro-owned configuration and lifecycle contracts", () => {
   >().toEqualTypeOf<MicrosoftOpenTelemetryBrowserUserContext>();
 });
 
-it("exposes sampling and session lifetime updates on the runtime configuration API", () => {
+it("exposes sampling, session lifetime and unload beacon runtime updates", () => {
   expectTypeOf<keyof MicrosoftOpenTelemetryBrowser>().toEqualTypeOf<
     "updateCfg" | "userContext" | "forceFlush" | "shutdown"
   >();
   expectTypeOf<keyof MicrosoftOpenTelemetryBrowserConfigurationUpdate>().toEqualTypeOf<
-    "samplingPercentage" | "session" | "sessionRenewalMs" | "sessionExpirationMs"
+    | "samplingPercentage"
+    | "session"
+    | "sessionRenewalMs"
+    | "sessionExpirationMs"
+    | "azureMonitor"
+    | "onunloadDisableBeacon"
   >();
   expectTypeOf<MicrosoftOpenTelemetryBrowserConfigurationUpdate>().toEqualTypeOf<{
     samplingPercentage?: number | undefined;
@@ -147,10 +155,15 @@ it("exposes sampling and session lifetime updates on the runtime configuration A
       | undefined;
     sessionRenewalMs?: number | undefined;
     sessionExpirationMs?: number | undefined;
+    azureMonitor?: { disableBeacon?: boolean | undefined } | undefined;
+    onunloadDisableBeacon?: boolean | undefined;
   }>();
   expectTypeOf<
     keyof NonNullable<MicrosoftOpenTelemetryBrowserConfigurationUpdate["session"]>
   >().toEqualTypeOf<"inactivityTimeout" | "maxDuration">();
+  expectTypeOf<
+    keyof NonNullable<MicrosoftOpenTelemetryBrowserConfigurationUpdate["azureMonitor"]>
+  >().toEqualTypeOf<"disableBeacon">();
   expectTypeOf<MicrosoftOpenTelemetryBrowser["updateCfg"]>().toEqualTypeOf<
     (
       patch: MicrosoftOpenTelemetryBrowserConfigurationUpdate,

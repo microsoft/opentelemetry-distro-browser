@@ -79,6 +79,10 @@ export interface MicrosoftOpenTelemetryBrowser {
 
 // @public
 export interface MicrosoftOpenTelemetryBrowserConfigurationUpdate {
+    azureMonitor?: {
+        disableBeacon?: boolean | undefined;
+    } | undefined;
+    onunloadDisableBeacon?: boolean | undefined;
     samplingPercentage?: number | undefined;
     session?: {
         inactivityTimeout?: number | undefined;

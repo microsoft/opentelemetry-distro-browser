@@ -186,6 +186,69 @@ it("honors an inherited startup sampling getter and captures its value once", as
   expect(read).toHaveBeenCalledOnce();
 });
 
+it("captures an enumerable startup beacon getter once", async () => {
+  const read = vi.fn(() => true);
+  const options: MicrosoftOpenTelemetryBrowserOptions = {
+    azureMonitor: { ...azureMonitor },
+    session: { enabled: false },
+    userContext: { enabled: false },
+    storage: { enabled: false },
+    pageView: { enabled: false },
+  };
+  Object.defineProperty(options.azureMonitor, "disableBeacon", { enumerable: true, get: read });
+  vi.mocked(startTelemetryInstance).mockResolvedValueOnce(fakeInstance());
+  const handle = await useMicrosoftOpenTelemetry(options);
+  handles.add(handle);
+  expect(await handle.updateCfg({ onunloadDisableBeacon: true })).toEqual({
+    revision: 0,
+    changedPaths: [],
+  });
+  expect(read).toHaveBeenCalledOnce();
+  expect(startTelemetryInstance).toHaveBeenCalledOnce();
+});
+
+it.each([false, undefined])(
+  "ignores the runtime-only beacon alias at startup: %s",
+  async (onunloadDisableBeacon) => {
+    const options = {
+      azureMonitor: { ...azureMonitor, disableBeacon: true },
+      onunloadDisableBeacon,
+      pageView: { enabled: false },
+      session: { enabled: false },
+      userContext: { enabled: false },
+      storage: { enabled: false },
+    };
+    vi.mocked(startTelemetryInstance).mockResolvedValueOnce(fakeInstance());
+    const handle = await useMicrosoftOpenTelemetry(options);
+    handles.add(handle);
+    expect(await handle.updateCfg({ onunloadDisableBeacon: true })).toEqual({
+      revision: 0,
+      changedPaths: [],
+    });
+    expect(await handle.updateCfg({ onunloadDisableBeacon: false })).toEqual({
+      revision: 1,
+      changedPaths: ["azureMonitor.disableBeacon"],
+    });
+    expect(startTelemetryInstance).toHaveBeenCalledOnce();
+  },
+);
+
+it.each(["true", null, 1])(
+  "rejects invalid native beacon startup policy before side effects: %s",
+  async (disableBeacon) => {
+    const local = vi.spyOn(window, "localStorage", "get");
+    const session = vi.spyOn(window, "sessionStorage", "get");
+    await expect(
+      useMicrosoftOpenTelemetry({
+        azureMonitor: { ...azureMonitor, disableBeacon },
+      } as unknown as MicrosoftOpenTelemetryBrowserOptions),
+    ).rejects.toThrow();
+    expect(startTelemetryInstance).not.toHaveBeenCalled();
+    expect(local).not.toHaveBeenCalled();
+    expect(session).not.toHaveBeenCalled();
+  },
+);
+
 it.each([undefined, 25])(
   "keeps a stable runtime sampler with initial percentage %s",
   async (samplingPercentage) => {

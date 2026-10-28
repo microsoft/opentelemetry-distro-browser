@@ -6,7 +6,7 @@ import type { LogRecordProcessor } from "@opentelemetry/sdk-logs";
 import { BatchSpanProcessor, type SpanProcessor } from "@opentelemetry/sdk-trace-base";
 import { AzureMonitorSamplingLogRecordProcessor } from "../samplingLogRecordProcessor.js";
 import { StartupQueue } from "../shared/startupQueue.js";
-import type { AzureMonitorOptions } from "./base.js";
+import { unloadBeaconPolicies, type AzureMonitorOptions } from "./base.js";
 import { AzureMonitorLogRecordExporter } from "./log.js";
 import { AzureMonitorSpanExporter } from "./trace.js";
 import { sessionBufferStorage } from "./sessionBuffer.js";
@@ -18,6 +18,7 @@ export function createAzureMonitorProcessors(
   logsEnabled: boolean,
   readSamplingPercentage: () => number | undefined,
   exporters: (AzureMonitorSpanExporter | AzureMonitorLogRecordExporter)[],
+  readDisableBeacon: () => boolean,
 ): {
   span?: SpanProcessor;
   log?: LogRecordProcessor;
@@ -29,6 +30,7 @@ export function createAzureMonitorProcessors(
 
   function initialize(connectionString: string): void {
     const resolved = { ...options, connectionString };
+    unloadBeaconPolicies.set(resolved, readDisableBeacon);
     // Storage policy is keyed by options identity; preserve it when resolving the destination.
     const storage = sessionBufferStorage.get(options);
     if (storage !== undefined) {

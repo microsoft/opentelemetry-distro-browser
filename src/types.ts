@@ -310,7 +310,7 @@ export interface MicrosoftOpenTelemetryBrowserUserContext {
  */
 export interface MicrosoftOpenTelemetryBrowser {
   /**
-   * Updates this instance's sampling percentage and session lifetimes without replacing providers.
+   * Updates sampling, session lifetimes and unload-beacon policy without replacing providers.
    * The percentage must be finite and between 0 and 100. Explicit undefined restores the
    * parent-based trace sampler and disables percentage sampling for Azure Monitor logs.
    * Updates affect subsequent sampling decisions, not telemetry already sampled or queued.
@@ -318,6 +318,10 @@ export interface MicrosoftOpenTelemetryBrowser {
    * sessionExpirationMs aliases use milliseconds; zero restores the corresponding native default.
    * Lifetimes retain current session timestamps and take effect on the next managed activity.
    * Enabling sessions, persistence and browser storage remain startup-only settings.
+   * azureMonitor.disableBeacon and its onunloadDisableBeacon alias control only this handle's
+   * default Azure Monitor sendBeacon fallback. Undefined resets to false. The current policy is
+   * read at each fallback attempt, including for previously queued telemetry, without cancelling
+   * dispatched requests. Keepalive remains first; updates never create or change a destination.
    *
    * mergeExisting defaults to true, preserving omitted fields. False replaces the supported
    * runtime configuration, resetting omitted fields to their defaults; startup options are unchanged.
