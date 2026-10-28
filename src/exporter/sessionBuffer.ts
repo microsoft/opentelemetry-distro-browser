@@ -22,7 +22,14 @@ export function createSessionBufferStorage(namePrefix?: string): WebKeyValueStor
   );
 }
 
-type Entry = [time: number, body: string, dispatched?: boolean, onDrop?: () => void];
+type DropCodes = string | readonly string[];
+type Entry = [
+  time: number,
+  body: string,
+  dispatched?: boolean,
+  onDrop?: () => void,
+  codes?: DropCodes,
+];
 
 const pageListeners = new Set<() => void>();
 let pageHidden = false;
@@ -50,13 +57,13 @@ function subscribeToPageTransitions(listener: () => void): () => void {
  * next page load in the same tab can send them.
  *
  * @remarks
- * Each record is `[released, [time, envelopes], ...]` under a key unique to the destination,
+ * Each record is `[released, [time, envelopes, dropCodes?], ...]` under a key unique to the destination,
  * document and exporter. A record is released only on `pagehide`, and only released records from
  * another document are adopted, so live same-origin frames, including hidden ones, never send each
  * other's telemetry. Adoption removes the record. Before each use, a page whose released record is
  * gone drops its copy, ignores later outcomes of requests started before the handoff and stops
- * their retries. Any failed write removes the record, so a stale copy cannot resend delivered
- * telemetry.
+ * their retries. Failed writes attempt to invalidate the record; if removal also fails, terminal
+ * accounting waits until invalidation or handoff is confirmed.
  */
 export class SessionBuffer {
   readonly #entries = new Map<number, Entry>();
@@ -71,9 +78,17 @@ export class SessionBuffer {
   #stored = false;
   /** The stored record is marked released for adoption. */
   #released = false;
+  #persisted = new Set<number>();
+  #disposed = false;
+  readonly #onExpired: ((body: string, codes: DropCodes) => void) | undefined;
 
-  public constructor(destination: string, storage = createSessionBufferStorage()) {
+  public constructor(
+    destination: string,
+    storage = createSessionBufferStorage(),
+    onExpired?: (body: string, codes: DropCodes) => void,
+  ) {
     this.#storage = storage;
+    this.#onExpired = onExpired;
     // Encoded so a `|` in the endpoint cannot make one destination's prefix match another's keys.
     this.#prefix = `${SESSION_BUFFER_KEY_PREFIX}${encodeURIComponent(destination)}|`;
     this.#pagePrefix = `${this.#prefix}${globalThis.performance?.timeOrigin}|`;
@@ -102,12 +117,14 @@ export class SessionBuffer {
     return this.#live.has(id);
   }
 
-  /** Transfers terminal-drop accounting to the buffer only when persistence succeeded. */
-  public retain(id: number, onDrop: () => void): boolean {
+  /** Transfers drop accounting until the persisted batch is invalidated or handed off. */
+  public retain(id: number, onDrop: () => void, codes?: DropCodes): boolean {
     this.#reconcile();
     const entry = this.#entries.get(id);
-    if (this.#stored && entry && !entry[2]) {
+    if (this.#persisted.has(id) && entry && !entry[2]) {
       entry[3] = onDrop;
+      entry[4] = codes;
+      this.#write();
       return true;
     }
     // A caller reporting a terminal drop must never have this batch restored by a later write.
@@ -169,22 +186,32 @@ export class SessionBuffer {
         ? record
             .slice(1)
             .filter(
-              (entry): entry is [number, unknown[]] =>
+              (entry): entry is [number, unknown[], unknown?] =>
                 Array.isArray(entry) &&
                 typeof entry[0] === "number" &&
-                now - entry[0] <= MAX_SESSION_BUFFER_AGE_MS &&
+                Number.isFinite(entry[0]) &&
                 Array.isArray(entry[1]) &&
                 entry[1].length > 0,
             )
         : [];
       // Live records belong to another open document; leave them until they expire.
-      if (!released && entries.length > 0) continue;
-      this.#storage.removeItem(key);
-      if (!released) continue;
-      for (const [time, envelopes] of entries) {
+      if (!released && entries.some(([time]) => now - time <= MAX_SESSION_BUFFER_AGE_MS)) continue;
+      if (!this.#storage.removeItem(key) || !released) continue;
+      for (const [time, envelopes, metadata] of entries) {
         const body = JSON.stringify(envelopes);
+        const codes =
+          typeof metadata === "string" ||
+          (Array.isArray(metadata) &&
+            metadata.length === envelopes.length &&
+            metadata.every((code) => typeof code === "string"))
+            ? metadata
+            : undefined;
+        if (now - time > MAX_SESSION_BUFFER_AGE_MS) {
+          this.#onExpired?.(body, codes ?? "CLIENT_EXCEPTION");
+          continue;
+        }
         const id = this.#nextId++;
-        this.#entries.set(id, [time, body]);
+        this.#entries.set(id, [time, body, false, undefined, codes]);
         adopted.push([id, body]);
       }
     }
@@ -194,12 +221,17 @@ export class SessionBuffer {
 
   /** Removes this exporter's record and stops tracking page transitions. */
   public dispose(): void {
+    if (this.#disposed) return;
+    this.#disposed = true;
     this.#unsubscribe();
     this.#reconcile();
-    for (const id of this.#entries.keys()) this.#drop(id);
+    const invalidated = !this.#stored || this.#storage.removeItem(this.#key);
+    for (const id of this.#entries.keys()) {
+      if (invalidated || !this.#persisted.has(id)) this.#drop(id);
+    }
+    this.#entries.clear();
     // Requests that settle later must not recreate the record.
     this.#live.clear();
-    this.#storage.removeItem(this.#key);
   }
 
   #drop(id: number): void {
@@ -216,24 +248,27 @@ export class SessionBuffer {
     if (!this.#released) return;
     const read = this.#storage.getItem(this.#key);
     if (!read.success || read.value !== null) return;
-    for (const [id, [, , dispatched]] of this.#entries) {
-      if (dispatched) continue;
+    for (const id of this.#persisted) {
+      if (this.#entries.get(id)?.[2]) continue;
       this.#entries.delete(id);
       this.#live.delete(id);
     }
     this.#stored = this.#released = false;
+    this.#persisted.clear();
   }
 
   #write(): void {
     const now = Date.now();
     const parts: string[] = [];
+    const persisted = new Set<number>();
+    const dropped: number[] = [];
     let length = 0;
     // Newest first, so the oldest batches are evicted even when adopted records interleave.
     const entries = [...this.#entries].sort(([, [left]], [, [right]]) => left - right).reverse();
     let full = false;
-    for (const [id, [time, body, dispatched]] of entries) {
+    for (const [id, [time, body, dispatched, , codes]] of entries) {
       if (dispatched) continue;
-      const part = `[${time},${body}]`;
+      const part = `[${time},${body}${codes === undefined ? "" : `,${JSON.stringify(codes)}`}]`;
       // Once a batch overflows, it and every older batch are evicted. A batch that cannot fit
       // even alone is dropped without evicting older ones.
       if (
@@ -242,21 +277,23 @@ export class SessionBuffer {
         part.length > MAX_SESSION_BUFFER_LENGTH ||
         (full = length + part.length > MAX_SESSION_BUFFER_LENGTH)
       ) {
-        this.#drop(id);
+        dropped.push(id);
         continue;
       }
       length += part.length + 1;
       parts.unshift(part);
+      persisted.add(id);
     }
-    const stored = this.#stored;
-    if (parts.length === 0 && !stored) return;
-    this.#stored =
+    const stored =
       parts.length > 0 &&
       this.#storage.setItem(this.#key, `[${pageHidden ? 1 : 0},${parts.join(",")}]`);
-    this.#released = this.#stored && pageHidden;
-    // Only remove a record that exists, since a removal ends the storage write backoff.
-    if (stored && !this.#stored) this.#storage.removeItem(this.#key);
-    if (!this.#stored) {
+    // A failed write is not terminal while an older record may still be adopted.
+    if (!stored && this.#stored && !this.#storage.removeItem(this.#key)) return;
+    this.#stored = stored;
+    this.#released = stored && pageHidden;
+    this.#persisted = stored ? persisted : new Set();
+    for (const id of dropped) this.#drop(id);
+    if (!stored) {
       for (const [id, entry] of this.#entries) {
         if (entry[3]) this.#drop(id);
       }

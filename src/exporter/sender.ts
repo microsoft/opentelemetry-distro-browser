@@ -24,6 +24,7 @@ import type { AzureMonitorEnvelope } from "./telemetryModels.js";
 import type { InternalSdkStats } from "./sdkStats.js";
 import type { CustomerSdkStats } from "./customerSdkStats.js";
 import { registerSdkIngestionUrl, rememberSdkIngestionUrl } from "../shared/globalOwnership.js";
+import { withAbort } from "../shared/lifecycle.js";
 
 let pendingKeepaliveBodySize = 0;
 let pendingKeepaliveRequestCount = 0;
@@ -46,7 +47,7 @@ export interface SenderOptions {
   readonly sendBeacon?: typeof globalThis.navigator.sendBeacon;
   readonly disableBeacon?: boolean | (() => boolean);
   readonly maxPayloadSize?: number;
-  readonly delay?: (delayMs: number) => Promise<void>;
+  readonly delay?: (delayMs: number, signal?: AbortSignal) => Promise<void>;
   readonly random?: () => number;
   readonly stats?: InternalSdkStats;
   readonly itemStats?: CustomerSdkStats;
@@ -58,6 +59,8 @@ export interface SendRequest {
   readonly envelopes?: readonly AzureMonitorEnvelope[];
   readonly unloading?: boolean;
   readonly signal?: AbortSignal;
+  /** Application-export cancellation without the stats transport's credential/referrer policy. */
+  readonly shutdownSignal?: AbortSignal;
   readonly retry?: boolean;
   /** Called once an unload request is handed to the browser by keepalive fetch or beacon. */
   readonly onDispatch?: () => void;
@@ -71,7 +74,7 @@ export interface SendRequest {
   /** Checked before each attempt; when it returns `false` the request stops with an error. */
   readonly active?: () => boolean;
   /** Retains outstanding envelopes and calls onDrop only if they are later terminally removed. */
-  readonly retain?: (onDrop: () => void) => boolean;
+  readonly retain?: (onDrop: () => void, codes: string | readonly string[]) => boolean;
 }
 
 export interface SenderResult {
@@ -97,7 +100,7 @@ export class Sender {
   readonly #sendBeacon: typeof globalThis.navigator.sendBeacon | undefined;
   readonly #disableBeacon: boolean | (() => boolean);
   readonly #maxPayloadSize: number | undefined;
-  readonly #delay: (delayMs: number) => Promise<void>;
+  readonly #delay: (delayMs: number, signal?: AbortSignal) => Promise<void>;
   readonly #random: () => number;
   #throttleDeadline = 0;
   readonly #stats: InternalSdkStats | undefined;
@@ -129,6 +132,7 @@ export class Sender {
   }
 
   public async send(request: SendRequest): Promise<SenderResultType> {
+    const signal = request.signal ?? request.shutdownSignal;
     let pending = request.envelopes;
     let currentRequest = request;
     let retryCodes: string | readonly string[] = "CLIENT_EXCEPTION";
@@ -157,7 +161,7 @@ export class Sender {
       let remainingRetryWaitMs = MAX_RETRY_WAIT_MS;
       const permanentErrors: BreezeError[] = [];
       for (let attempt = 1; ; attempt++) {
-        remainingRetryWaitMs = await this.#waitForThrottle(remainingRetryWaitMs);
+        remainingRetryWaitMs = await this.#waitForThrottle(remainingRetryWaitMs, signal);
         let result: SenderResultType;
         try {
           result = await this.#sendOnce(
@@ -166,6 +170,10 @@ export class Sender {
             attempt > 1 ? retryCodes : undefined,
           );
         } catch (error) {
+          if (signal?.aborted) {
+            retryCodes = "CLIENT_EXCEPTION";
+            throw error instanceof BrowserTransportError ? error.cause : error;
+          }
           if (!(error instanceof BrowserTransportError)) {
             retryCodes = "CLIENT_EXCEPTION";
             throw error;
@@ -185,6 +193,7 @@ export class Sender {
             remainingRetryWaitMs = await this.#waitForRetry(
               getRetryDelay(attempt - 1, this.#random()),
               remainingRetryWaitMs,
+              signal,
             );
           }
           continue;
@@ -222,6 +231,7 @@ export class Sender {
           remainingRetryWaitMs = await this.#waitForRetry(
             getRetryDelay(attempt - 1, this.#random()),
             remainingRetryWaitMs,
+            signal,
           );
         }
       }
@@ -283,7 +293,7 @@ export class Sender {
   ): void {
     if (!this.#itemStats || !envelopes?.length || request.active?.() === false) return;
     const onDrop = (): void => this.#itemStats?.countEnvelopes("Dropped", envelopes, codes);
-    if (!retain || !request.retain?.(onDrop)) onDrop();
+    if (!retain || !request.retain?.(onDrop, codes)) onDrop();
   }
 
   #rememberThrottleDeadline(result: SenderResultType): void {
@@ -300,12 +310,13 @@ export class Sender {
     this.#throttleDeadline = Math.max(this.#throttleDeadline, Date.now() + delayMs);
   }
 
-  async #waitForThrottle(remainingRetryWaitMs: number): Promise<number> {
+  async #waitForThrottle(remainingRetryWaitMs: number, signal?: AbortSignal): Promise<number> {
     let observedDeadline = this.#throttleDeadline;
     while (observedDeadline > Date.now()) {
       remainingRetryWaitMs = await this.#waitForRetry(
         Math.max(0, observedDeadline - Date.now()),
         remainingRetryWaitMs,
+        signal,
       );
       if (this.#throttleDeadline <= observedDeadline) {
         return remainingRetryWaitMs;
@@ -315,13 +326,17 @@ export class Sender {
     return remainingRetryWaitMs;
   }
 
-  async #waitForRetry(delayMs: number, remainingRetryWaitMs: number): Promise<number> {
+  async #waitForRetry(
+    delayMs: number,
+    remainingRetryWaitMs: number,
+    signal?: AbortSignal,
+  ): Promise<number> {
     if (delayMs > remainingRetryWaitMs) {
       throw new Error(
         `Azure Monitor export exceeds the ${MAX_RETRY_WAIT_MS} ms retry-wait budget.`,
       );
     }
-    await this.#delay(delayMs);
+    await withAbort(signal ? this.#delay(delayMs, signal) : this.#delay(delayMs), signal);
     return remainingRetryWaitMs - delayMs;
   }
 
@@ -331,6 +346,8 @@ export class Sender {
     retryCodes?: string | readonly string[],
   ): Promise<SenderResultType> {
     assertActive(request);
+    const signal = request.signal ?? request.shutdownSignal;
+    let releaseAttempt: (() => void) | undefined;
     const unloading = request.unloading === true;
     const keepaliveAvailable =
       pendingKeepaliveBodySize + request.body.byteLength <= MAX_PENDING_KEEPALIVE_BODY_SIZE &&
@@ -349,32 +366,38 @@ export class Sender {
       let response: Response;
       let endpoint = this.#endpoint;
       try {
-        const payload = unloading || !this.#compress ? undefined : await gzipPayload(request.body);
+        const payload =
+          unloading || !this.#compress
+            ? undefined
+            : await withAbort(gzipPayload(request.body), signal);
         // Compression yields, so the page may have been frozen and handed off in between.
         if (!unloading) assertActive(request);
         endpoint = this.#endpoint;
+        releaseAttempt = registerSdkIngestionUrl(endpoint);
         const startTime = Date.now();
         try {
           // Browser context may not survive compression or retry awaits, so suppress at the call.
-          response = await context.with(suppressTracing(context.active()), () => {
-            const pending = this.#fetch(endpoint, {
-              method: "POST",
-              headers: {
-                "content-type": request.contentType,
-                ...(payload === undefined ? {} : { "content-encoding": "gzip" }),
-              },
-              body: payload ?? request.body,
-              keepalive: useKeepalive,
-              ...(request.signal
-                ? { signal: request.signal, credentials: "omit", referrerPolicy: "no-referrer" }
-                : {}),
-            });
-            if (retryCodes) {
-              this.#itemStats?.countEnvelopes("Retry", request.envelopes, retryCodes);
-            }
-            if (useKeepalive) request.onDispatch?.();
-            return pending;
-          });
+          response = await withAbort(
+            context.with(suppressTracing(context.active()), () => {
+              const pending = this.#fetch(endpoint, {
+                method: "POST",
+                headers: {
+                  "content-type": request.contentType,
+                  ...(payload === undefined ? {} : { "content-encoding": "gzip" }),
+                },
+                body: payload ?? request.body,
+                keepalive: useKeepalive,
+                ...(signal ? { signal } : {}),
+                ...(request.signal ? { credentials: "omit", referrerPolicy: "no-referrer" } : {}),
+              });
+              if (retryCodes) {
+                this.#itemStats?.countEnvelopes("Retry", request.envelopes, retryCodes);
+              }
+              if (useKeepalive) request.onDispatch?.();
+              return pending;
+            }),
+            signal,
+          );
         } catch (error) {
           this.#stats?.countException(error, endpoint);
           if (!isBrowserTransportFailure(error)) {
@@ -385,7 +408,7 @@ export class Sender {
         endpoint = this.#rememberRedirectEndpoint(response, endpoint);
         this.#stats?.countResponse(response.status, Date.now() - startTime, endpoint);
       } catch (error) {
-        if (unloading && !request.signal?.aborted) {
+        if (unloading && !signal?.aborted) {
           return this.#sendWithBeacon(
             request,
             error instanceof BrowserTransportError ? error.cause : error,
@@ -398,7 +421,7 @@ export class Sender {
       const retryAfterMs = parseRetryAfterHeader(response.headers.get("retry-after"));
       let result: string;
       try {
-        result = await response.text();
+        result = await withAbort(response.text(), signal);
       } catch (error) {
         this.#stats?.countException(error, endpoint);
         onBodyError(response.status);
@@ -408,7 +431,7 @@ export class Sender {
         if (!isRetriable(response.status)) {
           throw error;
         }
-        if (unloading && !request.signal?.aborted) {
+        if (unloading && !signal?.aborted) {
           return this.#sendWithBeacon(request, error);
         }
         throw new BrowserTransportError(error, response.status, retryAfterMs);
@@ -423,6 +446,7 @@ export class Sender {
         ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
       };
     } finally {
+      releaseAttempt?.();
       if (useKeepalive) {
         pendingKeepaliveBodySize -= request.body.byteLength;
         pendingKeepaliveRequestCount--;
@@ -586,7 +610,8 @@ function getRetryRequest(
 }
 
 function assertActive(request: SendRequest): void {
-  if (request.signal?.aborted) throw new DOMException("Request aborted", "AbortError");
+  if ((request.signal ?? request.shutdownSignal)?.aborted)
+    throw new DOMException("Request aborted", "AbortError");
   if (request.active?.() === false) throw new Error("Telemetry was handed off to another page.");
 }
 
@@ -596,8 +621,14 @@ function getRetryDelay(retryAttempt: number, random: number): number {
   return minimumDelay + Math.floor(random * (minimumDelay + 1));
 }
 
-function wait(delayMs: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, delayMs));
+function wait(delayMs: number, signal?: AbortSignal): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  return withAbort(
+    new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, delayMs);
+    }),
+    signal,
+  ).finally(() => clearTimeout(timer));
 }
 
 async function gzipPayload(

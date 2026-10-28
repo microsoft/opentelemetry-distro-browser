@@ -10,6 +10,7 @@ import {
   MAX_BATCH_SIZE_IN_BYTES,
   MAX_BEACON_BODY_SIZE,
   MAX_PENDING_KEEPALIVE_BODY_SIZE,
+  MAX_SHUTDOWN_WAIT_MS,
 } from "./constants.js";
 import { Sender, type SenderResultType } from "./sender.js";
 import { createInternalSdkStats, reportFailure, type InternalSdkStats } from "./sdkStats.js";
@@ -63,6 +64,8 @@ export class AzureMonitorExportClient {
   #stopped = false;
   readonly #stats: InternalSdkStats;
   readonly #buffer: SessionBuffer | undefined;
+  readonly #controller = new AbortController();
+  #shutdown: Promise<void> | undefined;
 
   public constructor(options: AzureMonitorOptions) {
     const { instrumentationKey, ingestionEndpoint } = parseConnectionString(
@@ -92,7 +95,21 @@ export class AzureMonitorExportClient {
     this.#buffer =
       storage === null
         ? undefined
-        : new SessionBuffer(`${instrumentationKey}|${ingestionEndpoint}`, storage);
+        : new SessionBuffer(
+            `${instrumentationKey}|${ingestionEndpoint}`,
+            storage,
+            (body, codes) => {
+              if (!this.itemStats) return;
+              for (const [index, item] of (JSON.parse(body) as AzureMonitorEnvelope[]).entries()) {
+                if (item?.data && typeof item.data.baseType === "string")
+                  this.itemStats.countEnvelopes(
+                    "Dropped",
+                    [item],
+                    typeof codes === "string" ? codes : codes[index],
+                  );
+              }
+            },
+          );
     for (const [id, body] of this.#buffer?.adopt() ?? []) {
       this.#track(
         this.#send(body, JSON.parse(body) as AzureMonitorEnvelope[], false, id).then(noop, noop),
@@ -171,7 +188,7 @@ export class AzureMonitorExportClient {
       const onDrop = (): void => {
         this.itemStats?.countEnvelopes("Dropped", dropped, "PAYLOAD_TOO_LARGE");
       };
-      if (id === undefined || !this.#buffer?.retain(id, onDrop)) onDrop();
+      if (id === undefined || !this.#buffer?.retain(id, onDrop, "PAYLOAD_TOO_LARGE")) onDrop();
     }
     if (error) {
       callback({ code: ExportResultCode.FAILED, error });
@@ -233,6 +250,7 @@ export class AzureMonitorExportClient {
         contentType: CONTENT_TYPE,
         envelopes,
         unloading,
+        shutdownSignal: this.#controller.signal,
         onDispatch: () => {
           if (id !== undefined) this.#buffer?.dispatch(id);
         },
@@ -248,9 +266,9 @@ export class AzureMonitorExportClient {
         },
         // Stop retrying a batch another document adopted and delivered.
         active: () => id === undefined || this.#buffer?.owns(id) !== false,
-        retain: (onDrop) => {
+        retain: (onDrop, codes) => {
           settle(true);
-          return id !== undefined && this.#buffer?.retain(id, onDrop) === true;
+          return id !== undefined && this.#buffer?.retain(id, onDrop, codes) === true;
         },
       })
       .then(
@@ -280,26 +298,36 @@ export class AzureMonitorExportClient {
     await this.#stats.forceFlush();
   }
 
-  public async shutdown(): Promise<void> {
-    if (this.#stopped) return;
+  public shutdown(): Promise<void> {
+    if (this.#shutdown) return this.#shutdown;
     this.#stopped = true;
-    const pending = waitForAll([...this.#pending], "Pending exports failed").finally(() =>
-      this.#buffer?.dispose(),
-    );
+    const exports = waitForAll([...this.#pending], "Pending exports failed");
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<void>((resolve, reject) => {
+      timer = setTimeout(() => {
+        this.#controller.abort();
+        reject(new Error("Exporter shutdown timed out."));
+      }, MAX_SHUTDOWN_WAIT_MS);
+      void exports.then(
+        () => resolve(),
+        () => resolve(),
+      );
+    });
+    const pending = waitForAll([exports, deadline], "Pending exports failed").finally(() => {
+      clearTimeout(timer);
+      this.#buffer?.dispose();
+    });
     // Report export failures once, after both reporters finish their final attempts.
     const completed = pending.then(noop, noop);
-    try {
-      await waitForAll(
-        [
-          pending,
-          this.#stats.shutdown(completed),
-          this.itemStats?.shutdown(completed) ?? Promise.resolve(),
-        ],
-        "Exporter shutdown failed",
-      );
-    } finally {
-      this.#sender.dispose();
-    }
+    this.#shutdown = waitForAll(
+      [
+        pending,
+        this.#stats.shutdown(completed),
+        this.itemStats?.shutdown(completed) ?? Promise.resolve(),
+      ],
+      "Exporter shutdown failed",
+    ).finally(() => this.#sender.dispose());
+    return this.#shutdown;
   }
 }
 

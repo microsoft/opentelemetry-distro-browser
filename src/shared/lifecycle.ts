@@ -40,6 +40,20 @@ export async function waitForAll(
   throwErrors(errors, message);
 }
 
+/** Also settles when a transport or application wrapper ignores cancellation. */
+export function withAbort<T>(operation: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return operation;
+  let onAbort: (() => void) | undefined;
+  const cancelled = new Promise<never>((_resolve, reject) => {
+    onAbort = () => reject(new DOMException("Request aborted", "AbortError"));
+    signal.addEventListener("abort", onAbort, { once: true });
+    if (signal.aborted) onAbort();
+  });
+  return Promise.race([operation, cancelled]).finally(() => {
+    if (onAbort) signal.removeEventListener("abort", onAbort);
+  });
+}
+
 /** Installs one pair of unload listeners for all active instances in this realm. */
 export function subscribeToUnload(flush: () => void): () => void {
   const registry = getSharedRegistry();

@@ -14,6 +14,8 @@ import { customerSdkStats, spanItemType } from "./customerSdkStats.js";
  * @remarks
  * Synthetic page-operation contexts supply an operation ID, but not a parent ID.
  * Application and inherited span contexts retain their parent-ID mapping.
+ * Shutdown allows 30 seconds for application exports, then cancels outstanding sends before
+ * disposing buffers and making the bounded final SDK Stats reports.
  *
  * @public
  */

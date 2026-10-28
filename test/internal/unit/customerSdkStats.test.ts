@@ -21,7 +21,7 @@ import { AzureMonitorSpanExporter } from "../../../src/exporter/trace.js";
 import { Sender } from "../../../src/exporter/sender.js";
 import { spanToEnvelopes } from "../../../src/exporter/spanUtils.js";
 import { beginUnloading, endUnloading } from "../../../src/exporter/common.js";
-import { MAX_SEND_ATTEMPTS } from "../../../src/exporter/constants.js";
+import { MAX_SEND_ATTEMPTS, MAX_SHUTDOWN_WAIT_MS } from "../../../src/exporter/constants.js";
 import { AzureMonitorExportClient } from "../../../src/exporter/base.js";
 import type { AzureMonitorEnvelope, MetricData } from "../../../src/exporter/telemetryModels.js";
 import { createReadableLogRecord, createReadableSpan } from "../../fixtures/telemetry.js";
@@ -664,6 +664,64 @@ it.each(["available", "disabled", "unavailable", "quota", "oversized"] as const)
   },
 );
 
+it.each([false, true])(
+  "cancels a hung export at the shutdown deadline and completes final accounting (callback throws: %s)",
+  async (callbackThrows) => {
+    const clock = installFakeClock();
+    const client = new AzureMonitorExportClient({ connectionString, sdkStats: { enabled: true } });
+    owners.push(client);
+    let finish!: (response: Response) => void;
+    fetch.mockResolvedValueOnce(new Response(null)).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const callbackFailure = new Error("callback failed");
+    client.export(request().envelopes, () => {
+      if (callbackThrows) throw callbackFailure;
+    });
+    const callback = vi.fn();
+    client.export(request([SpanKind.SERVER]).envelopes, callback);
+    const stopped = vi.fn();
+    const shutdown = client.shutdown();
+    expect(client.shutdown()).toBe(shutdown);
+    const result = shutdown
+      .then(
+        () => undefined,
+        (error: unknown) => error,
+      )
+      .finally(stopped);
+    await clock.advance(MAX_SHUTDOWN_WAIT_MS - 1);
+    expect(stopped).not.toHaveBeenCalled();
+    expect(fetch.mock.calls[1][1]?.signal?.aborted).toBe(false);
+    expect(fetch.mock.calls[1][1]?.credentials).toBeUndefined();
+    expect(fetch.mock.calls[1][1]?.referrerPolicy).toBeUndefined();
+    await clock.advance(1);
+    const error = await result;
+    const errors: unknown[] = error instanceof AggregateError ? error.errors : [error];
+    expect(errors).toContainEqual(
+      expect.objectContaining({ message: "Exporter shutdown timed out." }),
+    );
+    if (callbackThrows) expect(errors).toContain(callbackFailure);
+    expect(fetch.mock.calls[1][1]?.signal?.aborted).toBe(true);
+    expect(callback).toHaveBeenCalledExactlyOnceWith({
+      code: ExportResultCode.FAILED,
+      error: expect.objectContaining({ name: "AbortError" }),
+    });
+    expect(totals()).toEqual({
+      "Item_Success_Count:DEPENDENCY": 1,
+      "Item_Dropped_Count:REQUEST:CLIENT_EXCEPTION": 1,
+    });
+    const sent = fetch.mock.calls.length;
+    finish(new Response(null));
+    await clock.advance(MAX_SHUTDOWN_WAIT_MS);
+    await client.forceFlush();
+    expect(fetch).toHaveBeenCalledTimes(sent);
+    expect(vi.getTimerCount()).toBe(0);
+  },
+);
+
 it.each(["available", "disabled", "unavailable", "quota"] as const)(
   "counts only terminal outcomes from a partial unload with %s storage",
   async (storage) => {
@@ -709,6 +767,31 @@ it.each(["available", "disabled", "unavailable", "quota"] as const)(
       "Item_Dropped_Count:REQUEST:SAMPLING": 1,
       ...(storage === "available" ? {} : { "Item_Dropped_Count:REQUEST:503": 1 }),
     });
+  },
+);
+
+it.each(["body", "retry"] as const)(
+  "cancels a pending %s at the shutdown deadline without leaving timers or dispatching a retry",
+  async (phase) => {
+    const clock = installFakeClock();
+    const client = new AzureMonitorExportClient({ connectionString, sdkStats: { enabled: true } });
+    owners.push(client);
+    const response = new Response(null, { status: 503, headers: { "retry-after": "30" } });
+    vi.spyOn(response, "text").mockImplementation(() =>
+      phase === "body" ? new Promise(() => {}) : Promise.resolve(""),
+    );
+    fetch.mockResolvedValueOnce(response);
+    const callback = vi.fn();
+    client.export(request().envelopes, callback);
+    const shutdown = expect(client.shutdown()).rejects.toThrow("shutdown timed out");
+    await clock.advance(MAX_SHUTDOWN_WAIT_MS);
+    await shutdown;
+    expect(callback).toHaveBeenCalledOnce();
+    expect(totals()).toEqual({
+      [`Item_Dropped_Count:DEPENDENCY:${phase === "retry" ? "503" : "CLIENT_EXCEPTION"}`]: 1,
+    });
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(vi.getTimerCount()).toBe(0);
   },
 );
 
@@ -1551,3 +1634,70 @@ it("does not reactivate URL protection when a disposed sender receives a late re
   expect(isSdkIngestionUrl(original)).toBe(false);
   expect(isSdkIngestionUrl(redirected)).toBe(false);
 });
+
+it.each([false, true])(
+  "protects a concurrent attempt's original URL through redirects and churn (failure: %s)",
+  async (failure) => {
+    const original = `https://attempt-${failure}.example.test/v2/track`;
+    const redirected = `https://attempt-${failure}.example.test/redirected`;
+    let resolve!: (response: Response) => void;
+    let reject!: (error: Error) => void;
+    const transport = vi
+      .fn<typeof globalThis.fetch>()
+      .mockImplementationOnce(
+        () =>
+          new Promise((yes, no) => {
+            resolve = yes;
+            reject = no;
+          }),
+      )
+      .mockImplementation(async () => {
+        const response = new Response(null);
+        Object.defineProperties(response, {
+          redirected: { value: true },
+          url: { value: redirected },
+        });
+        return response;
+      });
+    const sender = new Sender({ endpoint: original, fetch: transport });
+    const pending = sender.send({ ...request(), retry: false });
+    const expected = failure
+      ? expect(pending).rejects.toThrow("Browser transport failed")
+      : expect(pending).resolves.toMatchObject({ statusCode: 200 });
+    await sender.send(request());
+    const churn = () => {
+      for (let index = 0; index < 300; index++)
+        rememberSdkIngestionUrl(`https://attempt-history.example.test/track?request=${index}`);
+    };
+    churn();
+    expect(isSdkIngestionUrl(original)).toBe(true);
+    const collector = new AzureMonitorLogRecordExporter({
+      connectionString,
+      sdkStats: { enabled: true },
+    });
+    owners.push(collector);
+    await new Promise<ExportResult>((callback) =>
+      collector.export(
+        [
+          createReadableLogRecord({
+            eventName: "browser.resource_timing",
+            instrumentationScope: {
+              name: "@opentelemetry/browser-instrumentation/resource-timing",
+            },
+            attributes: { "url.full": original },
+          }),
+        ],
+        callback,
+      ),
+    );
+    expect(fetch).not.toHaveBeenCalled();
+    if (failure) reject(new TypeError("offline"));
+    else resolve(new Response(null));
+    await expected;
+    expect(isSdkIngestionUrl(original)).toBe(true);
+    churn();
+    expect(isSdkIngestionUrl(original)).toBe(false);
+    expect(isSdkIngestionUrl(redirected)).toBe(true);
+    sender.dispose();
+  },
+);

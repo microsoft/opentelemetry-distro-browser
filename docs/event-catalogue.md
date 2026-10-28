@@ -304,6 +304,8 @@ Active sender destinations are reference-counted separately from the 256-entry e
 so redirect churn cannot evict a live exporter's destination. Both registries are independent of
 the distribution registry. Redirects and shutdown release active ownership while preserving recent
 URLs for delayed timings; re-registering a historical URL refreshes its position.
+Each in-flight fetch attempt also owns its original URL until completion or cancellation, including
+failure and response-body reads, so concurrent redirects cannot release it prematurely.
 Retry counts include only dispatched transport attempts. If a response body cannot be read,
 item counters preserve any known final HTTP success or permanent rejection, while the export
 callback still reports the body-read failure.
@@ -314,6 +316,14 @@ persistence of deferred batches, and shutdown count their terminal removal exact
 their original drop codes. Shutdown waits for pending exports and removes remaining batches before
 the final stats report. A batch reported as a terminal storage failure cannot be replayed after
 storage recovers; evicting an in-flight batch's storage copy does not declare that request lost.
+Deferred drop codes are persisted with each batch so a later stats-enabled exporter can count
+expired telemetry even after the original page has gone. Adoption and expiry accounting require
+successful removal of the old record. Legacy records without valid drop codes use `CLIENT_EXCEPTION`.
+If both writing and removal fail, the outcome remains pending;
+the original page must not report a drop for a record that another page can still adopt.
+Shutdown gives outstanding application sends a 30-second grace period, then aborts them and waits
+for their callbacks and accounting before the final stats reports. Cancellation also settles
+wrappers that ignore abort signals and retry waits; late results cannot restart delivery.
 The original page does not count outcomes after another page adopts its batch. Invalid partial
 responses, including mismatched item counts, fail the export callback and retain outstanding
 envelopes when storage permits.

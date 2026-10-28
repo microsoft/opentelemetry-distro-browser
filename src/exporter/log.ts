@@ -15,6 +15,8 @@ import { customerSdkStats } from "./customerSdkStats.js";
  * Application and inherited span contexts retain their parent-ID mapping.
  * Built-in page-view diagnostics remain on OpenTelemetry records but are omitted from
  * Azure Monitor custom properties and measurements.
+ * Shutdown allows 30 seconds for application exports, then cancels outstanding sends before
+ * disposing buffers and making the bounded final SDK Stats reports.
  *
  * @public
  */

@@ -61,11 +61,11 @@ in each Node job's check summary and uploads all three files as build artifacts.
 
 Every executable published entry point has absolute minified, gzip and Brotli budgets:
 
-| Entry point          | Minified |    Gzip | Brotli |
-| -------------------- | -------: | ------: | -----: |
-| `.`                  |   144 kB | 45.5 kB |  40 kB |
-| `./instrumentations` |    64 kB |   24 kB |  22 kB |
-| `./snippet`          |  6.25 kB | 2.75 kB | 2.5 kB |
+| Entry point          | Minified |     Gzip |   Brotli |
+| -------------------- | -------: | -------: | -------: |
+| `.`                  | 146.5 kB | 46.25 kB | 40.75 kB |
+| `./instrumentations` |    64 kB |    24 kB |    22 kB |
+| `./snippet`          |  6.25 kB |  2.75 kB |   2.5 kB |
 
 The generated JSON and Markdown reports show the measured values, ceilings and result for each
 entry point. During alpha releases, violations are report-only so the baselines can stabilize.
@@ -77,17 +77,18 @@ comparison remains informational and does not replace the absolute gate.
 emits them, so it must run after a production build. Their budgets block in every release channel,
 including alpha:
 
-| Artifact                                                   | Minified |  Gzip |   Brotli |
-| ---------------------------------------------------------- | -------: | ----: | -------: |
-| `opentelemetry-browser.{iife,umd}.min.js`                  |   174 kB | 55 kB | 48.25 kB |
-| `opentelemetry-browser-instrumentations.{iife,umd}.min.js` |    63 kB | 19 kB |    17 kB |
+| Artifact                                                   | Minified |     Gzip |   Brotli |
+| ---------------------------------------------------------- | -------: | -------: | -------: |
+| `opentelemetry-browser.{iife,umd}.min.js`                  |   174 kB | 55.75 kB | 48.75 kB |
+| `opentelemetry-browser-instrumentations.{iife,umd}.min.js` |    63 kB |    19 kB |    17 kB |
 
-The root and SDK browser ceilings include terminal deferred-batch accounting and active ingestion
-URL ownership. The same production build measured root output changing from 142.99/44.96/39.62
-to 143.76/45.22/39.81 KiB (minified/gzip/Brotli), SDK UMD from 170.38/54.49/47.79 to
-171.14/54.78/48.01 KiB, and SDK IIFE from 170.21/54.43/47.74 to 170.98/54.72/47.92 KiB.
-Only the root minified/gzip and SDK browser Brotli ceilings were raised for these fixes;
-instrumentation and snippet sizes and ceilings are unchanged.
+The ceilings include runtime unload-beacon configuration, bounded shutdown cancellation, and
+deferred-batch accounting across page loads and storage failures. Against the merged-main baseline,
+the same production build measured root output changing from 144.75/45.45/40.05 to
+146.20/45.92/40.42 KiB (minified/gzip/Brotli), SDK UMD from 172.10/55.01/48.18 to
+173.51/55.44/48.62 KiB, and SDK IIFE from 171.94/54.95/48.17 to 173.34/55.39/48.54 KiB.
+The root and SDK browser gzip/Brotli ceilings were adjusted for these measured corrections;
+SDK browser minified, instrumentation, and snippet ceilings are unchanged.
 
 SWC minifies the browser bundles and shortens `_`-prefixed properties, the TypeScript `private`
 convention used by OpenTelemetry, so source code keeps descriptive names. Members that
