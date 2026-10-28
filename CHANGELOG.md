@@ -21,6 +21,8 @@ All notable changes to this package are documented in this file.
   validation in export callbacks, and flush counters collected behind an in-flight stats report.
   Preserve conversion-failure callbacks and secondary-envelope counts, count retries only after
   dispatch, and bound shared ingestion URL history independently of the distribution registry.
+  Count deferred batches on terminal removal before shutdown's final stats report, prevent replay
+  after a terminal storage failure, and protect active ingestion destinations from history eviction.
 - Support per-instance runtime session lifetime updates and Application Insights millisecond aliases
   `sessionRenewalMs` and `sessionExpirationMs` at initialization and through `updateCfg`.
 - Support per-instance runtime sampling updates through dynamic configuration

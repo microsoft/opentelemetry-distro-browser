@@ -300,14 +300,20 @@ Conversion failures count every envelope from already-converted records, includi
 page-view performance, then classify failed and unconverted records individually. A record whose
 classification also throws produces a diagnostic instead of a guessed item type; it does not block
 the export failure callback or accounting for the remaining records.
-The exact-URL history is independent of the distribution registry and retains the 256 most recently
-registered configured or redirect URLs, including after exporter shutdown. Re-registering a URL
-refreshes its position; older URLs are evicted so unique proxy redirects cannot grow memory forever.
+Active sender destinations are reference-counted separately from the 256-entry exact-URL history,
+so redirect churn cannot evict a live exporter's destination. Both registries are independent of
+the distribution registry. Redirects and shutdown release active ownership while preserving recent
+URLs for delayed timings; re-registering a historical URL refreshes its position.
 Retry counts include only dispatched transport attempts. If a response body cannot be read,
 item counters preserve any known final HTTP success or permanent rejection, while the export
 callback still reports the body-read failure.
 Envelopes persisted for delivery by a later page are not terminal drops; failed storage writes,
 disabled storage and buffer size limits still count as drops when delivery cannot continue.
+The buffer owns deferred drop accounting until delivery or handoff. Eviction, expiry, failed
+persistence of deferred batches, and shutdown count their terminal removal exactly once, using
+their original drop codes. Shutdown waits for pending exports and removes remaining batches before
+the final stats report. A batch reported as a terminal storage failure cannot be replayed after
+storage recovers; evicting an in-flight batch's storage copy does not declare that request lost.
 The original page does not count outcomes after another page adopts its batch. Invalid partial
 responses, including mismatched item counts, fail the export callback and retain outstanding
 envelopes when storage permits.

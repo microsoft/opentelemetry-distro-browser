@@ -478,6 +478,152 @@ it("re-arms pending counters when an interval expires during a slow report", asy
   expect(vi.getTimerCount()).toBe(0);
 });
 
+it.each(["shutdown", "eviction", "storage"] as const)(
+  "counts retained telemetry once when %s makes its loss terminal",
+  async (removal) => {
+    const client = new AzureMonitorExportClient({ connectionString, sdkStats: { enabled: true } });
+    owners.push(client);
+    fetch.mockResolvedValueOnce(
+      new Response(null, { status: 503, headers: { "retry-after": "86400" } }),
+    );
+    await new Promise<ExportResult>((resolve) => client.export(request().envelopes, resolve));
+    await client.forceFlush();
+    expect(totals()).toEqual({});
+    if (removal !== "shutdown") {
+      if (removal === "storage")
+        vi.spyOn(testSessionStorage, "setItem").mockImplementation(() => {
+          throw new DOMException("Quota exceeded", "QuotaExceededError");
+        });
+      const large = {
+        ...request().envelopes[0],
+        tags: { large: "x".repeat(MAX_SESSION_BUFFER_LENGTH * 0.6) },
+      };
+      beginUnloading();
+      try {
+        for (let index = 0; index < (removal === "eviction" ? 2 : 1); index++)
+          await new Promise<ExportResult>((resolve) => client.export([large], resolve));
+      } finally {
+        endUnloading();
+      }
+      await client.forceFlush();
+      expect(totals()).toEqual({
+        "Item_Dropped_Count:DEPENDENCY:503": 1,
+        "Item_Dropped_Count:DEPENDENCY:PAYLOAD_TOO_LARGE": 1,
+      });
+    }
+    await client.shutdown();
+    await client.shutdown();
+    expect(totals()).toEqual({
+      "Item_Dropped_Count:DEPENDENCY:503": 1,
+      ...(removal === "shutdown"
+        ? {}
+        : { "Item_Dropped_Count:DEPENDENCY:PAYLOAD_TOO_LARGE": removal === "eviction" ? 2 : 1 }),
+    });
+  },
+);
+
+it("reports only a retained partial response's retriable items during shutdown", async () => {
+  const client = new AzureMonitorExportClient({ connectionString, sdkStats: { enabled: true } });
+  owners.push(client);
+  fetch.mockResolvedValueOnce(
+    Response.json(
+      {
+        itemsReceived: 4,
+        itemsAccepted: 1,
+        errors: [
+          { index: 1, statusCode: 503, message: "retry" },
+          { index: 2, statusCode: 400, message: "invalid" },
+          { index: 3, statusCode: 206, message: "Telemetry sampled out." },
+        ],
+      },
+      { status: 206 },
+    ),
+  );
+  beginUnloading();
+  try {
+    await new Promise<ExportResult>((resolve) =>
+      client.export(
+        request([SpanKind.CLIENT, SpanKind.SERVER, SpanKind.CLIENT, SpanKind.SERVER]).envelopes,
+        resolve,
+      ),
+    );
+  } finally {
+    endUnloading();
+  }
+  await client.shutdown();
+  expect(totals()).toEqual({
+    "Item_Success_Count:DEPENDENCY": 1,
+    "Item_Dropped_Count:DEPENDENCY:400": 1,
+    "Item_Dropped_Count:REQUEST:SAMPLING": 1,
+    "Item_Dropped_Count:REQUEST:503": 1,
+  });
+});
+
+it("does not count an in-flight batch as dropped when its buffer copy is evicted", async () => {
+  const client = new AzureMonitorExportClient({ connectionString, sdkStats: { enabled: true } });
+  owners.push(client);
+  let finish!: (response: Response) => void;
+  fetch.mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+  );
+  const sending = new Promise<ExportResult>((resolve) =>
+    client.export(request().envelopes, resolve),
+  );
+  await vi.waitFor(() => expect(fetch).toHaveBeenCalledOnce());
+  const large = {
+    ...request().envelopes[0],
+    tags: { large: "x".repeat(MAX_SESSION_BUFFER_LENGTH * 0.6) },
+  };
+  beginUnloading();
+  try {
+    for (let index = 0; index < 2; index++)
+      await new Promise<ExportResult>((resolve) => client.export([large], resolve));
+  } finally {
+    endUnloading();
+    finish(new Response(null));
+  }
+  await sending;
+  await client.shutdown();
+  expect(totals()).toEqual({
+    "Item_Success_Count:DEPENDENCY": 1,
+    "Item_Dropped_Count:DEPENDENCY:PAYLOAD_TOO_LARGE": 2,
+  });
+});
+
+it.each([false, true])(
+  "waits for all pending exports before reporting shutdown drops (callback throws: %s)",
+  async (callbackThrows) => {
+    const client = new AzureMonitorExportClient({ connectionString, sdkStats: { enabled: true } });
+    owners.push(client);
+    const completions: Array<(response: Response) => void> = [];
+    for (let index = 0; index < 2; index++)
+      fetch.mockImplementationOnce(() => new Promise((resolve) => completions.push(resolve)));
+    const failure = new Error("callback failed");
+    client.export(request().envelopes, () => {
+      if (callbackThrows) throw failure;
+    });
+    client.export(request([SpanKind.SERVER]).envelopes, () => {});
+    await vi.waitFor(() => expect(completions).toHaveLength(2));
+    const stopped = vi.fn();
+    const shutdown = client.shutdown().finally(stopped);
+    const expected = callbackThrows
+      ? expect(shutdown).rejects.toBe(failure)
+      : expect(shutdown).resolves.toBeUndefined();
+    completions[0](new Response(null));
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
+    expect(stopped).not.toHaveBeenCalled();
+    completions[1](new Response(null, { status: 503, headers: { "retry-after": "86400" } }));
+    await expected;
+    expect(totals()).toEqual({
+      "Item_Success_Count:DEPENDENCY": 1,
+      "Item_Dropped_Count:REQUEST:503": 1,
+    });
+  },
+);
+
 it.each(["available", "disabled", "unavailable", "quota", "oversized"] as const)(
   "reports unload size-limit drops only when storage does not retain them: %s",
   async (storage) => {
@@ -1314,4 +1460,94 @@ it("bounds exact redirect URL history while retaining recent and refreshed desti
   expect(isSdkIngestionUrl(url(2))).toBe(true);
   expect(isSdkIngestionUrl(url(256))).toBe(true);
   expect(isSdkIngestionUrl(`${url(256)}&application=true`)).toBe(false);
+  sender.dispose();
+});
+
+it.each([false, true])(
+  "protects live shared destinations through redirect churn and releases them on shutdown (stats: %s)",
+  async (enabled) => {
+    const protectedEndpoint = `https://active-sdk-${enabled}.example.test`;
+    const options = {
+      connectionString: `InstrumentationKey=${TEST_INSTRUMENTATION_KEY};IngestionEndpoint=${protectedEndpoint}`,
+      sdkStats: { enabled },
+    };
+    const first = new AzureMonitorSpanExporter(options);
+    const second = new AzureMonitorLogRecordExporter(options);
+    owners.push(first, second);
+    const collector = new AzureMonitorLogRecordExporter({
+      connectionString,
+      sdkStats: { enabled: true },
+    });
+    owners.push(collector);
+    let index = 0;
+    const peer = new Sender({
+      endpoint: "https://churn.example.test/v2/track",
+      fetch: async () => {
+        const response = new Response(null);
+        Object.defineProperties(response, {
+          redirected: { value: true },
+          url: { value: `https://churn.example.test/v2/track?request=${index++}` },
+        });
+        return response;
+      },
+    });
+    try {
+      for (let count = 0; count < 300; count++) await peer.send(request());
+      const url = `${protectedEndpoint}/v2/track`;
+      expect(isSdkIngestionUrl(url)).toBe(true);
+      await first.shutdown();
+      await first.shutdown();
+      for (let count = 0; count < 300; count++) await peer.send(request());
+      expect(isSdkIngestionUrl(url)).toBe(true);
+      await new Promise<ExportResult>((resolve) =>
+        collector.export(
+          [
+            createReadableLogRecord({
+              eventName: "browser.resource_timing",
+              instrumentationScope: {
+                name: "@opentelemetry/browser-instrumentation/resource-timing",
+              },
+              attributes: { "url.full": url },
+            }),
+          ],
+          resolve,
+        ),
+      );
+      expect(fetch).not.toHaveBeenCalled();
+      await second.shutdown();
+      expect(isSdkIngestionUrl(url)).toBe(true);
+      for (let count = 0; count < 300; count++) await peer.send(request());
+      expect(isSdkIngestionUrl(url)).toBe(false);
+    } finally {
+      peer.dispose();
+    }
+  },
+);
+
+it("does not reactivate URL protection when a disposed sender receives a late redirect", async () => {
+  const original = "https://late-sdk.example.test/v2/track";
+  const redirected = "https://late-sdk.example.test/redirected";
+  let finish!: (response: Response) => void;
+  const sender = new Sender({
+    endpoint: original,
+    fetch: () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+  });
+  const sending = sender.send(request());
+  await vi.waitFor(() => expect(finish).toBeDefined());
+  sender.dispose();
+  const response = new Response(null);
+  Object.defineProperties(response, {
+    redirected: { value: true },
+    url: { value: redirected },
+  });
+  finish(response);
+  await sending;
+  expect(isSdkIngestionUrl(redirected)).toBe(true);
+  for (let index = 0; index < 300; index++)
+    rememberSdkIngestionUrl(`https://late-sdk-history.example.test/track?request=${index}`);
+  expect(isSdkIngestionUrl(original)).toBe(false);
+  expect(isSdkIngestionUrl(redirected)).toBe(false);
 });

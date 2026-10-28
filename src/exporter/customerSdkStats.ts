@@ -207,6 +207,7 @@ export function createCustomerSdkStats(
           await flush();
           stopped = true;
           counts.clear();
+          sender.dispose();
         }
       })();
     }

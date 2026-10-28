@@ -16,6 +16,7 @@ import {
   createReadableLogRecord,
 } from "../fixtures/telemetry.js";
 import { AzureMonitorSpanExporter } from "../../src/exporter/trace.js";
+import { rememberSdkIngestionUrl } from "../../src/shared/globalOwnership.js";
 import { SDK_STATS_ENDPOINT } from "../fixtures/sdkStats.js";
 import { loadBrowserScript } from "../fixtures/browserBundle.js";
 
@@ -39,9 +40,11 @@ afterEach(async () => {
   }
 });
 
-it.each(["index.js", "index.min.js"])(
-  "shares ingestion URL history with %s after shutdown despite an incompatible distro registry",
-  async (file) => {
+it.each(
+  ["index.js", "index.min.js"].flatMap((file) => [false, true].map((active) => ({ file, active }))),
+)(
+  "shares ingestion URL protection with $file despite an incompatible registry (active: $active)",
+  async ({ file, active }) => {
     const modulePath = `../../dist/esm/${file}`;
     const moduleUrl = new URL(modulePath, import.meta.url);
     const distro: typeof import("../../src/index.js") = await import(
@@ -55,12 +58,18 @@ it.each(["index.js", "index.min.js"])(
     const transport = vi.fn<typeof fetch>(async () => new Response(null));
     vi.stubGlobal("fetch", transport);
     let exporter: InstanceType<typeof distro.AzureMonitorLogRecordExporter> | undefined;
+    let peer: AzureMonitorSpanExporter | undefined;
     try {
       const peerEndpoint = "https://cross-copy-sdk.example.test";
-      const peer = new AzureMonitorSpanExporter({
+      peer = new AzureMonitorSpanExporter({
         connectionString: `InstrumentationKey=${TEST_INSTRUMENTATION_KEY};IngestionEndpoint=${peerEndpoint}`,
       });
-      await peer.shutdown();
+      if (active) {
+        for (let index = 0; index < 300; index++)
+          rememberSdkIngestionUrl(`https://cross-copy-churn.example.test/track?request=${index}`);
+      } else {
+        await peer.shutdown();
+      }
       exporter = new distro.AzureMonitorLogRecordExporter({
         connectionString: `InstrumentationKey=${TEST_INSTRUMENTATION_KEY};IngestionEndpoint=https://customer.example.test`,
         sdkStats: { enabled: true },
@@ -90,6 +99,7 @@ it.each(["index.js", "index.min.js"])(
       expect(realm[key]).toBe(incompatible);
     } finally {
       await exporter?.shutdown();
+      await peer?.shutdown();
       if (previous) Object.defineProperty(realm, key, previous);
       else delete realm[key];
     }

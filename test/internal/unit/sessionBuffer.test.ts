@@ -673,7 +673,7 @@ describe("Azure Monitor sessionStorage buffer", () => {
     const buffer = new SessionBuffer("destination");
     const first = buffer.add('[{"name":"first"}]');
     expect(storage.length).toBe(1);
-    expect(buffer.isRetained(first)).toBe(true);
+    expect(buffer.retain(first, vi.fn())).toBe(true);
 
     vi.spyOn(storage, "setItem").mockImplementation(() => {
       throw new DOMException("Quota exceeded", "QuotaExceededError");
@@ -683,7 +683,7 @@ describe("Azure Monitor sessionStorage buffer", () => {
     });
     expect(() => buffer.add('[{"name":"second"}]')).not.toThrow();
     expect(storage.length).toBe(0);
-    expect(buffer.isRetained(first)).toBe(false);
+    expect(buffer.retain(first, vi.fn())).toBe(false);
     expect(() => buffer.settle(first, "", false)).not.toThrow();
     // Later batches back off instead of retrying the failing write each time.
     buffer.add('[{"name":"third"}]');
@@ -701,8 +701,8 @@ describe("Azure Monitor sessionStorage buffer", () => {
     buffer.add(body("middle"));
     const newest = buffer.add(body("newest"));
 
-    expect(buffer.isRetained(oldest)).toBe(false);
-    expect(buffer.isRetained(newest)).toBe(true);
+    expect(buffer.retain(oldest, vi.fn())).toBe(false);
+    expect(buffer.retain(newest, vi.fn())).toBe(true);
     const stored = testSessionStorage.getItem(bufferKeys()[0]) ?? "";
     expect(stored.length).toBeLessThanOrEqual(MAX_SESSION_BUFFER_LENGTH + 4);
     expect(stored).not.toContain("oldest");
@@ -815,6 +815,77 @@ describe("Azure Monitor sessionStorage buffer", () => {
 
     await client.shutdown();
     expect(bufferKeys()).toEqual([]);
+  });
+
+  it.each(["payload", "partial", "retry"] as const)(
+    "never restores a terminal %s drop after a transient storage failure",
+    async (mode) => {
+      vi.spyOn(diag, "warn").mockImplementation(() => {});
+      const write = vi.spyOn(testSessionStorage, "setItem").mockImplementation(() => {
+        throw new DOMException("Quota exceeded", "QuotaExceededError");
+      });
+      stubFetch(() =>
+        mode === "partial"
+          ? breezeResponse([{ index: 0, statusCode: 503 }], {}, 1)
+          : new Response(null, { status: 503, headers: { "retry-after": "86400" } }),
+      );
+      const client = createClient({ sdkStats: { enabled: true } });
+      const count = vi.spyOn(client.itemStats!, "countEnvelopes");
+      const item =
+        mode === "payload"
+          ? { ...envelope("terminal"), tags: { large: "x".repeat(MAX_BEACON_BODY_SIZE) } }
+          : envelope("terminal");
+      if (mode !== "retry") beginUnloading();
+      try {
+        await expect(exportAsync(client, [item])).resolves.toMatchObject({
+          code: ExportResultCode.FAILED,
+        });
+      } finally {
+        if (mode !== "retry") endUnloading();
+      }
+      expect(count.mock.calls.filter(([outcome]) => outcome === "Dropped")).toHaveLength(1);
+      write.mockRestore();
+      vi.spyOn(Date, "now").mockReturnValue(Date.now() + 61_000);
+      hidePage();
+      expect(bufferKeys()).toEqual([]);
+      loadPage();
+      const fetch = stubFetch();
+      await createClient().forceFlush();
+      expect(fetch).not.toHaveBeenCalled();
+      expect(count.mock.calls.filter(([outcome]) => outcome === "Dropped")).toHaveLength(1);
+    },
+  );
+
+  it("counts a handed-off retained batch only on its adopting page", async () => {
+    const firstFetch = stubFetch(
+      () => new Response(null, { status: 503, headers: { "retry-after": "86400" } }),
+    );
+    const client = createClient({ sdkStats: { enabled: true } });
+    const count = vi.spyOn(client.itemStats!, "countEnvelopes");
+    await exportAsync(client, [envelope("handed off")]);
+    hidePage();
+    loadPage();
+    stubFetch();
+    await createClient().forceFlush();
+    firstFetch.mockResolvedValue(new Response(null));
+    await client.shutdown();
+    expect(count.mock.calls.filter(([outcome]) => outcome === "Dropped")).toEqual([]);
+  });
+
+  it("counts deferred batches once on expiry or disposal", () => {
+    const buffer = new SessionBuffer("terminal-accounting");
+    const expired = vi.fn();
+    const disposed = vi.fn();
+    const first = buffer.add('[{"name":"expired"}]');
+    expect(buffer.retain(first, expired)).toBe(true);
+    vi.spyOn(Date, "now").mockReturnValue(Date.now() + MAX_SESSION_BUFFER_AGE_MS + 1);
+    const second = buffer.add('[{"name":"disposed"}]');
+    expect(expired).toHaveBeenCalledOnce();
+    expect(buffer.retain(second, disposed)).toBe(true);
+    buffer.dispose();
+    buffer.dispose();
+    expect(expired).toHaveBeenCalledOnce();
+    expect(disposed).toHaveBeenCalledOnce();
   });
 
   it("does not recreate its record when a request settles after disposal", () => {

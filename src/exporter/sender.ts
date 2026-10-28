@@ -23,7 +23,7 @@ import {
 import type { AzureMonitorEnvelope } from "./telemetryModels.js";
 import type { InternalSdkStats } from "./sdkStats.js";
 import type { CustomerSdkStats } from "./customerSdkStats.js";
-import { rememberSdkIngestionUrl } from "../shared/globalOwnership.js";
+import { registerSdkIngestionUrl, rememberSdkIngestionUrl } from "../shared/globalOwnership.js";
 
 let pendingKeepaliveBodySize = 0;
 let pendingKeepaliveRequestCount = 0;
@@ -70,8 +70,8 @@ export interface SendRequest {
   readonly onResponse?: (statusCode: number) => void;
   /** Checked before each attempt; when it returns `false` the request stops with an error. */
   readonly active?: () => boolean;
-  /** Retains outstanding envelopes for another page; returns whether persistence succeeded. */
-  readonly retain?: () => boolean;
+  /** Retains outstanding envelopes and calls onDrop only if they are later terminally removed. */
+  readonly retain?: (onDrop: () => void) => boolean;
 }
 
 export interface SenderResult {
@@ -102,6 +102,7 @@ export class Sender {
   #throttleDeadline = 0;
   readonly #stats: InternalSdkStats | undefined;
   readonly #itemStats: CustomerSdkStats | undefined;
+  #releaseUrl: (() => void) | undefined;
 
   public constructor(options: SenderOptions) {
     this.#endpoint = options.endpoint;
@@ -119,7 +120,12 @@ export class Sender {
     if (this.#maxPayloadSize !== undefined && this.#maxPayloadSize <= 0) {
       throw new RangeError("maxPayloadSize must be greater than zero.");
     }
-    rememberSdkIngestionUrl(this.#endpoint);
+    this.#releaseUrl = registerSdkIngestionUrl(this.#endpoint);
+  }
+
+  public dispose(): void {
+    this.#releaseUrl?.();
+    this.#releaseUrl = undefined;
   }
 
   public async send(request: SendRequest): Promise<SenderResultType> {
@@ -220,9 +226,7 @@ export class Sender {
         }
       }
     } catch (error) {
-      if (pending && request.active?.() !== false && !request.retain?.()) {
-        this.#itemStats?.countEnvelopes("Dropped", pending, retryCodes);
-      }
+      this.#dropItems(request, pending, retryCodes, true);
       throw error;
     }
   }
@@ -238,26 +242,48 @@ export class Sender {
       stats.countEnvelopes("Success", envelopes);
       return;
     }
-    const deferred = willRetry || (isRetriable(result.statusCode) && request.retain?.() === true);
     if (result.statusCode === 206) {
       const response = result.response;
       if (response) {
+        const deferred: AzureMonitorEnvelope[] = [];
+        const codes: string[] = [];
         const errors = new Map(response.errors.map((error) => [error.index, error]));
         for (const [index, envelope] of envelopes.entries()) {
           const error = errors.get(index);
           if (!error) stats.countEnvelopes("Success", [envelope]);
-          else if (isSamplingRejection(error) || !deferred || !isRetriable(error.statusCode)) {
+          else if (isSamplingRejection(error) || !isRetriable(error.statusCode)) {
             stats.countEnvelopes(
               "Dropped",
               [envelope],
               isSamplingRejection(error) ? "SAMPLING" : String(error.statusCode),
             );
+          } else if (!willRetry) {
+            deferred.push(envelope);
+            codes.push(String(error.statusCode));
           }
         }
+        this.#dropItems(request, deferred, codes, true);
         return;
       }
     }
-    if (!deferred) stats.countEnvelopes("Dropped", envelopes, String(result.statusCode));
+    if (!willRetry)
+      this.#dropItems(
+        request,
+        envelopes,
+        String(result.statusCode),
+        isRetriable(result.statusCode),
+      );
+  }
+
+  #dropItems(
+    request: SendRequest,
+    envelopes: readonly AzureMonitorEnvelope[] | undefined,
+    codes: string | readonly string[],
+    retain: boolean,
+  ): void {
+    if (!this.#itemStats || !envelopes?.length || request.active?.() === false) return;
+    const onDrop = (): void => this.#itemStats?.countEnvelopes("Dropped", envelopes, codes);
+    if (!retain || !request.retain?.(onDrop)) onDrop();
   }
 
   #rememberThrottleDeadline(result: SenderResultType): void {
@@ -409,7 +435,12 @@ export class Sender {
 
     const redirectedEndpoint = getTrustedIngestionEndpoint(attemptedEndpoint, response.url);
     if (redirectedEndpoint !== undefined && redirectedEndpoint !== this.#endpoint) {
-      rememberSdkIngestionUrl(redirectedEndpoint);
+      if (this.#releaseUrl) {
+        this.#releaseUrl();
+        this.#releaseUrl = registerSdkIngestionUrl(redirectedEndpoint);
+      } else {
+        rememberSdkIngestionUrl(redirectedEndpoint);
+      }
       this.#endpoint = redirectedEndpoint;
       this.#stats?.updateEndpoint(redirectedEndpoint);
       this.#compress = isTrustedIngestionEndpoint(redirectedEndpoint);

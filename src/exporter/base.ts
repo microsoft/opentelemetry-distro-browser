@@ -15,6 +15,7 @@ import { Sender, type SenderResultType } from "./sender.js";
 import { createInternalSdkStats, reportFailure, type InternalSdkStats } from "./sdkStats.js";
 import { getInternalSdkStatsConfiguration } from "./sdkStatsConfiguration.js";
 import { SessionBuffer, sessionBufferStorage } from "./sessionBuffer.js";
+import { waitForAll } from "../shared/lifecycle.js";
 import type { AzureMonitorBaseData, AzureMonitorEnvelope } from "./telemetryModels.js";
 import {
   createCustomerSdkStats,
@@ -71,13 +72,13 @@ export class AzureMonitorExportClient {
       throw new Error("Connection string needs a valid InstrumentationKey UUID.");
     }
     this.instrumentationKey = instrumentationKey;
+    const statsConfiguration = getInternalSdkStatsConfiguration(ingestionEndpoint);
+    this.#stats = createInternalSdkStats(statsConfiguration, instrumentationKey, ingestionEndpoint);
     this.itemStats = createCustomerSdkStats(
       options.sdkStats,
       instrumentationKey,
       ingestionEndpoint,
     );
-    const statsConfiguration = getInternalSdkStatsConfiguration(ingestionEndpoint);
-    this.#stats = createInternalSdkStats(statsConfiguration, instrumentationKey, ingestionEndpoint);
     this.#sender = new Sender({
       endpoint: `${ingestionEndpoint}/v2/track`,
       disableBeacon: unloadBeaconPolicies.get(options) ?? options.disableBeacon,
@@ -167,9 +168,10 @@ export class AzureMonitorExportClient {
     // Envelopes that cannot fit the unload beacon wait for the next page load.
     if (dropped.length > 0) {
       const id = this.#buffer?.add(JSON.stringify(dropped));
-      if (id === undefined || !this.#buffer?.isRetained(id)) {
+      const onDrop = (): void => {
         this.itemStats?.countEnvelopes("Dropped", dropped, "PAYLOAD_TOO_LARGE");
-      }
+      };
+      if (id === undefined || !this.#buffer?.retain(id, onDrop)) onDrop();
     }
     if (error) {
       callback({ code: ExportResultCode.FAILED, error });
@@ -246,9 +248,9 @@ export class AzureMonitorExportClient {
         },
         // Stop retrying a batch another document adopted and delivered.
         active: () => id === undefined || this.#buffer?.owns(id) !== false,
-        retain: () => {
+        retain: (onDrop) => {
           settle(true);
-          return id !== undefined && this.#buffer?.isRetained(id) === true;
+          return id !== undefined && this.#buffer?.retain(id, onDrop) === true;
         },
       })
       .then(
@@ -281,11 +283,22 @@ export class AzureMonitorExportClient {
   public async shutdown(): Promise<void> {
     if (this.#stopped) return;
     this.#stopped = true;
-    const pending = Promise.all([...this.#pending]);
+    const pending = waitForAll([...this.#pending], "Pending exports failed").finally(() =>
+      this.#buffer?.dispose(),
+    );
+    // Report export failures once, after both reporters finish their final attempts.
+    const completed = pending.then(noop, noop);
     try {
-      await Promise.all([this.#stats.shutdown(pending), this.itemStats?.shutdown(pending)]);
+      await waitForAll(
+        [
+          pending,
+          this.#stats.shutdown(completed),
+          this.itemStats?.shutdown(completed) ?? Promise.resolve(),
+        ],
+        "Exporter shutdown failed",
+      );
     } finally {
-      this.#buffer?.dispose();
+      this.#sender.dispose();
     }
   }
 }

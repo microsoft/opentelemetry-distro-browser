@@ -12,6 +12,9 @@ const logsKey = /* @__PURE__ */ Symbol.for("io.opentelemetry.js.api.logs");
 const ingestionUrlsKey = /* @__PURE__ */ Symbol.for(
   "@microsoft/opentelemetry-browser/sdk-ingestion-urls/1",
 );
+const activeIngestionUrlsKey = /* @__PURE__ */ Symbol.for(
+  "@microsoft/opentelemetry-browser/active-sdk-ingestion-urls/1",
+);
 const realm = globalThis as typeof globalThis & { [key: symbol]: unknown };
 
 interface SharedRegistry {
@@ -30,7 +33,7 @@ interface SharedRegistry {
 }
 
 /** Keep the last 256 exact destinations for delayed resource timings, independently of distro state. */
-export function rememberSdkIngestionUrl(endpoint: string): void {
+export function rememberSdkIngestionUrl(endpoint: string): string {
   const url = new URL(endpoint);
   url.hash = "";
   const urls = (realm[ingestionUrlsKey] ??= new Set<string>()) as Set<string>;
@@ -42,10 +45,33 @@ export function rememberSdkIngestionUrl(endpoint: string): void {
       break;
     }
   }
+  return url.href;
+}
+
+/** Active senders keep their destinations protected until their owner releases them. */
+export function registerSdkIngestionUrl(endpoint: string): () => void {
+  const url = rememberSdkIngestionUrl(endpoint);
+  const active = (realm[activeIngestionUrlsKey] ??= new Map<string, number>()) as Map<
+    string,
+    number
+  >;
+  active.set(url, (active.get(url) ?? 0) + 1);
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    const remaining = (active.get(url) ?? 1) - 1;
+    if (remaining) active.set(url, remaining);
+    else active.delete(url);
+    rememberSdkIngestionUrl(url);
+  };
 }
 
 export function isSdkIngestionUrl(url: string): boolean {
-  return (realm[ingestionUrlsKey] as Set<string> | undefined)?.has(url) === true;
+  return (
+    (realm[activeIngestionUrlsKey] as Map<string, number> | undefined)?.has(url) === true ||
+    (realm[ingestionUrlsKey] as Set<string> | undefined)?.has(url) === true
+  );
 }
 
 /** Exporter-only consumers may read page membership without initializing a distribution. */

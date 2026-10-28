@@ -77,6 +77,7 @@ export function createInternalSdkStats(
     const next = resolveRoute(getInternalSdkStatsConfiguration(endpoint));
     properties.host = new URL(endpoint).hostname.split(".")[0];
     route = next;
+    if (!sending) sender?.dispose();
     sender = undefined;
     if (!route) sending?.abort();
   }
@@ -137,6 +138,7 @@ export function createInternalSdkStats(
         disabled = true;
         counts.clear();
         requests = duration = 0;
+        sender?.dispose();
       }
     }
   }
@@ -195,6 +197,7 @@ export function createInternalSdkStats(
       await sendSdkStats(statsSender, envelopes, controller, unloading);
     } finally {
       sending = undefined;
+      if (statsSender !== sender) statsSender.dispose();
     }
   }
 

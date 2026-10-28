@@ -22,7 +22,7 @@ export function createSessionBufferStorage(namePrefix?: string): WebKeyValueStor
   );
 }
 
-type Entry = [time: number, body: string, dispatched?: boolean];
+type Entry = [time: number, body: string, dispatched?: boolean, onDrop?: () => void];
 
 const pageListeners = new Set<() => void>();
 let pageHidden = false;
@@ -102,11 +102,17 @@ export class SessionBuffer {
     return this.#live.has(id);
   }
 
-  /** Whether a batch was actually persisted for delivery by a later document. */
-  public isRetained(id: number): boolean {
+  /** Transfers terminal-drop accounting to the buffer only when persistence succeeded. */
+  public retain(id: number, onDrop: () => void): boolean {
     this.#reconcile();
     const entry = this.#entries.get(id);
-    return this.#stored && entry !== undefined && !entry[2];
+    if (this.#stored && entry && !entry[2]) {
+      entry[3] = onDrop;
+      return true;
+    }
+    // A caller reporting a terminal drop must never have this batch restored by a later write.
+    this.#entries.delete(id);
+    return false;
   }
 
   /** Buffers a serialized envelope array and returns its ID. */
@@ -189,10 +195,17 @@ export class SessionBuffer {
   /** Removes this exporter's record and stops tracking page transitions. */
   public dispose(): void {
     this.#unsubscribe();
-    this.#entries.clear();
+    this.#reconcile();
+    for (const id of this.#entries.keys()) this.#drop(id);
     // Requests that settle later must not recreate the record.
     this.#live.clear();
     this.#storage.removeItem(this.#key);
+  }
+
+  #drop(id: number): void {
+    const entry = this.#entries.get(id);
+    this.#entries.delete(id);
+    entry?.[3]?.();
   }
 
   /**
@@ -229,7 +242,7 @@ export class SessionBuffer {
         part.length > MAX_SESSION_BUFFER_LENGTH ||
         (full = length + part.length > MAX_SESSION_BUFFER_LENGTH)
       ) {
-        this.#entries.delete(id);
+        this.#drop(id);
         continue;
       }
       length += part.length + 1;
@@ -243,5 +256,10 @@ export class SessionBuffer {
     this.#released = this.#stored && pageHidden;
     // Only remove a record that exists, since a removal ends the storage write backoff.
     if (stored && !this.#stored) this.#storage.removeItem(this.#key);
+    if (!this.#stored) {
+      for (const [id, entry] of this.#entries) {
+        if (entry[3]) this.#drop(id);
+      }
+    }
   }
 }
