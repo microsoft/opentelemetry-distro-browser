@@ -6,6 +6,8 @@ All notable changes to this package are documented in this file.
 
 ### Added
 
+- Refactor startup instrumentation registration into an internal per-instance registry to prepare
+  for dynamic instrumentation configuration.
 - Add internal customer SDK Stats reporting with isolated diagnostics and lifecycle handling.
   Retain retryable customer stats counts in memory for the next report, and preserve console
   instrumentation teardown and synchronous restart inside diagnostic callbacks.
