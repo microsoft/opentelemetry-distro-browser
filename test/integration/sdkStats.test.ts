@@ -5,11 +5,17 @@ import { context, diag, propagation, trace } from "@opentelemetry/api";
 import { logs } from "@opentelemetry/api-logs";
 import { FetchInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/fetch";
 import { ConsoleInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/console";
+import { ExportResultCode, type ExportResult } from "@opentelemetry/core";
 import { afterEach, expect, inject, it, vi } from "vitest";
 import type { BrowserInstrumentation, MicrosoftOpenTelemetryBrowser } from "../../src/types.js";
 import type { AzureMonitorEnvelope } from "../../src/exporter/telemetryModels.js";
 import { assertAzureMonitorEnvelope, TEST_INSTRUMENTATION_KEY } from "../fixtures/azureMonitor.js";
-import { createConsolePipeline, createInMemoryPipeline } from "../fixtures/telemetry.js";
+import {
+  createConsolePipeline,
+  createInMemoryPipeline,
+  createReadableLogRecord,
+} from "../fixtures/telemetry.js";
+import { AzureMonitorSpanExporter } from "../../src/exporter/trace.js";
 import { SDK_STATS_ENDPOINT } from "../fixtures/sdkStats.js";
 import { loadBrowserScript } from "../fixtures/browserBundle.js";
 
@@ -32,6 +38,63 @@ afterEach(async () => {
     referrerPolicy = undefined;
   }
 });
+
+it.each(["index.js", "index.min.js"])(
+  "shares ingestion URL history with %s after shutdown despite an incompatible distro registry",
+  async (file) => {
+    const modulePath = `../../dist/esm/${file}`;
+    const moduleUrl = new URL(modulePath, import.meta.url);
+    const distro: typeof import("../../src/index.js") = await import(
+      /* @vite-ignore */ moduleUrl.href
+    );
+    const key = Symbol.for("@microsoft/opentelemetry-browser");
+    const realm = globalThis as typeof globalThis & { [key: symbol]: unknown };
+    const previous = Object.getOwnPropertyDescriptor(realm, key);
+    const incompatible = { version: 2 };
+    realm[key] = incompatible;
+    const transport = vi.fn<typeof fetch>(async () => new Response(null));
+    vi.stubGlobal("fetch", transport);
+    let exporter: InstanceType<typeof distro.AzureMonitorLogRecordExporter> | undefined;
+    try {
+      const peerEndpoint = "https://cross-copy-sdk.example.test";
+      const peer = new AzureMonitorSpanExporter({
+        connectionString: `InstrumentationKey=${TEST_INSTRUMENTATION_KEY};IngestionEndpoint=${peerEndpoint}`,
+      });
+      await peer.shutdown();
+      exporter = new distro.AzureMonitorLogRecordExporter({
+        connectionString: `InstrumentationKey=${TEST_INSTRUMENTATION_KEY};IngestionEndpoint=https://customer.example.test`,
+        sdkStats: { enabled: true },
+      });
+      const timing = (url: string) =>
+        createReadableLogRecord({
+          eventName: "browser.resource_timing",
+          instrumentationScope: {
+            name: "@opentelemetry/browser-instrumentation/resource-timing",
+          },
+          attributes: { "url.full": url },
+        });
+      const callback = vi.fn<(result: ExportResult) => void>();
+      exporter.export(
+        [timing(`${peerEndpoint}/v2/track`), timing(`${peerEndpoint}/v2/track?application=true`)],
+        callback,
+      );
+      await vi.waitFor(() =>
+        expect(callback).toHaveBeenCalledExactlyOnceWith({ code: ExportResultCode.SUCCESS }),
+      );
+      const [url, init] = transport.mock.calls[0];
+      const envelopes: AzureMonitorEnvelope[] = await new Request(url, init).json();
+      expect(envelopes).toHaveLength(1);
+      expect(envelopes[0].data.baseData.properties?.["url.full"]).toBe(
+        `${peerEndpoint}/v2/track?application=true`,
+      );
+      expect(realm[key]).toBe(incompatible);
+    } finally {
+      await exporter?.shutdown();
+      if (previous) Object.defineProperty(realm, key, previous);
+      else delete realm[key];
+    }
+  },
+);
 
 it.each(
   (["index.js", "index.min.js", "iife.min"] as const).flatMap((file) =>

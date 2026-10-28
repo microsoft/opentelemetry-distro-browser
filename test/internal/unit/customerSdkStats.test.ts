@@ -30,6 +30,12 @@ import {
   assertAzureMonitorEnvelope,
 } from "../../fixtures/azureMonitor.js";
 import { installFakeClock } from "../../fixtures/clock.js";
+import {
+  MAX_SESSION_BUFFER_LENGTH,
+  sessionBufferStorage,
+} from "../../../src/exporter/sessionBuffer.js";
+import { setSessionStorage, testSessionStorage } from "../../fixtures/sessionStorageSetup.js";
+import { isSdkIngestionUrl, rememberSdkIngestionUrl } from "../../../src/shared/globalOwnership.js";
 
 const endpoint = "https://customer.example.test";
 const connectionString = `InstrumentationKey=${TEST_INSTRUMENTATION_KEY};IngestionEndpoint=${endpoint}`;
@@ -232,6 +238,81 @@ it("merges failed counts with counts collected during a shared in-flight flush",
   });
 });
 
+it.each([200, 503])(
+  "flushes new counts after an in-flight HTTP %i report with at most one follow-up",
+  async (status) => {
+    const stats = create();
+    const normal = fetch.getMockImplementation()!;
+    let finish!: () => void;
+    fetch.mockImplementationOnce(
+      (...args) =>
+        new Promise((resolve) => {
+          finish = () => resolve(status === 200 ? normal(...args) : new Response(null, { status }));
+        }),
+    );
+    stats.count("Success", "TRACE");
+    const first = stats.forceFlush();
+    stats.count("Success", "DEPENDENCY");
+    const second = stats.forceFlush();
+    const concurrent = stats.forceFlush();
+    if (status === 503) fetch.mockResolvedValueOnce(new Response(null, { status }));
+    finish();
+    await Promise.all([first, second, concurrent]);
+    expect(fetch).toHaveBeenCalledTimes(2);
+    if (status === 200) {
+      expect(totals()).toEqual({
+        "Item_Success_Count:TRACE": 1,
+        "Item_Success_Count:DEPENDENCY": 1,
+      });
+    } else {
+      expect(diag.warn).toHaveBeenCalledTimes(2);
+      await stats.forceFlush();
+      expect(totals()).toEqual({
+        "Item_Success_Count:TRACE": 1,
+        "Item_Success_Count:DEPENDENCY": 1,
+      });
+    }
+  },
+);
+
+it.each(["spans", "logs"] as const)(
+  "includes completed %s exports when flushing behind an older stats report",
+  async (signal) => {
+    const options = { connectionString, sdkStats: { enabled: true } };
+    const exporter =
+      signal === "spans"
+        ? new AzureMonitorSpanExporter(options)
+        : new AzureMonitorLogRecordExporter(options);
+    owners.push(exporter);
+    const send = () =>
+      new Promise<ExportResult>((resolve) => {
+        if (exporter instanceof AzureMonitorSpanExporter)
+          exporter.export([createReadableSpan()], resolve);
+        else exporter.export([createReadableLogRecord()], resolve);
+      });
+    await send();
+    const normal = fetch.getMockImplementation()!;
+    let finish!: () => void;
+    fetch.mockImplementationOnce(
+      (...args) =>
+        new Promise((resolve) => {
+          finish = () => resolve(normal(...args));
+        }),
+    );
+    const first = exporter.forceFlush();
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
+    await send();
+    const second = exporter.forceFlush();
+    await Promise.resolve();
+    finish();
+    await Promise.all([first, second]);
+    expect(fetch).toHaveBeenCalledTimes(4);
+    expect(totals()).toEqual({
+      [`Item_Success_Count:${signal === "spans" ? "DEPENDENCY" : "TRACE"}`]: 2,
+    });
+  },
+);
+
 it("only retries outstanding retriable items after partial acceptance", async () => {
   const stats = create();
   fetch.mockResolvedValueOnce(
@@ -397,32 +478,93 @@ it("re-arms pending counters when an interval expires during a slow report", asy
   expect(vi.getTimerCount()).toBe(0);
 });
 
-it("reports unload size-limit drops only for the envelopes that did not fit", async () => {
-  const client = new AzureMonitorExportClient({ connectionString, sdkStats: { enabled: true } });
-  owners.push(client);
-  const envelopes = request().envelopes;
-  const large = {
-    ...envelopes[0],
-    data: {
-      baseType: "MessageData" as const,
-      baseData: { ver: 2 as const, message: "x".repeat(70_000) },
-    },
-  };
-  beginUnloading();
-  try {
-    const result = await new Promise<ExportResult>((resolve) =>
-      client.export([envelopes[0], large], resolve),
-    );
-    expect(result.code).toBe(ExportResultCode.FAILED);
+it.each(["available", "disabled", "unavailable", "quota", "oversized"] as const)(
+  "reports unload size-limit drops only when storage does not retain them: %s",
+  async (storage) => {
+    const options = { connectionString, sdkStats: { enabled: true } };
+    if (storage === "disabled") sessionBufferStorage.set(options, null);
+    if (storage === "unavailable") setSessionStorage(undefined);
+    if (storage === "quota")
+      vi.spyOn(testSessionStorage, "setItem").mockImplementation(() => {
+        throw new DOMException("Quota exceeded", "QuotaExceededError");
+      });
+    const client = new AzureMonitorExportClient(options);
+    owners.push(client);
+    const envelopes = request().envelopes;
+    const large = {
+      ...envelopes[0],
+      data: {
+        baseType: "MessageData" as const,
+        baseData: {
+          ver: 2 as const,
+          message: "x".repeat(storage === "oversized" ? MAX_SESSION_BUFFER_LENGTH : 70_000),
+        },
+      },
+    };
+    beginUnloading();
+    try {
+      const result = await new Promise<ExportResult>((resolve) =>
+        client.export([envelopes[0], large], resolve),
+      );
+      expect(result.code).toBe(ExportResultCode.FAILED);
+      await client.forceFlush();
+    } finally {
+      endUnloading();
+    }
+    expect(totals()).toEqual({
+      ...(storage === "available" ? {} : { "Item_Dropped_Count:TRACE:PAYLOAD_TOO_LARGE": 1 }),
+      "Item_Success_Count:DEPENDENCY": 1,
+    });
+  },
+);
+
+it.each(["available", "disabled", "unavailable", "quota"] as const)(
+  "counts only terminal outcomes from a partial unload with %s storage",
+  async (storage) => {
+    const options = { connectionString, sdkStats: { enabled: true } };
+    if (storage === "disabled") sessionBufferStorage.set(options, null);
+    if (storage === "unavailable") setSessionStorage(undefined);
+    const client = new AzureMonitorExportClient(options);
+    owners.push(client);
+    fetch.mockImplementationOnce(async () => {
+      if (storage === "quota")
+        vi.spyOn(testSessionStorage, "setItem").mockImplementation(() => {
+          throw new DOMException("Quota exceeded", "QuotaExceededError");
+        });
+      return Response.json(
+        {
+          itemsReceived: 4,
+          itemsAccepted: 1,
+          errors: [
+            { index: 1, statusCode: 503, message: "retry" },
+            { index: 2, statusCode: 400, message: "invalid" },
+            { index: 3, statusCode: 206, message: "Telemetry sampled out." },
+          ],
+        },
+        { status: 206 },
+      );
+    });
+    beginUnloading();
+    try {
+      const result = await new Promise<ExportResult>((resolve) =>
+        client.export(
+          request([SpanKind.CLIENT, SpanKind.SERVER, SpanKind.CLIENT, SpanKind.SERVER]).envelopes,
+          resolve,
+        ),
+      );
+      expect(result.code).toBe(ExportResultCode.FAILED);
+    } finally {
+      endUnloading();
+    }
     await client.forceFlush();
-  } finally {
-    endUnloading();
-  }
-  expect(totals()).toEqual({
-    "Item_Dropped_Count:TRACE:PAYLOAD_TOO_LARGE": 1,
-    "Item_Success_Count:DEPENDENCY": 1,
-  });
-});
+    expect(totals()).toEqual({
+      "Item_Success_Count:DEPENDENCY": 1,
+      "Item_Dropped_Count:DEPENDENCY:400": 1,
+      "Item_Dropped_Count:REQUEST:SAMPLING": 1,
+      ...(storage === "available" ? {} : { "Item_Dropped_Count:REQUEST:503": 1 }),
+    });
+  },
+);
 
 it.each(["spans", "logs"] as const)(
   "reports conversion failures for %s without losing the callback",
@@ -460,6 +602,245 @@ it.each(["spans", "logs"] as const)(
     expect(totals()).toEqual({
       [`Item_Dropped_Count:${signal === "spans" ? "DEPENDENCY" : "TRACE"}:CLIENT_EXCEPTION`]: 1,
     });
+  },
+);
+
+it.each(
+  (["spans", "logs"] as const).flatMap((signal) =>
+    [false, true].map((enabled) => ({ signal, enabled })),
+  ),
+)(
+  "preserves the callback and remaining $signal counts when classification throws (stats: $enabled)",
+  async ({ signal, enabled }) => {
+    const options = { connectionString, sdkStats: { enabled } };
+    const exporter =
+      signal === "spans"
+        ? new AzureMonitorSpanExporter(options)
+        : new AzureMonitorLogRecordExporter(options);
+    owners.push(exporter);
+    const failure = new Error("classification failed");
+    const broken = {
+      get: () => {
+        throw failure;
+      },
+    };
+    const callback = vi.fn();
+    expect(() => {
+      if (exporter instanceof AzureMonitorSpanExporter) {
+        const span = createReadableSpan();
+        Object.defineProperty(span, "kind", broken);
+        exporter.export([span, span, createReadableSpan({ kind: SpanKind.SERVER })], callback);
+      } else {
+        const log = createReadableLogRecord();
+        Object.defineProperty(log.attributes, "exception.type", broken);
+        exporter.export([log, log, createReadableLogRecord()], callback);
+      }
+    }).not.toThrow();
+    expect(callback).toHaveBeenCalledExactlyOnceWith({
+      code: ExportResultCode.FAILED,
+      error: failure,
+    });
+    expect(fetch).not.toHaveBeenCalled();
+    expect(diag.warn).toHaveBeenCalledTimes(enabled ? 2 : 0);
+    await exporter.forceFlush();
+    expect(totals()).toEqual(
+      enabled
+        ? { [`Item_Dropped_Count:${signal === "spans" ? "REQUEST" : "TRACE"}:CLIENT_EXCEPTION`]: 1 }
+        : {},
+    );
+  },
+);
+
+it.each([false, true])(
+  "counts every converted span envelope before a later conversion failure (unloading: %s)",
+  async (unloading) => {
+    const exporter = new AzureMonitorSpanExporter({
+      connectionString,
+      sdkStats: { enabled: true },
+    });
+    owners.push(exporter);
+    const converted = createReadableSpan({
+      events: [
+        {
+          name: "exception",
+          time: [1_735_689_601, 0],
+          attributes: { "exception.type": "Error", "exception.message": "boom" },
+          droppedAttributesCount: 0,
+        },
+        { name: "step", time: [1_735_689_602, 0], droppedAttributesCount: 0 },
+      ],
+    });
+    const failed = createReadableSpan({ kind: SpanKind.SERVER });
+    const failure = new Error("conversion failed");
+    Object.defineProperty(failed, "startTime", {
+      get: () => {
+        throw failure;
+      },
+    });
+    const callback = vi.fn();
+    if (unloading) beginUnloading();
+    try {
+      exporter.export([converted, failed, createReadableSpan()], callback);
+    } finally {
+      if (unloading) endUnloading();
+    }
+    expect(callback).toHaveBeenCalledExactlyOnceWith({
+      code: ExportResultCode.FAILED,
+      error: failure,
+    });
+    expect(fetch).not.toHaveBeenCalled();
+    await exporter.forceFlush();
+    expect(totals()).toEqual({
+      "Item_Dropped_Count:DEPENDENCY:CLIENT_EXCEPTION": 2,
+      "Item_Dropped_Count:REQUEST:CLIENT_EXCEPTION": 1,
+      "Item_Dropped_Count:EXCEPTION:CLIENT_EXCEPTION": 1,
+      "Item_Dropped_Count:TRACE:CLIENT_EXCEPTION": 1,
+    });
+  },
+);
+
+it("counts the discarded page-view performance envelope without counting filtered SDK timings", async () => {
+  const exporter = new AzureMonitorLogRecordExporter({
+    connectionString,
+    sdkStats: { enabled: true },
+  });
+  owners.push(exporter);
+  const converted = createReadableLogRecord({
+    eventName: "browser.page_view",
+    attributes: {
+      "browser.page_view.performance.total": 170,
+      "browser.page_view.performance.network_connect": 20,
+      "browser.page_view.performance.sent_request": 50,
+      "browser.page_view.performance.received_response": 30,
+      "browser.page_view.performance.dom_processing": 70,
+    },
+  });
+  const failed = createReadableLogRecord({ eventName: "application.event" });
+  const failure = new Error("conversion failed");
+  Object.defineProperty(failed, "hrTime", {
+    get: () => {
+      throw failure;
+    },
+  });
+  const timing = createReadableLogRecord({
+    eventName: "browser.resource_timing",
+    instrumentationScope: { name: "@opentelemetry/browser-instrumentation/resource-timing" },
+    attributes: { "url.full": `${endpoint}/v2/track` },
+  });
+  const callback = vi.fn();
+  exporter.export([timing, converted, failed, timing, createReadableLogRecord()], callback);
+  expect(callback).toHaveBeenCalledExactlyOnceWith({
+    code: ExportResultCode.FAILED,
+    error: failure,
+  });
+  expect(fetch).not.toHaveBeenCalled();
+  await exporter.forceFlush();
+  expect(totals()).toEqual({
+    "Item_Dropped_Count:PAGE_VIEW:CLIENT_EXCEPTION": 2,
+    "Item_Dropped_Count:CUSTOM_EVENT:CLIENT_EXCEPTION": 1,
+    "Item_Dropped_Count:TRACE:CLIENT_EXCEPTION": 1,
+  });
+});
+
+it("preserves filtering and the original failure when log eligibility and diagnostics throw", async () => {
+  const exporter = new AzureMonitorLogRecordExporter({
+    connectionString,
+    sdkStats: { enabled: true },
+  });
+  owners.push(exporter);
+  const failure = new Error("event name unavailable");
+  const broken = createReadableLogRecord();
+  Object.defineProperty(broken, "eventName", {
+    get: () => {
+      throw failure;
+    },
+  });
+  const timing = createReadableLogRecord({
+    eventName: "browser.resource_timing",
+    instrumentationScope: { name: "@opentelemetry/browser-instrumentation/resource-timing" },
+    attributes: { "url.full": `${endpoint}/v2/track` },
+  });
+  vi.spyOn(diag, "warn").mockImplementation(() => {
+    throw new Error("diagnostic failed");
+  });
+  const callback = vi.fn();
+  exporter.export([timing, broken, timing, createReadableLogRecord()], callback);
+  expect(callback).toHaveBeenCalledExactlyOnceWith({
+    code: ExportResultCode.FAILED,
+    error: failure,
+  });
+  await exporter.forceFlush();
+  expect(totals()).toEqual({ "Item_Dropped_Count:TRACE:CLIENT_EXCEPTION": 1 });
+});
+
+it.each([false, true])(
+  "counts only eligible records when conversion fails with SDK timing first: %s",
+  async (timingFirst) => {
+    const exporter = new AzureMonitorLogRecordExporter({
+      connectionString,
+      sdkStats: { enabled: true },
+    });
+    owners.push(exporter);
+    const timing = createReadableLogRecord({
+      eventName: "browser.resource_timing",
+      instrumentationScope: {
+        name: "@opentelemetry/browser-instrumentation/resource-timing",
+      },
+      attributes: { "url.full": `${endpoint}/v2/track` },
+    });
+    const record = createReadableLogRecord();
+    const failure = new Error("conversion failed");
+    Object.defineProperty(record, "hrTime", {
+      get: () => {
+        throw failure;
+      },
+    });
+    const callback = vi.fn();
+    exporter.export(timingFirst ? [timing, record] : [record, timing], callback);
+    expect(callback).toHaveBeenCalledExactlyOnceWith({
+      code: ExportResultCode.FAILED,
+      error: failure,
+    });
+    expect(fetch).not.toHaveBeenCalled();
+    await exporter.forceFlush();
+    expect(totals()).toEqual({ "Item_Dropped_Count:TRACE:CLIENT_EXCEPTION": 1 });
+    expect(fetch).toHaveBeenCalledOnce();
+  },
+);
+
+it.each([
+  { duration: 0, type: "CUSTOM_METRIC" },
+  { duration: 123.5, type: "CUSTOM_METRIC" },
+  { duration: -1, type: "CUSTOM_EVENT" },
+  { duration: NaN, type: "CUSTOM_EVENT" },
+  { duration: Infinity, type: "CUSTOM_EVENT" },
+  { duration: "123", type: "CUSTOM_EVENT" },
+])(
+  "classifies page-visit conversion failures as $type for duration $duration",
+  async ({ duration, type }) => {
+    const exporter = new AzureMonitorLogRecordExporter({
+      connectionString,
+      sdkStats: { enabled: true },
+    });
+    owners.push(exporter);
+    const record = createReadableLogRecord({
+      eventName: "browser.page_visit",
+      attributes: { "browser.page_visit.duration": duration },
+    });
+    const failure = new Error("conversion failed");
+    Object.defineProperty(record, "hrTime", {
+      get: () => {
+        throw failure;
+      },
+    });
+    const callback = vi.fn();
+    exporter.export([record], callback);
+    expect(callback).toHaveBeenCalledExactlyOnceWith({
+      code: ExportResultCode.FAILED,
+      error: failure,
+    });
+    await exporter.forceFlush();
+    expect(totals()).toEqual({ [`Item_Dropped_Count:${type}:CLIENT_EXCEPTION`]: 1 });
   },
 );
 
@@ -549,6 +930,27 @@ it("replaces per-item retry codes after a later transport failure", async () => 
   });
 });
 
+it.each([false, true])(
+  "counts rejected retry promises but not synchronous fetch throws (synchronous: %s)",
+  async (synchronous) => {
+    const stats = create();
+    const sender = new Sender({ endpoint, itemStats: stats, delay: async () => {} });
+    fetch.mockResolvedValueOnce(new Response(null, { status: 503 }));
+    fetch.mockImplementationOnce(() => {
+      const error = new TypeError("fetch wrapper failed");
+      if (synchronous) throw error;
+      return Promise.reject(error);
+    });
+    await sender.send(request());
+    await stats.forceFlush();
+    expect(totals()).toEqual({
+      "Item_Success_Count:DEPENDENCY": 1,
+      "Item_Retry_Count:DEPENDENCY:CLIENT_EXCEPTION": 1,
+      ...(synchronous ? {} : { "Item_Retry_Count:DEPENDENCY:503": 1 }),
+    });
+  },
+);
+
 it.each(["HTTP", "network"] as const)(
   "counts exhausted %s retries and the final drop exactly once",
   async (failure) => {
@@ -630,7 +1032,9 @@ it.each(["handoff", "abort"] as const)(
     expect(compressions).toBe(2);
     expect(transport).toHaveBeenCalledOnce();
     await stats.forceFlush();
-    expect(Object.keys(totals()).some((key) => key.startsWith("Item_Retry_Count"))).toBe(false);
+    expect(totals()).toEqual(
+      cancellation === "handoff" ? {} : { "Item_Dropped_Count:DEPENDENCY:CLIENT_EXCEPTION": 1 },
+    );
   },
 );
 
@@ -836,3 +1240,78 @@ it.each([false, true])(
     expect(totals()).toEqual(enabled ? { "Item_Success_Count:CUSTOM_EVENT": 5 } : {});
   },
 );
+
+it.each([false, true])(
+  "constructs standalone exporters beside an incompatible distribution registry (stats: %s)",
+  async (enabled) => {
+    const key = Symbol.for("@microsoft/opentelemetry-browser");
+    const realm = globalThis as typeof globalThis & { [key: symbol]: unknown };
+    const previous = Object.getOwnPropertyDescriptor(realm, key);
+    const incompatible = { version: 2 };
+    realm[key] = incompatible;
+    try {
+      const options = { connectionString, sdkStats: { enabled } };
+      const spans = new AzureMonitorSpanExporter(options);
+      owners.push(spans);
+      const logExporter = new AzureMonitorLogRecordExporter(options);
+      owners.push(logExporter);
+      await expect(
+        new Promise<ExportResult>((resolve) => spans.export([createReadableSpan()], resolve)),
+      ).resolves.toEqual({ code: ExportResultCode.SUCCESS });
+      await expect(
+        new Promise<ExportResult>((resolve) =>
+          logExporter.export(
+            [
+              createReadableLogRecord({
+                eventName: "browser.resource_timing",
+                instrumentationScope: {
+                  name: "@opentelemetry/browser-instrumentation/resource-timing",
+                },
+                attributes: { "url.full": `${endpoint}/v2/track` },
+              }),
+              createReadableLogRecord(),
+            ],
+            resolve,
+          ),
+        ),
+      ).resolves.toEqual({ code: ExportResultCode.SUCCESS });
+      const [url, init] = fetch.mock.calls[1];
+      const envelopes: AzureMonitorEnvelope[] = await new Request(url, init).json();
+      expect(envelopes).toHaveLength(enabled ? 1 : 2);
+      await Promise.all([spans.forceFlush(), logExporter.forceFlush()]);
+      expect(totals()).toEqual(
+        enabled ? { "Item_Success_Count:DEPENDENCY": 1, "Item_Success_Count:TRACE": 1 } : {},
+      );
+      expect(realm[key]).toBe(incompatible);
+    } finally {
+      if (previous) Object.defineProperty(realm, key, previous);
+      else delete realm[key];
+    }
+  },
+);
+
+it("bounds exact redirect URL history while retaining recent and refreshed destinations", async () => {
+  const url = (index: number) => `https://redirect-history.example.test/track?request=${index}`;
+  let index = 0;
+  const sender = new Sender({
+    endpoint: url(-1),
+    fetch: async () => {
+      const response = new Response(null);
+      Object.defineProperties(response, {
+        redirected: { value: true },
+        url: { value: url(index++) },
+      });
+      return response;
+    },
+  });
+  for (let count = 0; count < 256; count++) await sender.send(request());
+  expect(isSdkIngestionUrl(url(-1))).toBe(false);
+  expect(isSdkIngestionUrl(url(0))).toBe(true);
+  rememberSdkIngestionUrl(`${url(0)}#ignored`);
+  await sender.send(request());
+  expect(isSdkIngestionUrl(url(0))).toBe(true);
+  expect(isSdkIngestionUrl(url(1))).toBe(false);
+  expect(isSdkIngestionUrl(url(2))).toBe(true);
+  expect(isSdkIngestionUrl(url(256))).toBe(true);
+  expect(isSdkIngestionUrl(`${url(256)}&application=true`)).toBe(false);
+});

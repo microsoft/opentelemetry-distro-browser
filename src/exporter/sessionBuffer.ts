@@ -102,6 +102,13 @@ export class SessionBuffer {
     return this.#live.has(id);
   }
 
+  /** Whether a batch was actually persisted for delivery by a later document. */
+  public isRetained(id: number): boolean {
+    this.#reconcile();
+    const entry = this.#entries.get(id);
+    return this.#stored && entry !== undefined && !entry[2];
+  }
+
   /** Buffers a serialized envelope array and returns its ID. */
   public add(body: string, time = Date.now()): number {
     this.#reconcile();

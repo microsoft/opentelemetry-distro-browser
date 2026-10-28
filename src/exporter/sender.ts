@@ -70,6 +70,8 @@ export interface SendRequest {
   readonly onResponse?: (statusCode: number) => void;
   /** Checked before each attempt; when it returns `false` the request stops with an error. */
   readonly active?: () => boolean;
+  /** Retains outstanding envelopes for another page; returns whether persistence succeeded. */
+  readonly retain?: () => boolean;
 }
 
 export interface SenderResult {
@@ -78,6 +80,8 @@ export interface SenderResult {
   readonly result: string;
   readonly retryAfterMs?: number;
   readonly permanentErrors?: readonly BreezeError[];
+  /** A partial response validated against the envelope count of this attempt. */
+  readonly response?: BreezeResponse;
 }
 
 export interface BeaconSenderResult {
@@ -120,10 +124,11 @@ export class Sender {
 
   public async send(request: SendRequest): Promise<SenderResultType> {
     let pending = request.envelopes;
+    let currentRequest = request;
     let retryCodes: string | readonly string[] = "CLIENT_EXCEPTION";
     const onBodyError = (statusCode: number): void => {
       if (!isRetriable(statusCode)) {
-        this.#countItems(pending, { transport: "fetch", statusCode, result: "" });
+        this.#countItems(currentRequest, { transport: "fetch", statusCode, result: "" });
         pending = undefined;
       }
     };
@@ -136,18 +141,13 @@ export class Sender {
       if (request.unloading === true || request.retry === false) {
         const result = await this.#sendOnce(request, onBodyError);
         if (result.transport === "fetch" && result.statusCode === 206) {
-          reportPartial(
-            request,
-            result,
-            parseBreezeResponse(result.result, request.envelopes?.length),
-          );
+          reportPartial(request, result, result.response);
         }
         this.#rememberThrottleDeadline(result);
-        this.#countItems(request.envelopes, result);
+        this.#countItems(request, result);
         return result;
       }
 
-      let currentRequest = request;
       let remainingRetryWaitMs = MAX_RETRY_WAIT_MS;
       const permanentErrors: BreezeError[] = [];
       for (let attempt = 1; ; attempt++) {
@@ -185,14 +185,11 @@ export class Sender {
         }
 
         if (result.transport === "beacon") {
-          this.#itemStats?.countEnvelopes("Success", pending);
+          this.#countItems(currentRequest, result);
           return result;
         }
 
-        const response =
-          result.statusCode === 206
-            ? parseBreezeResponse(result.result, currentRequest.envelopes?.length)
-            : undefined;
+        const response = result.response;
         const breezeErrors = response?.errors ?? [];
         permanentErrors.push(
           ...breezeErrors.filter(
@@ -201,7 +198,7 @@ export class Sender {
         );
         const retryRequest = reportPartial(currentRequest, result, response);
         const willRetry = !!retryRequest && attempt < MAX_SEND_ATTEMPTS;
-        this.#countItems(currentRequest.envelopes, result, willRetry);
+        this.#countItems(currentRequest, result, willRetry);
         pending = willRetry ? retryRequest.envelopes : undefined;
         this.#rememberThrottleDeadline(result);
         if (!retryRequest || attempt >= MAX_SEND_ATTEMPTS) {
@@ -223,18 +220,17 @@ export class Sender {
         }
       }
     } catch (error) {
-      this.#itemStats?.countEnvelopes("Dropped", pending, retryCodes);
+      if (pending && request.active?.() !== false && !request.retain?.()) {
+        this.#itemStats?.countEnvelopes("Dropped", pending, retryCodes);
+      }
       throw error;
     }
   }
 
-  #countItems(
-    envelopes: readonly AzureMonitorEnvelope[] | undefined,
-    result: SenderResultType,
-    willRetry = false,
-  ): void {
+  #countItems(request: SendRequest, result: SenderResultType, willRetry = false): void {
     const stats = this.#itemStats;
-    if (!stats || !envelopes) return;
+    const envelopes = request.envelopes;
+    if (!stats || !envelopes || request.active?.() === false) return;
     if (
       result.transport === "beacon" ||
       (result.statusCode >= 200 && result.statusCode < 300 && result.statusCode !== 206)
@@ -242,14 +238,15 @@ export class Sender {
       stats.countEnvelopes("Success", envelopes);
       return;
     }
+    const deferred = willRetry || (isRetriable(result.statusCode) && request.retain?.() === true);
     if (result.statusCode === 206) {
-      const response = parseBreezeResponse(result.result, envelopes.length);
+      const response = result.response;
       if (response) {
         const errors = new Map(response.errors.map((error) => [error.index, error]));
         for (const [index, envelope] of envelopes.entries()) {
           const error = errors.get(index);
           if (!error) stats.countEnvelopes("Success", [envelope]);
-          else if (isSamplingRejection(error) || !willRetry || !isRetriable(error.statusCode)) {
+          else if (isSamplingRejection(error) || !deferred || !isRetriable(error.statusCode)) {
             stats.countEnvelopes(
               "Dropped",
               [envelope],
@@ -260,7 +257,7 @@ export class Sender {
         return;
       }
     }
-    if (!willRetry) stats.countEnvelopes("Dropped", envelopes, String(result.statusCode));
+    if (!deferred) stats.countEnvelopes("Dropped", envelopes, String(result.statusCode));
   }
 
   #rememberThrottleDeadline(result: SenderResultType): void {
@@ -334,9 +331,6 @@ export class Sender {
         try {
           // Browser context may not survive compression or retry awaits, so suppress at the call.
           response = await context.with(suppressTracing(context.active()), () => {
-            if (retryCodes) {
-              this.#itemStats?.countEnvelopes("Retry", request.envelopes, retryCodes);
-            }
             const pending = this.#fetch(endpoint, {
               method: "POST",
               headers: {
@@ -349,6 +343,9 @@ export class Sender {
                 ? { signal: request.signal, credentials: "omit", referrerPolicy: "no-referrer" }
                 : {}),
             });
+            if (retryCodes) {
+              this.#itemStats?.countEnvelopes("Retry", request.envelopes, retryCodes);
+            }
             if (useKeepalive) request.onDispatch?.();
             return pending;
           });
@@ -394,6 +391,9 @@ export class Sender {
         transport: "fetch",
         statusCode: response.status,
         result,
+        ...(response.status === 206
+          ? { response: parseBreezeResponse(result, request.envelopes?.length) }
+          : {}),
         ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
       };
     } finally {

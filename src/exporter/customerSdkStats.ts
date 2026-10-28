@@ -123,7 +123,7 @@ export function createCustomerSdkStats(
 
   function schedule(): void {
     if (stopping || flushing || timer !== undefined || !counts.size) return;
-    timer = setTimeout(() => void forceFlush(), interval);
+    timer = setTimeout(() => void flush(), interval);
   }
 
   function count(outcome: ItemOutcome, type: ItemType, code = "", value = 1): void {
@@ -144,6 +144,11 @@ export function createCustomerSdkStats(
   }
 
   function forceFlush(): Promise<void> {
+    // Include counters collected behind an older report without retrying failures in a loop.
+    return flushing && counts.size ? flushing.then(flush) : flush();
+  }
+
+  function flush(): Promise<void> {
     if (flushing) return flushing;
     clearTimeout(timer);
     timer = undefined;
@@ -199,7 +204,7 @@ export function createCustomerSdkStats(
           await pending;
         } finally {
           await flushing;
-          await forceFlush();
+          await flush();
           stopped = true;
           counts.clear();
         }

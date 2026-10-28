@@ -293,10 +293,28 @@ observe export outcomes only, not application sampling or processor queue drops.
 To prevent feedback, stats-enabled log exporters exclude resource-timing records for exact known
 SDK ingestion URLs shared across exporters, including remembered redirects. Other URLs and
 application log records remain eligible. Stats failure warnings bypass OpenTelemetry console
-wrappers while being logged, including without a context manager.
+wrappers while being logged, including standalone wrappers above and below shared patches after
+teardown or restart, without requiring a context manager. Filtered SDK resource-timing records
+also remain excluded from conversion-failure counts.
+Conversion failures count every envelope from already-converted records, including span events and
+page-view performance, then classify failed and unconverted records individually. A record whose
+classification also throws produces a diagnostic instead of a guessed item type; it does not block
+the export failure callback or accounting for the remaining records.
+The exact-URL history is independent of the distribution registry and retains the 256 most recently
+registered configured or redirect URLs, including after exporter shutdown. Re-registering a URL
+refreshes its position; older URLs are evicted so unique proxy redirects cannot grow memory forever.
 Retry counts include only dispatched transport attempts. If a response body cannot be read,
 item counters preserve any known final HTTP success or permanent rejection, while the export
 callback still reports the body-read failure.
+Envelopes persisted for delivery by a later page are not terminal drops; failed storage writes,
+disabled storage and buffer size limits still count as drops when delivery cannot continue.
+The original page does not count outcomes after another page adopts its batch. Invalid partial
+responses, including mismatched item counts, fail the export callback and retain outstanding
+envelopes when storage permits.
+An explicit exporter flush waits for pending exports and makes at most one follow-up stats report
+when new counters were waiting behind an in-flight report. It does not loop on failed reports.
+Retryable customer stats counts remain in memory for the next report. Known accepted and
+permanently rejected items are not replayed, and counts are not persisted across page loads.
 
 ## Azure Monitor mapping
 

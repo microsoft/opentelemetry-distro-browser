@@ -172,15 +172,39 @@ describe("Azure Monitor sessionStorage buffer", () => {
   it("keeps telemetry that failed with a retriable error for the next page", async () => {
     // Retry-After beyond the retry-wait budget fails the export without waiting.
     stubFetch(() => new Response("", { status: 503, headers: { "retry-after": "86400" } }));
-    await expect(exportAsync(createClient(), [envelope("throttled")])).resolves.toMatchObject({
+    const client = createClient({ sdkStats: { enabled: true } });
+    const count = vi.spyOn(client.itemStats!, "countEnvelopes");
+    await expect(exportAsync(client, [envelope("throttled")])).resolves.toMatchObject({
       code: ExportResultCode.FAILED,
     });
+    expect(count).not.toHaveBeenCalled();
     hidePage();
 
     loadPage();
     const fetch = stubFetch();
     await createClient().forceFlush();
     expect(sentNames(fetch)).toEqual([["throttled"]]);
+  });
+
+  it("retains a failed dispatched unload before deciding whether to count a drop", async () => {
+    const firstFetch = stubFetch(() => Promise.reject(new TypeError("offline")));
+    const client = createClient({ sdkStats: { enabled: true }, disableBeacon: true });
+    const count = vi.spyOn(client.itemStats!, "countEnvelopes");
+    beginUnloading();
+    try {
+      await expect(exportAsync(client, [envelope("deferred")])).resolves.toMatchObject({
+        code: ExportResultCode.FAILED,
+      });
+    } finally {
+      endUnloading();
+    }
+    expect(firstFetch).toHaveBeenCalledOnce();
+    expect(count).not.toHaveBeenCalled();
+    hidePage();
+    loadPage();
+    const fetch = stubFetch();
+    await createClient().forceFlush();
+    expect(sentNames(fetch)).toEqual([["deferred"]]);
   });
 
   it("does not resend unload requests the browser accepted", async () => {
@@ -320,7 +344,7 @@ describe("Azure Monitor sessionStorage buffer", () => {
       error: { message: "Telemetry was handed off to another page." },
     });
     expect(firstFetch).toHaveBeenCalledOnce();
-    expect(count.mock.calls.filter(([outcome]) => outcome === "Retry")).toEqual([]);
+    expect(count.mock.calls.filter(([outcome]) => outcome !== "Success")).toEqual([]);
     expect(bufferKeys()).toEqual([]);
   });
 
@@ -404,11 +428,18 @@ describe("Azure Monitor sessionStorage buffer", () => {
     body.close();
   });
 
-  it.each([false, true])(
-    "keeps the whole batch after an unreadable partial response (unloading: %s)",
-    async (unloading) => {
-      stubFetch(() => new Response("not json", { status: 206 }));
-      const client = createClient();
+  it.each(
+    [false, true].flatMap((unloading) =>
+      ["not json", JSON.stringify({ itemsReceived: 1, itemsAccepted: 1, errors: [] })].map(
+        (body) => ({ unloading, body }),
+      ),
+    ),
+  )(
+    "fails and retains an invalid partial response $body (unloading: $unloading)",
+    async ({ unloading, body }) => {
+      stubFetch(() => new Response(body, { status: 206 }));
+      const client = createClient({ sdkStats: { enabled: true } });
+      const count = vi.spyOn(client.itemStats!, "countEnvelopes");
       let result: Promise<ExportResult>;
       if (unloading) beginUnloading();
       try {
@@ -416,7 +447,11 @@ describe("Azure Monitor sessionStorage buffer", () => {
       } finally {
         if (unloading) endUnloading();
       }
-      await expect(result).resolves.toMatchObject({ code: ExportResultCode.FAILED });
+      await expect(result).resolves.toMatchObject({
+        code: ExportResultCode.FAILED,
+        error: { message: "Azure Monitor export failed with HTTP 206." },
+      });
+      expect(count).not.toHaveBeenCalled();
       hidePage();
 
       loadPage();
@@ -638,6 +673,7 @@ describe("Azure Monitor sessionStorage buffer", () => {
     const buffer = new SessionBuffer("destination");
     const first = buffer.add('[{"name":"first"}]');
     expect(storage.length).toBe(1);
+    expect(buffer.isRetained(first)).toBe(true);
 
     vi.spyOn(storage, "setItem").mockImplementation(() => {
       throw new DOMException("Quota exceeded", "QuotaExceededError");
@@ -647,6 +683,7 @@ describe("Azure Monitor sessionStorage buffer", () => {
     });
     expect(() => buffer.add('[{"name":"second"}]')).not.toThrow();
     expect(storage.length).toBe(0);
+    expect(buffer.isRetained(first)).toBe(false);
     expect(() => buffer.settle(first, "", false)).not.toThrow();
     // Later batches back off instead of retrying the failing write each time.
     buffer.add('[{"name":"third"}]');
@@ -660,10 +697,12 @@ describe("Azure Monitor sessionStorage buffer", () => {
     const buffer = new SessionBuffer("destination");
     const body = (name: string): string =>
       `[{"name":"${name}","pad":"${"x".repeat(MAX_SESSION_BUFFER_LENGTH / 3)}"}]`;
-    buffer.add(body("oldest"));
+    const oldest = buffer.add(body("oldest"));
     buffer.add(body("middle"));
-    buffer.add(body("newest"));
+    const newest = buffer.add(body("newest"));
 
+    expect(buffer.isRetained(oldest)).toBe(false);
+    expect(buffer.isRetained(newest)).toBe(true);
     const stored = testSessionStorage.getItem(bufferKeys()[0]) ?? "";
     expect(stored.length).toBeLessThanOrEqual(MAX_SESSION_BUFFER_LENGTH + 4);
     expect(stored).not.toContain("oldest");

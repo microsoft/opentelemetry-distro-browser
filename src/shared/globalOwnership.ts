@@ -9,13 +9,15 @@ import type { BrowserPatchState } from "../instrumentation/sharedBrowserPatches.
 const distroKey = /* @__PURE__ */ Symbol.for("@microsoft/opentelemetry-browser");
 const apiKey = /* @__PURE__ */ Symbol.for("opentelemetry.js.api.1");
 const logsKey = /* @__PURE__ */ Symbol.for("io.opentelemetry.js.api.logs");
+const ingestionUrlsKey = /* @__PURE__ */ Symbol.for(
+  "@microsoft/opentelemetry-browser/sdk-ingestion-urls/1",
+);
 const realm = globalThis as typeof globalThis & { [key: symbol]: unknown };
 
 interface SharedRegistry {
   version: 1;
   diagInitialized?: boolean;
   reportingSdkStats?: boolean;
-  sdkIngestionUrls?: Set<string>;
   pageContexts?: WeakSet<SpanContext>;
   operationNames?: WeakMap<object, string>;
   router?: RouterState;
@@ -27,16 +29,23 @@ interface SharedRegistry {
   pending?: { signal: "trace" | "logs"; rollback: () => void }[];
 }
 
-/** Retain exact destinations for buffered resource timings delivered after exporter shutdown. */
+/** Keep the last 256 exact destinations for delayed resource timings, independently of distro state. */
 export function rememberSdkIngestionUrl(endpoint: string): void {
   const url = new URL(endpoint);
   url.hash = "";
-  (getSharedRegistry().sdkIngestionUrls ??= new Set()).add(url.href);
+  const urls = (realm[ingestionUrlsKey] ??= new Set<string>()) as Set<string>;
+  urls.delete(url.href);
+  urls.add(url.href);
+  if (urls.size > 256) {
+    for (const oldest of urls) {
+      urls.delete(oldest);
+      break;
+    }
+  }
 }
 
 export function isSdkIngestionUrl(url: string): boolean {
-  const registry = realm[distroKey] as SharedRegistry | undefined;
-  return registry?.version === 1 && registry.sdkIngestionUrls?.has(url) === true;
+  return (realm[ingestionUrlsKey] as Set<string> | undefined)?.has(url) === true;
 }
 
 /** Exporter-only consumers may read page membership without initializing a distribution. */

@@ -3,7 +3,7 @@
 
 import type { ExportResult } from "@opentelemetry/core";
 import { ExportResultCode } from "@opentelemetry/core";
-import { isRetriable, isSamplingRejection, parseBreezeResponse } from "./breezeUtils.js";
+import { isRetriable, isSamplingRejection } from "./breezeUtils.js";
 import { isUnloading } from "./common.js";
 import { isValidInstrumentationKey, parseConnectionString } from "./connectionStringParser.js";
 import {
@@ -12,7 +12,7 @@ import {
   MAX_PENDING_KEEPALIVE_BODY_SIZE,
 } from "./constants.js";
 import { Sender, type SenderResultType } from "./sender.js";
-import { createInternalSdkStats, type InternalSdkStats } from "./sdkStats.js";
+import { createInternalSdkStats, reportFailure, type InternalSdkStats } from "./sdkStats.js";
 import { getInternalSdkStatsConfiguration } from "./sdkStatsConfiguration.js";
 import { SessionBuffer, sessionBufferStorage } from "./sessionBuffer.js";
 import type { AzureMonitorBaseData, AzureMonitorEnvelope } from "./telemetryModels.js";
@@ -20,6 +20,7 @@ import {
   createCustomerSdkStats,
   type CustomerSdkStats,
   type AzureMonitorSdkStatsOptions,
+  type ItemType,
 } from "./customerSdkStats.js";
 
 const CONTENT_TYPE = "application/json";
@@ -101,6 +102,41 @@ export class AzureMonitorExportClient {
   public readonly instrumentationKey: string;
   public readonly itemStats: CustomerSdkStats | undefined;
 
+  public exportRecords<T>(
+    records: readonly T[],
+    convert: (
+      record: T,
+      preceding: readonly AzureMonitorEnvelope[],
+    ) => readonly AzureMonitorEnvelope[],
+    itemType: (record: T) => ItemType,
+    callback: (result: ExportResult) => void,
+    shouldCollect?: (record: T) => boolean,
+  ): void {
+    const envelopes: AzureMonitorEnvelope[] = [];
+    let converted = 0;
+    try {
+      for (const record of records) {
+        if (!shouldCollect || shouldCollect(record)) envelopes.push(...convert(record, envelopes));
+        converted++;
+      }
+    } catch (error) {
+      if (this.itemStats) {
+        this.itemStats.countEnvelopes("Dropped", envelopes, "CLIENT_EXCEPTION");
+        for (const record of records.slice(converted)) {
+          try {
+            if (!shouldCollect || shouldCollect(record))
+              this.itemStats.count("Dropped", itemType(record), "CLIENT_EXCEPTION");
+          } catch (classificationError) {
+            reportFailure(classificationError, "SDK stats item classification failed");
+          }
+        }
+      }
+      callback(toFailedExportResult(error));
+      return;
+    }
+    this.export(envelopes, callback);
+  }
+
   public export(
     envelopes: readonly AzureMonitorEnvelope[],
     callback: (result: ExportResult) => void,
@@ -124,16 +160,17 @@ export class AzureMonitorExportClient {
         envelopes,
         error instanceof RangeError ? "PAYLOAD_TOO_LARGE" : "CLIENT_EXCEPTION",
       );
-      callback({
-        code: ExportResultCode.FAILED,
-        error: error instanceof Error ? error : new Error(String(error)),
-      });
+      callback(toFailedExportResult(error));
       return;
     }
     const { requests, dropped, error } = batchResult;
-    this.itemStats?.countEnvelopes("Dropped", dropped, "PAYLOAD_TOO_LARGE");
     // Envelopes that cannot fit the unload beacon wait for the next page load.
-    if (dropped.length > 0) this.#buffer?.add(JSON.stringify(dropped));
+    if (dropped.length > 0) {
+      const id = this.#buffer?.add(JSON.stringify(dropped));
+      if (id === undefined || !this.#buffer?.isRetained(id)) {
+        this.itemStats?.countEnvelopes("Dropped", dropped, "PAYLOAD_TOO_LARGE");
+      }
+    }
     if (error) {
       callback({ code: ExportResultCode.FAILED, error });
       return;
@@ -160,10 +197,7 @@ export class AzureMonitorExportClient {
           ),
         };
       })
-      .catch((error: unknown): ExportResult => ({
-        code: ExportResultCode.FAILED,
-        error: error instanceof Error ? error : new Error(String(error)),
-      }))
+      .catch(toFailedExportResult)
       // Callback errors must not be reported back to the same callback as export failures.
       .then(callback);
     this.#track(operation);
@@ -212,6 +246,10 @@ export class AzureMonitorExportClient {
         },
         // Stop retrying a batch another document adopted and delivered.
         active: () => id === undefined || this.#buffer?.owns(id) !== false,
+        retain: () => {
+          settle(true);
+          return id !== undefined && this.#buffer?.isRetained(id) === true;
+        },
       })
       .then(
         (result) => {
@@ -452,6 +490,13 @@ function fitBatchCustomFields(
   return fitted;
 }
 
+function toFailedExportResult(error: unknown): ExportResult {
+  return {
+    code: ExportResultCode.FAILED,
+    error: error instanceof Error ? error : new Error(String(error)),
+  };
+}
+
 function toExportResult(results: readonly SenderResultType[]): ExportResult {
   for (const result of results) {
     const exportResult = toSingleExportResult(result);
@@ -476,7 +521,7 @@ function toSingleExportResult(result: SenderResultType): ExportResult {
     return { code: ExportResultCode.SUCCESS };
   }
   if (result.statusCode === 206) {
-    const response = parseBreezeResponse(result.result);
+    const response = result.response;
     if (response && response.errors.every(isSamplingRejection)) {
       return { code: ExportResultCode.SUCCESS };
     }
