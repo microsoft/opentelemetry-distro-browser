@@ -20,6 +20,9 @@ import type { AzureMonitorBaseData, AzureMonitorEnvelope } from "./telemetryMode
 const CONTENT_TYPE = "application/json";
 const noop = (): void => {};
 
+/** Internal per-destination policy; standalone exporter options remain startup-only. */
+export const unloadBeaconPolicies = new WeakMap<object, () => boolean>();
+
 /**
  * Azure Monitor destination configuration.
  * @typeParam TConnectionString - Defaults to a resolved string for standalone exporters.
@@ -64,7 +67,7 @@ export class AzureMonitorExportClient {
     this.#stats = createInternalSdkStats(statsConfiguration, instrumentationKey, ingestionEndpoint);
     this.#sender = new Sender({
       endpoint: `${ingestionEndpoint}/v2/track`,
-      disableBeacon: options.disableBeacon,
+      disableBeacon: unloadBeaconPolicies.get(options) ?? options.disableBeacon,
       stats: this.#stats,
     });
     // Unsent telemetry is mirrored in sessionStorage unless `storage.enabled` is false; leftovers

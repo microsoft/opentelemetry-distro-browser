@@ -9,6 +9,7 @@ import {
   useMicrosoftOpenTelemetry,
   type MicrosoftOpenTelemetryBrowserConfigurationUpdate,
 } from "../../src/index.js";
+import { beginUnloading, endUnloading, isUnloading } from "../../src/exporter/common.js";
 import type { AzureMonitorEnvelope, CustomEventData } from "../../src/exporter/telemetryModels.js";
 import type {
   MicrosoftOpenTelemetryBrowser,
@@ -81,6 +82,314 @@ function emit(client: ReturnType<typeof clients>, name: string): void {
   client.tracer.startSpan(name, {}, ROOT_CONTEXT).end();
   client.logger.emit({ eventName: name, body: name, context: ROOT_CONTEXT });
 }
+
+const beaconConnectionString =
+  "InstrumentationKey=00000000-0000-0000-0000-000000000000;IngestionEndpoint=https://beacon.example.test";
+
+function mockBeaconTransport() {
+  const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(async (_url, init) => {
+    if (init?.keepalive) throw new TypeError("deliberate keepalive failure");
+    return new Response(null);
+  });
+  vi.mocked(globalThis.fetch).mockImplementation(withoutSdkStats(fetch));
+  const sendBeacon = vi.spyOn(navigator, "sendBeacon").mockReturnValue(true);
+  return {
+    fetch,
+    sendBeacon,
+    async envelopes(): Promise<AzureMonitorEnvelope[]> {
+      const batches = await Promise.all(
+        sendBeacon.mock.calls.map(async ([, body]) => {
+          expect(body).toBeInstanceOf(Blob);
+          return JSON.parse(await (body as Blob).text()) as AzureMonitorEnvelope[];
+        }),
+      );
+      return batches.flat();
+    },
+  };
+}
+
+function startBeacon(options: Partial<MicrosoftOpenTelemetryBrowserOptions> = {}) {
+  return start({
+    pageView: { enabled: false },
+    session: { enabled: false },
+    userContext: { enabled: false },
+    storage: { enabled: false },
+    ...options,
+  });
+}
+
+async function flushUnloading(handle: MicrosoftOpenTelemetryBrowser): Promise<void> {
+  beginUnloading();
+  try {
+    await handle.forceFlush();
+  } finally {
+    endUnloading();
+  }
+}
+
+function expectBeaconSignals(envelopes: AzureMonitorEnvelope[], name: string): void {
+  expect(envelopes).toHaveLength(2);
+  expect(envelopes).toEqual(
+    expect.arrayContaining(
+      ["RemoteDependencyData", "EventData"].map((baseType) =>
+        expect.objectContaining({
+          data: expect.objectContaining({
+            baseType,
+            baseData: expect.objectContaining({ name }),
+          }),
+        }),
+      ),
+    ),
+  );
+}
+
+it("applies beacon updates to traces and logs queued before pagehide without replacing the handle", async () => {
+  const transport = mockBeaconTransport();
+  const pipeline = await startBeacon({
+    azureMonitor: { connectionString: beaconConnectionString },
+  });
+  const cached = pipeline.client;
+  emit(cached, "queued-before-disabling");
+  await pipeline.handle.updateCfg({ azureMonitor: { disableBeacon: true } });
+  globalThis.dispatchEvent(new Event("pagehide"));
+  // The actual lifecycle listener owns and releases unload state, even on export failure.
+  await vi.waitFor(() => expect(isUnloading()).toBe(false));
+  expect(transport.fetch).toHaveBeenCalledTimes(2);
+  expect(transport.fetch.mock.calls.every(([, init]) => init?.keepalive === true)).toBe(true);
+  expect(transport.sendBeacon).not.toHaveBeenCalled();
+
+  transport.fetch.mockClear();
+  emit(cached, "queued-before-enabling");
+  await pipeline.handle.updateCfg({ azureMonitor: { disableBeacon: false } });
+  await flushUnloading(pipeline.handle);
+  expect(transport.fetch).toHaveBeenCalledTimes(2);
+  expect(transport.sendBeacon).toHaveBeenCalledTimes(2);
+  expectBeaconSignals(await transport.envelopes(), "queued-before-enabling");
+  expect(pipeline.spanExporter.getFinishedSpans().map((span) => span.name)).toEqual([
+    "queued-before-disabling",
+    "queued-before-enabling",
+  ]);
+  expect(pipeline.logExporter.getFinishedLogRecords().map((record) => record.eventName)).toEqual([
+    "queued-before-disabling",
+    "queued-before-enabling",
+  ]);
+});
+
+it.each([false, true])(
+  "normalizes native startup beacon policy=%s, runtime aliases and merge/replacement resets",
+  async (disableBeacon) => {
+    const transport = mockBeaconTransport();
+    const pipeline = await startBeacon({
+      azureMonitor: {
+        connectionString: beaconConnectionString,
+        disableBeacon,
+      },
+    });
+    const steps: {
+      patch: MicrosoftOpenTelemetryBrowserConfigurationUpdate;
+      merge?: boolean;
+      disabled: boolean;
+    }[] = [
+      { patch: {}, disabled: disableBeacon },
+      { patch: { azureMonitor: { disableBeacon: false } }, disabled: false },
+      { patch: { onunloadDisableBeacon: true }, disabled: true },
+      { patch: { azureMonitor: {} }, disabled: true },
+      { patch: {}, disabled: true },
+      { patch: { azureMonitor: { disableBeacon: undefined } }, disabled: false },
+      { patch: { azureMonitor: { disableBeacon: true } }, disabled: true },
+      { patch: { onunloadDisableBeacon: undefined }, disabled: false },
+      { patch: { onunloadDisableBeacon: true }, disabled: true },
+      { patch: {}, merge: false, disabled: false },
+      { patch: { azureMonitor: { disableBeacon: true } }, disabled: true },
+      { patch: { azureMonitor: {} }, merge: false, disabled: false },
+    ];
+    for (const [index, { patch, merge, disabled }] of steps.entries()) {
+      transport.fetch.mockClear();
+      transport.sendBeacon.mockClear();
+      const name = `beacon-policy-${index}`;
+      emit(pipeline.client, name);
+      await pipeline.handle.updateCfg(patch, merge);
+      if (disabled) {
+        await expect(flushUnloading(pipeline.handle)).rejects.toThrow();
+        expect(transport.sendBeacon).not.toHaveBeenCalled();
+      } else {
+        await flushUnloading(pipeline.handle);
+        expectBeaconSignals(await transport.envelopes(), name);
+      }
+      // Replacement resets policy, not the existing destination or providers.
+      expect(transport.fetch).toHaveBeenCalledTimes(2);
+      expect(transport.fetch.mock.calls.every(([, init]) => init?.keepalive === true)).toBe(true);
+    }
+  },
+);
+
+it("rejects invalid and conflicting beacon patches atomically and captures queued boolean updates", async () => {
+  const transport = mockBeaconTransport();
+  const pipeline = await startBeacon({
+    samplingPercentage: 100,
+    azureMonitor: { connectionString: beaconConnectionString },
+  });
+  const getter = vi.fn(() => true);
+  const patches = [
+    ...[null, 0, "true"].map((disableBeacon) => ({
+      samplingPercentage: 0,
+      azureMonitor: { disableBeacon },
+    })),
+    { samplingPercentage: 0, onunloadDisableBeacon: null },
+    { samplingPercentage: 0, azureMonitor: { connectionString: beaconConnectionString } },
+    { samplingPercentage: 0, azureMonitor: { disableBeacon: true }, onunloadDisableBeacon: false },
+    {
+      samplingPercentage: 0,
+      azureMonitor: Object.defineProperty({}, "disableBeacon", { get: getter }),
+    },
+  ];
+  for (const patch of patches) {
+    await expect(
+      pipeline.handle.updateCfg(patch as MicrosoftOpenTelemetryBrowserConfigurationUpdate),
+    ).rejects.toThrow();
+    expect(await pipeline.handle.updateCfg({})).toEqual({ revision: 0, changedPaths: [] });
+  }
+  expect(getter).not.toHaveBeenCalled();
+  expect(
+    await pipeline.handle.updateCfg({
+      azureMonitor: { disableBeacon: false },
+      onunloadDisableBeacon: false,
+    }),
+  ).toEqual({ revision: 0, changedPaths: [] });
+  const patch = { azureMonitor: { disableBeacon: true } };
+  const first = pipeline.handle.updateCfg(patch);
+  patch.azureMonitor.disableBeacon = false;
+  const second = pipeline.handle.updateCfg({ onunloadDisableBeacon: false });
+  expect(await first).toEqual({ revision: 1, changedPaths: ["azureMonitor.disableBeacon"] });
+  expect(await second).toEqual({ revision: 2, changedPaths: ["azureMonitor.disableBeacon"] });
+  emit(pipeline.client, "invalid-patches-did-not-disable-sampling");
+  await flushUnloading(pipeline.handle);
+  expectBeaconSignals(await transport.envelopes(), "invalid-patches-did-not-disable-sampling");
+});
+
+it.each(["separate", "shared", "shared deferred"] as const)(
+  "keeps bound trace/log beacon policies independent with %s caller options",
+  async (mode) => {
+    const transport = mockBeaconTransport();
+    let resolve!: (value: string) => void;
+    const connectionString =
+      mode === "shared deferred"
+        ? new Promise<string>((done) => {
+            resolve = done;
+          })
+        : beaconConnectionString;
+    const options = { azureMonitor: { connectionString } };
+    const first = await startBeacon(options);
+    const second = await startBeacon(
+      mode === "separate"
+        ? { azureMonitor: { connectionString: beaconConnectionString } }
+        : options,
+    );
+    emit(first.client, "first-disabled");
+    emit(second.client, "second-enabled");
+    await first.handle.updateCfg({ azureMonitor: { disableBeacon: true } });
+    if (mode === "shared deferred") {
+      resolve(beaconConnectionString);
+      await Promise.resolve();
+    }
+    await expect(flushUnloading(first.handle)).rejects.toThrow();
+    await flushUnloading(second.handle);
+    expectBeaconSignals(await transport.envelopes(), "second-enabled");
+
+    transport.sendBeacon.mockClear();
+    emit(first.client, "first-enabled");
+    emit(second.client, "second-disabled");
+    await first.handle.updateCfg({ onunloadDisableBeacon: false });
+    await second.handle.updateCfg({ onunloadDisableBeacon: true });
+    await flushUnloading(first.handle);
+    await expect(flushUnloading(second.handle)).rejects.toThrow();
+    expectBeaconSignals(await transport.envelopes(), "first-enabled");
+    expect(options).toEqual({ azureMonitor: { connectionString } });
+    for (const [pipeline, names] of [
+      [first, ["first-disabled", "first-enabled"]],
+      [second, ["second-enabled", "second-disabled"]],
+    ] as const) {
+      expect(pipeline.spanExporter.getFinishedSpans().map((span) => span.name)).toEqual(names);
+      expect(
+        pipeline.logExporter.getFinishedLogRecords().map((record) => record.eventName),
+      ).toEqual(names);
+    }
+  },
+);
+
+it.each([false, true])(
+  "does not create an Azure destination when only custom exporters are present=%s",
+  async (custom) => {
+    const transport = mockBeaconTransport();
+    const pipeline = await startBeacon(
+      custom ? {} : { spanProcessors: undefined, logRecordProcessors: undefined },
+    );
+    emit(pipeline.client, "before-beacon-update");
+    await pipeline.handle.updateCfg({ azureMonitor: { disableBeacon: true } });
+    await pipeline.handle.updateCfg({ onunloadDisableBeacon: false });
+    emit(pipeline.client, "after-beacon-update");
+    await flushUnloading(pipeline.handle);
+    expect(transport.fetch).not.toHaveBeenCalled();
+    expect(transport.sendBeacon).not.toHaveBeenCalled();
+    expect(pipeline.spanExporter.getFinishedSpans().map((span) => span.name)).toEqual(
+      custom ? ["before-beacon-update", "after-beacon-update"] : [],
+    );
+    expect(pipeline.logExporter.getFinishedLogRecords().map((record) => record.eventName)).toEqual(
+      custom ? ["before-beacon-update", "after-beacon-update"] : [],
+    );
+  },
+);
+
+it.each([false, true])(
+  "uses current beacon policy before deferred resolution and after initialization, initially disabled=%s",
+  async (initiallyDisabled) => {
+    const transport = mockBeaconTransport();
+    let resolve!: (value: string) => void;
+    const connectionString = new Promise<string>((done) => {
+      resolve = done;
+    });
+    const pipeline = await startBeacon({
+      azureMonitor: { connectionString, disableBeacon: initiallyDisabled },
+    });
+    emit(pipeline.client, "queued-before-resolution");
+    await pipeline.handle.updateCfg({ azureMonitor: { disableBeacon: !initiallyDisabled } });
+    await pipeline.handle.forceFlush();
+    expect(transport.fetch).not.toHaveBeenCalled();
+    expect(transport.sendBeacon).not.toHaveBeenCalled();
+    resolve(beaconConnectionString);
+    // Resolution constructs both exporters and drains the startup queue in one microtask.
+    await Promise.resolve();
+    if (initiallyDisabled) {
+      await flushUnloading(pipeline.handle);
+      expectBeaconSignals(await transport.envelopes(), "queued-before-resolution");
+    } else {
+      await expect(flushUnloading(pipeline.handle)).rejects.toThrow();
+      expect(transport.sendBeacon).not.toHaveBeenCalled();
+    }
+    expect(transport.fetch).toHaveBeenCalledTimes(2);
+
+    transport.fetch.mockClear();
+    transport.sendBeacon.mockClear();
+    emit(pipeline.client, "queued-after-initialization");
+    await pipeline.handle.updateCfg({ onunloadDisableBeacon: initiallyDisabled });
+    if (initiallyDisabled) {
+      await expect(flushUnloading(pipeline.handle)).rejects.toThrow();
+      expect(transport.sendBeacon).not.toHaveBeenCalled();
+    } else {
+      await flushUnloading(pipeline.handle);
+      expectBeaconSignals(await transport.envelopes(), "queued-after-initialization");
+    }
+    expect(transport.fetch).toHaveBeenCalledTimes(2);
+    expect(pipeline.spanExporter.getFinishedSpans().map((span) => span.name)).toEqual([
+      "queued-before-resolution",
+      "queued-after-initialization",
+    ]);
+    expect(pipeline.logExporter.getFinishedLogRecords().map((record) => record.eventName)).toEqual([
+      "queued-before-resolution",
+      "queued-after-initialization",
+    ]);
+  },
+);
 
 it.each(["trace", "log"] as const)(
   "exports matching session IDs when %s activity first observes runtime lifetime changes",
