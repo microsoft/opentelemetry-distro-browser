@@ -9,9 +9,10 @@ and [loader options](../src/snippet.ts).
 ## Initialization options
 
 Pass these options to `await useMicrosoftOpenTelemetry(options)`. Options are captured at startup;
-the [runtime update API](#runtime-configuration-updates) can change sampling and session lifetimes.
-Other options remain startup-only. Importing the package has no initialization side effects.
-Initialize only in client-side code, before importing application code to instrument.
+the [runtime update API](#runtime-configuration-updates) can change sampling, session lifetimes and
+Azure Monitor beacon fallback policy. Other options remain startup-only. Importing the package has
+no initialization side effects. Initialize only in client-side code, before importing application
+code to instrument.
 
 | Option                | Type                                          | Default and behavior                                                                                                                                                                                  |
 | --------------------- | --------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -31,12 +32,20 @@ Initialize only in client-side code, before importing application code to instru
 
 ### Azure Monitor destination
 
-| Option                           | Type                                  | Default and behavior                                                                                                                                          |
-| -------------------------------- | ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `azureMonitor.connectionString`  | `string \| Promise<string>`, required | Application Insights connection string with a valid UUID `InstrumentationKey`. Supports explicit ingestion endpoints and cloud suffixes.                      |
-| `azureMonitor.initTimeOut`       | `number`                              | `50000` ms. Maximum promise wait. Must be finite, nonnegative, and at most `2147483647`. Zero expires immediately.                                            |
-| `azureMonitor.initInMemoMaxSize` | `number`                              | `100` items. Maximum completed spans and emitted logs buffered together while waiting. Must be a nonnegative safe integer. Zero disables startup buffering.   |
-| `azureMonitor.disableBeacon`     | `boolean`                             | `false`. Set to `true` to disable the `sendBeacon` fallback when an unload keepalive request cannot be queued. This may reduce delivery when the page closes. |
+| Option                           | Type                                  | Default and behavior                                                                                                                                                                |
+| -------------------------------- | ------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `azureMonitor.connectionString`  | `string \| Promise<string>`, required | Application Insights connection string with a valid UUID `InstrumentationKey`. Supports explicit ingestion endpoints and cloud suffixes.                                            |
+| `azureMonitor.initTimeOut`       | `number`                              | `50000` ms. Maximum promise wait. Must be finite, nonnegative, and at most `2147483647`. Zero expires immediately.                                                                  |
+| `azureMonitor.initInMemoMaxSize` | `number`                              | `100` items. Maximum completed spans and emitted logs buffered together while waiting. Must be a nonnegative safe integer. Zero disables startup buffering.                         |
+| `azureMonitor.disableBeacon`     | `boolean`                             | `false`. Set to `true` to disable only the unload `sendBeacon` fallback. Keepalive fetch remains first; regular fetch is unaffected. This may reduce delivery when the page closes. |
+
+At initialization, configure beacon fallback through `azureMonitor.disableBeacon`. The root
+`onunloadDisableBeacon` alias is supported only through `updateCfg`, not as an initialization or
+loader option. Both runtime spellings accept booleans or explicit `undefined`, restoring `false`;
+the startup native option remains an optional `boolean` for strict TypeScript consumers. Values
+are not coerced to booleans. Supplying both native and alias values in one runtime update is accepted
+only when their normalized values match. An explicitly supplied own `undefined` normalizes to
+`false` for this comparison. Conflicts reject the whole runtime update without partial changes.
 
 Endpoints require HTTPS except for localhost or loopback IPs. Invalid endpoints warn and fall back
 to suffix-derived or public-cloud endpoints; an invalid/missing instrumentation key in a synchronous
@@ -129,25 +138,31 @@ prevent emission to custom log processors. There is no `traces.sampler` option.
 The returned handle exposes `updateCfg(patch, mergeExisting = true)`, accepting
 `MicrosoftOpenTelemetryBrowserConfigurationUpdate` and returning
 `Promise<MicrosoftOpenTelemetryBrowserConfigurationUpdateResult>`. Supported paths are
-`samplingPercentage`, `session.inactivityTimeout` and `session.maxDuration`, plus the exact root
-aliases `sessionRenewalMs` and `sessionExpirationMs`. The aliases also work at initialization;
-see [session options](#session-options) for units, defaults and conflict handling.
+`samplingPercentage`, `session.inactivityTimeout`, `session.maxDuration` and
+`azureMonitor.disableBeacon`, plus the exact root aliases `sessionRenewalMs`, `sessionExpirationMs`
+and `onunloadDisableBeacon`. Only the session aliases also work at npm initialization; see
+[session options](#session-options) and [destination](#azure-monitor-destination) for defaults and
+conflict handling. The runtime Azure Monitor patch is limited to
+`azureMonitor?: { disableBeacon?: boolean | undefined } | undefined`.
 
-- Merge mode (the default) preserves omitted fields, including nested session fields.
-  `{ session: {} }` is a no-op.
+- Merge mode (the default) preserves omitted fields, including nested session and Azure Monitor
+  fields. `{ session: {} }` and `{ azureMonitor: {} }` are no-ops.
 - Explicit `samplingPercentage: undefined` restores parent-based trace sampling and removes Azure
   Monitor log percentage filtering, not the startup percentage or numeric `100`.
 - An explicit `undefined` native lifetime or alias resets that lifetime to its native default:
   30 minutes for inactivity, 24 hours for maximum duration. `session: undefined` resets both
   lifetimes without changing sampling.
+- Explicit `azureMonitor.disableBeacon: undefined`, `azureMonitor: undefined` or
+  `onunloadDisableBeacon: undefined` resets beacon policy to `false`, not to the startup value.
+  These resets participate in native/alias conflict checks; they do not disable the destination.
 - Passing `false` as the second argument replaces **only the supported runtime subset**. All
-  omitted sampling and lifetime fields reset to their defaults, including omitted nested fields;
-  startup-only options are unchanged.
+  omitted sampling, lifetime and beacon fields reset to their defaults, including omitted nested
+  fields; destinations and other startup-only options are unchanged.
 
 The frozen result contains readonly `revision` and `changedPaths`. A commit changing any supported
 value increments the per-instance revision once. Changed paths use canonical names in this order:
-`samplingPercentage`, `session.inactivityTimeout`, `session.maxDuration`, even when aliases are used.
-No-op updates retain the revision and return `[]` for `changedPaths`.
+`samplingPercentage`, `session.inactivityTimeout`, `session.maxDuration`, `azureMonitor.disableBeacon`,
+even when aliases are used. No-op updates retain the revision and return `[]` for `changedPaths`.
 
 Sampling changes affect subsequent span starts, default Azure Monitor log emissions and new page
 operations. Existing span/page decisions and queued logs are not resampled. A later correlated log
@@ -161,6 +176,14 @@ already due; extending or disabling a check can keep the current ID. Persisted s
 checked against the configured startup lifetime policy during restore. Application-supplied
 record/resource session attributes still take precedence.
 
+Azure Monitor senders read the committed per-instance beacon policy at each fallback attempt,
+including for already queued telemetry and when a keepalive request pending during an update
+later fails. Updates do not cancel or switch an already dispatched request. Keepalive fetch stays
+first, regular fetch is unaffected, and shared keepalive capacity, payload limits, retries and SDK
+stats behavior are unchanged. A policy update sends no network request, recreates no destination
+or provider, and cannot create an Azure Monitor destination if none was configured. Custom
+exporters and standalone exporter options are unaffected.
+
 Providers and acquired tracers/loggers remain bound to the same instance. Updates serialize per
 instance, and input is validated and captured before queueing. Invalid values, accessors, non-plain
 objects, unsupported paths and conflicting native/alias values reject atomically without changing
@@ -172,14 +195,20 @@ const result = await telemetry.updateCfg({ sessionRenewalMs: 60000 });
 await telemetry.updateCfg({ session: { maxDuration: 0 } }); // Keep inactivity; disable maximum expiry.
 await telemetry.updateCfg({ sessionRenewalMs: undefined }); // Reset inactivity to 30 minutes.
 await telemetry.updateCfg({ session: undefined }); // Reset both lifetimes; keep sampling.
-await telemetry.updateCfg({}, false); // Reset sampling and both lifetimes to defaults.
+await telemetry.updateCfg({ azureMonitor: { disableBeacon: true } }); // Disable only beacon fallback.
+await telemetry.updateCfg({ onunloadDisableBeacon: false }); // Re-enable fallback.
+await telemetry.updateCfg({ azureMonitor: { disableBeacon: undefined } }); // Reset beacon to false.
+await telemetry.updateCfg({ azureMonitor: undefined }); // Reset beacon, not the destination.
+await telemetry.updateCfg({}, false); // Reset sampling, lifetimes and beacon; keep destinations.
 ```
 
 `session.enabled`, `session.persist` and browser storage flags are not runtime-updateable. Lifetime
 updates cannot enable a disabled session or change persistence; `storage.enabled` and
-`storage.namePrefix` remain unchanged. Beacon/network policy, instrumentation registry operations
-and configuration synchronization are not supported by `updateCfg`. There is no root
-`connectionString` alias.
+`storage.namePrefix` remain unchanged. Only sampling, session lifetimes and Azure Monitor beacon
+fallback policy are supported by `updateCfg`. Network tracking policy, instrumentation registry
+operations and configuration synchronization remain future work. The runtime `azureMonitor` subset
+does not accept `connectionString`, `initTimeOut` or `initInMemoMaxSize`, and cannot replace or disable
+a destination. There is no root `connectionString` alias.
 
 ## Session and identity
 
@@ -437,6 +466,8 @@ It generates a script; it does not itself initialize telemetry in the current pa
 
 The generator accepts JSON-serializable settings, not functions or regular expressions. Processors,
 exporters, context managers, propagators and resource detectors require npm-based initialization.
+Loader options are unchanged: use `azureMonitor.disableBeacon`, not the root `onunloadDisableBeacon`
+alias supported only by runtime updates.
 The generated configuration's `cfg` holds initialization options; `instrumentationOptions` and
 `resourceAttributes` are siblings of `cfg`. See [Packaging](packaging.md#cdn-and-loader-snippet) for
 the snippet, CSP, fallback hosts, integrity manifests and failure handling.

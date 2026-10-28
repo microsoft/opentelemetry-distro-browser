@@ -21,6 +21,10 @@ export interface MicrosoftOpenTelemetryBrowserConfigurationUpdate {
   sessionRenewalMs?: number | undefined;
   /** Application Insights maximum lifetime in milliseconds; zero restores 24 hours. */
   sessionExpirationMs?: number | undefined;
+  /** Azure Monitor unload policy only. Undefined restores sendBeacon fallback. */
+  azureMonitor?: { disableBeacon?: boolean | undefined } | undefined;
+  /** Application Insights alias for azureMonitor.disableBeacon. Defaults to false. */
+  onunloadDisableBeacon?: boolean | undefined;
 }
 
 /**
@@ -36,6 +40,7 @@ const defaults = { inactivityTimeout: 1800, maxDuration: 86400 };
 type Lifetimes = typeof defaults;
 interface CapturedUpdate extends Partial<Lifetimes> {
   samplingPercentage?: number | undefined;
+  disableBeacon?: boolean;
 }
 
 /** Captures own data properties before queuing, without invoking application getters. */
@@ -65,6 +70,8 @@ function capture(patch: MicrosoftOpenTelemetryBrowserConfigurationUpdate): Captu
     "session",
     "sessionRenewalMs",
     "sessionExpirationMs",
+    "azureMonitor",
+    "onunloadDisableBeacon",
   ]);
   const result: CapturedUpdate = {};
   if (Object.hasOwn(input, "samplingPercentage")) {
@@ -102,12 +109,38 @@ function capture(patch: MicrosoftOpenTelemetryBrowserConfigurationUpdate): Captu
       result[key] = value;
     }
   }
+  const azureMonitor = Object.hasOwn(input, "azureMonitor")
+    ? input.azureMonitor === undefined
+      ? { disableBeacon: undefined }
+      : fields(input.azureMonitor, "azureMonitor.", ["disableBeacon"])
+    : {};
+  for (const [source, key, path] of [
+    [azureMonitor, "disableBeacon", "azureMonitor.disableBeacon"],
+    [input, "onunloadDisableBeacon", "onunloadDisableBeacon"],
+  ] as const) {
+    if (!Object.hasOwn(source, key)) continue;
+    const value = source[key];
+    if (value !== undefined && typeof value !== "boolean") {
+      throw new TypeError(`${path} must be a boolean.`);
+    }
+    const normalized = value ?? false;
+    if (result.disableBeacon !== undefined && result.disableBeacon !== normalized) {
+      throw new TypeError(
+        "Conflicting configuration paths: azureMonitor.disableBeacon and onunloadDisableBeacon.",
+      );
+    }
+    result.disableBeacon = normalized;
+  }
   return result;
 }
 
 function snapshot(
   update: CapturedUpdate,
-  previous?: { readonly samplingPercentage: number | undefined; readonly session: Lifetimes },
+  previous?: {
+    readonly samplingPercentage: number | undefined;
+    readonly session: Lifetimes;
+    readonly azureMonitor: { readonly disableBeacon: boolean };
+  },
 ) {
   return Object.freeze({
     samplingPercentage: Object.hasOwn(update, "samplingPercentage")
@@ -119,6 +152,9 @@ function snapshot(
         previous?.session.inactivityTimeout ??
         defaults.inactivityTimeout,
       maxDuration: update.maxDuration ?? previous?.session.maxDuration ?? defaults.maxDuration,
+    }),
+    azureMonitor: Object.freeze({
+      disableBeacon: update.disableBeacon ?? previous?.azureMonitor.disableBeacon ?? false,
     }),
   });
 }
@@ -160,6 +196,8 @@ export function createRuntimeConfiguration(
         for (const key of Object.keys(defaults) as (keyof Lifetimes)[]) {
           if (next.session[key] !== current.session[key]) changedPaths.push(`session.${key}`);
         }
+        if (next.azureMonitor.disableBeacon !== current.azureMonitor.disableBeacon)
+          changedPaths.push("azureMonitor.disableBeacon");
         if (changedPaths.length) {
           current = next;
           revision++;

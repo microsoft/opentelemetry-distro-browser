@@ -42,7 +42,7 @@ export interface SenderOptions {
   readonly endpoint: string;
   readonly fetch?: typeof globalThis.fetch;
   readonly sendBeacon?: typeof globalThis.navigator.sendBeacon;
-  readonly disableBeacon?: boolean;
+  readonly disableBeacon?: boolean | (() => boolean);
   readonly maxPayloadSize?: number;
   readonly delay?: (delayMs: number) => Promise<void>;
   readonly random?: () => number;
@@ -88,7 +88,7 @@ export class Sender {
   #compress: boolean;
   readonly #fetch: typeof globalThis.fetch;
   readonly #sendBeacon: typeof globalThis.navigator.sendBeacon | undefined;
-  readonly #disableBeacon: boolean;
+  readonly #disableBeacon: boolean | (() => boolean);
   readonly #maxPayloadSize: number | undefined;
   readonly #delay: (delayMs: number) => Promise<void>;
   readonly #random: () => number;
@@ -342,7 +342,9 @@ export class Sender {
       );
     }
 
-    if (this.#disableBeacon || !this.#sendBeacon) {
+    const disabled =
+      typeof this.#disableBeacon === "function" ? this.#disableBeacon() : this.#disableBeacon;
+    if (disabled || !this.#sendBeacon) {
       const error = new Error("sendBeacon fallback is unavailable for the unload request.", {
         cause,
       });

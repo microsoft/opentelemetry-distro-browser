@@ -6,6 +6,8 @@ All notable changes to this package are documented in this file.
 
 ### Added
 
+- Support per-instance runtime Azure Monitor beacon fallback updates and the `onunloadDisableBeacon`
+  alias through `updateCfg`.
 - Add internal customer SDK Stats reporting with isolated diagnostics and lifecycle handling.
   Retain retryable customer stats counts in memory for the next report, and preserve console
   instrumentation teardown and synchronous restart inside diagnostic callbacks.

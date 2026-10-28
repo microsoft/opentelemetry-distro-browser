@@ -6,6 +6,7 @@ import {
   type AzureMonitorOptions,
   type MicrosoftOpenTelemetryBrowser,
   type MicrosoftOpenTelemetryBrowserConfigurationUpdate,
+  type MicrosoftOpenTelemetryBrowserOptions,
 } from "@microsoft/opentelemetry-browser";
 import { getInstrumentations } from "@microsoft/opentelemetry-browser/instrumentations";
 // @ts-expect-error SDK stats types are internal.
@@ -27,6 +28,25 @@ const asynchronousOptions: AzureMonitorOptions<Promise<string>> = {
 };
 useMicrosoftOpenTelemetry({ azureMonitor: options });
 useMicrosoftOpenTelemetry({ azureMonitor: asynchronousOptions });
+const connectionString = options.connectionString;
+useMicrosoftOpenTelemetry({ azureMonitor: { connectionString, disableBeacon: true } });
+// @ts-expect-error The unload-beacon alias is runtime-only.
+useMicrosoftOpenTelemetry({ onunloadDisableBeacon: true });
+// @ts-expect-error The unload-beacon alias is runtime-only.
+useMicrosoftOpenTelemetry({ onunloadDisableBeacon: false });
+// @ts-expect-error The unload-beacon alias is runtime-only, including explicit undefined.
+useMicrosoftOpenTelemetry({ onunloadDisableBeacon: undefined });
+const invalidStartupBeaconReset: MicrosoftOpenTelemetryBrowserOptions = {
+  // @ts-expect-error Typed initialization options must use azureMonitor.disableBeacon.
+  onunloadDisableBeacon: undefined,
+};
+void invalidStartupBeaconReset;
+// @ts-expect-error The unload-beacon alias is runtime-only.
+useMicrosoftOpenTelemetry({ onunloadDisableBeacon: "true" });
+// @ts-expect-error Standalone exporter options retain exact optional boolean semantics.
+const _invalidBeaconOptions: AzureMonitorOptions = { connectionString, disableBeacon: undefined };
+// @ts-expect-error Startup native beacon options retain exact optional boolean semantics.
+useMicrosoftOpenTelemetry({ azureMonitor: { connectionString, disableBeacon: undefined } });
 // @ts-expect-error Standalone trace exporters require a resolved connection string.
 new AzureMonitorSpanExporter(asynchronousOptions);
 // @ts-expect-error Standalone log exporters require a resolved connection string.
@@ -87,4 +107,42 @@ export async function updateSessionLifetimes(handle: MicrosoftOpenTelemetryBrows
   await handle.updateCfg({ session: { persist: false } });
   // @ts-expect-error Browser storage is startup-only.
   await handle.updateCfg({ storage: { enabled: false } });
+}
+
+export async function updateUnloadBeacon(handle: MicrosoftOpenTelemetryBrowser): Promise<void> {
+  const aliasReset: MicrosoftOpenTelemetryBrowserConfigurationUpdate = {
+    onunloadDisableBeacon: undefined,
+  };
+  const nativeReset: MicrosoftOpenTelemetryBrowserConfigurationUpdate = {
+    azureMonitor: { disableBeacon: undefined },
+  };
+  const outerReset: MicrosoftOpenTelemetryBrowserConfigurationUpdate = {
+    azureMonitor: undefined,
+  };
+  await handle.updateCfg({ azureMonitor: {} });
+  await handle.updateCfg({ azureMonitor: { disableBeacon: true } });
+  await handle.updateCfg({ azureMonitor: { disableBeacon: false } });
+  await handle.updateCfg({ onunloadDisableBeacon: true });
+  await handle.updateCfg({ onunloadDisableBeacon: false });
+  await handle.updateCfg({ onunloadDisableBeacon: undefined });
+  await handle.updateCfg({ azureMonitor: { disableBeacon: undefined } });
+  await handle.updateCfg({ azureMonitor: undefined });
+  await handle.updateCfg(aliasReset);
+  await handle.updateCfg(nativeReset);
+  await handle.updateCfg(outerReset);
+  await handle.updateCfg({ azureMonitor: { disableBeacon: true }, onunloadDisableBeacon: true });
+  await handle.updateCfg(
+    { samplingPercentage: 25, sessionRenewalMs: 60000, onunloadDisableBeacon: true },
+    false,
+  );
+  // @ts-expect-error The runtime unload-beacon alias requires a boolean.
+  await handle.updateCfg({ onunloadDisableBeacon: "false" });
+  // @ts-expect-error The runtime native beacon policy requires a boolean.
+  await handle.updateCfg({ azureMonitor: { disableBeacon: 1 } });
+  // @ts-expect-error Runtime Azure Monitor destination mutation is not supported.
+  await handle.updateCfg({ azureMonitor: { connectionString } });
+  // @ts-expect-error Unsupported destination fields cannot be reset with undefined.
+  await handle.updateCfg({ azureMonitor: { connectionString: undefined } });
+  // @ts-expect-error Standalone exporter options remain readonly.
+  options.disableBeacon = true;
 }

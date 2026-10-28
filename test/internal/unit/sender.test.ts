@@ -635,6 +635,169 @@ describe("Sender", () => {
     expect(sendBeacon).not.toHaveBeenCalled();
   });
 
+  it.each([
+    { failure: "fetch", initiallyDisabled: false },
+    { failure: "fetch", initiallyDisabled: true },
+    { failure: "response text", initiallyDisabled: false },
+    { failure: "response text", initiallyDisabled: true },
+  ] as const)(
+    "reads the current policy after pending $failure fails, initially disabled=$initiallyDisabled",
+    async ({ failure, initiallyDisabled }) => {
+      let disabled: boolean = initiallyDisabled;
+      const readDisableBeacon = vi.fn(() => disabled);
+      let rejectTransport!: (error: Error) => void;
+      let markPending!: () => void;
+      const pending = new Promise<void>((resolve) => {
+        markPending = resolve;
+      });
+      const transport = new Promise<never>((_resolve, reject) => {
+        rejectTransport = reject;
+      });
+      const response = new Response(null, { status: 503 });
+      if (failure === "response text") {
+        vi.spyOn(response, "text").mockImplementation(() => {
+          markPending();
+          return transport;
+        });
+      }
+      const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(() => {
+        if (failure === "response text") return Promise.resolve(response);
+        markPending();
+        return transport;
+      });
+      const sendBeacon = vi.fn<typeof globalThis.navigator.sendBeacon>().mockReturnValue(true);
+      const sender = new Sender({
+        endpoint: "https://example.test/v2.1/track",
+        fetch,
+        sendBeacon,
+        disableBeacon: readDisableBeacon,
+      });
+      const send = sender.send({
+        body: new TextEncoder().encode("telemetry"),
+        contentType: "application/json",
+        unloading: true,
+      });
+      // Attach a handler before deliberately rejecting the pending transport.
+      const settled = send.catch((error: unknown) => error);
+      try {
+        await pending;
+        expect(readDisableBeacon).not.toHaveBeenCalled();
+        expect(sendBeacon).not.toHaveBeenCalled();
+        disabled = !initiallyDisabled;
+        rejectTransport(new TypeError("network error"));
+        if (disabled) {
+          await expect(send).rejects.toThrow("sendBeacon fallback is unavailable");
+          expect(sendBeacon).not.toHaveBeenCalled();
+        } else {
+          await expect(send).resolves.toEqual({ transport: "beacon" });
+          expect(sendBeacon).toHaveBeenCalledOnce();
+        }
+        expect(readDisableBeacon).toHaveBeenCalledOnce();
+        expect(fetch).toHaveBeenCalledExactlyOnceWith(
+          "https://example.test/v2.1/track",
+          expect.objectContaining({ keepalive: true }),
+        );
+      } finally {
+        rejectTransport(new TypeError("test cleanup"));
+        await settled;
+      }
+    },
+  );
+
+  it.each([false, true])(
+    "reads changes to an initially %s disabled policy on capacity fallback",
+    async (initiallyDisabled) => {
+      let disabled = initiallyDisabled;
+      const readDisableBeacon = vi.fn(() => disabled);
+      const fetch = vi.fn<typeof globalThis.fetch>();
+      const sendBeacon = vi.fn<typeof globalThis.navigator.sendBeacon>().mockReturnValue(true);
+      const sender = new Sender({
+        endpoint: "https://example.test/v2.1/track",
+        fetch,
+        sendBeacon,
+        disableBeacon: readDisableBeacon,
+      });
+      const request = {
+        body: new Uint8Array(60 * 1024 + 1),
+        contentType: "application/json",
+        unloading: true,
+      };
+      expect(readDisableBeacon).not.toHaveBeenCalled();
+      for (const current of [!initiallyDisabled, initiallyDisabled]) {
+        disabled = current;
+        if (disabled) {
+          await expect(sender.send(request)).rejects.toThrow("sendBeacon fallback is unavailable");
+        } else {
+          await expect(sender.send(request)).resolves.toEqual({ transport: "beacon" });
+        }
+      }
+      expect(readDisableBeacon).toHaveBeenCalledTimes(2);
+      expect(sendBeacon).toHaveBeenCalledOnce();
+      expect(fetch).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([false, true])(
+    "does not consult beacon policy for successful fetch sends with unloading=%s",
+    async (unloading) => {
+      let disabled = true;
+      const readDisableBeacon = vi.fn(() => disabled);
+      const fetch = vi
+        .fn<typeof globalThis.fetch>()
+        .mockImplementation(async () => new Response(null, { status: 200 }));
+      const sendBeacon = vi.fn<typeof globalThis.navigator.sendBeacon>().mockReturnValue(true);
+      const sender = new Sender({
+        endpoint: "https://example.test/v2.1/track",
+        fetch,
+        sendBeacon,
+        disableBeacon: readDisableBeacon,
+      });
+      for (const current of [true, false]) {
+        disabled = current;
+        await expect(
+          sender.send({
+            body: new TextEncoder().encode("telemetry"),
+            contentType: "application/json",
+            unloading,
+          }),
+        ).resolves.toEqual({ transport: "fetch", statusCode: 200, result: "" });
+      }
+      expect(fetch).toHaveBeenCalledTimes(2);
+      expect(fetch.mock.calls.every(([, init]) => init?.keepalive === unloading)).toBe(true);
+      expect(readDisableBeacon).not.toHaveBeenCalled();
+      expect(sendBeacon).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([false, true])(
+    "still captures a static disableBeacon=%s option at construction",
+    async (disableBeacon) => {
+      const fetch = vi.fn<typeof globalThis.fetch>();
+      const sendBeacon = vi.fn<typeof globalThis.navigator.sendBeacon>().mockReturnValue(true);
+      const options = {
+        endpoint: "https://example.test/v2.1/track",
+        fetch,
+        sendBeacon,
+        disableBeacon,
+      };
+      const sender = new Sender(options);
+      options.disableBeacon = !disableBeacon;
+      const send = sender.send({
+        body: new Uint8Array(60 * 1024 + 1),
+        contentType: "application/json",
+        unloading: true,
+      });
+      if (disableBeacon) {
+        await expect(send).rejects.toThrow("sendBeacon fallback is unavailable");
+        expect(sendBeacon).not.toHaveBeenCalled();
+      } else {
+        await expect(send).resolves.toEqual({ transport: "beacon" });
+        expect(sendBeacon).toHaveBeenCalledOnce();
+      }
+      expect(fetch).not.toHaveBeenCalled();
+    },
+  );
+
   it("fails cleanly when the browser does not support sendBeacon", async () => {
     const sendBeaconDescriptor = Object.getOwnPropertyDescriptor(navigator, "sendBeacon");
     Object.defineProperty(navigator, "sendBeacon", {

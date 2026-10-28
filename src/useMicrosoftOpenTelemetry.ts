@@ -173,6 +173,7 @@ export async function useMicrosoftOpenTelemetry(
   const maxDuration = sessionOptions?.maxDuration;
   const sessionRenewalMs = options.sessionRenewalMs;
   const sessionExpirationMs = options.sessionExpirationMs;
+  const azureMonitor = options.azureMonitor ? { ...options.azureMonitor } : undefined;
   const configuration = createRuntimeConfiguration(
     {
       samplingPercentage: options.samplingPercentage,
@@ -192,6 +193,7 @@ export async function useMicrosoftOpenTelemetry(
       ...((sessionExpirationMs !== undefined || Object.hasOwn(options, "sessionExpirationMs")) && {
         sessionExpirationMs,
       }),
+      azureMonitor: { disableBeacon: azureMonitor?.disableBeacon },
     },
     () => stopping,
   );
@@ -238,7 +240,6 @@ export async function useMicrosoftOpenTelemetry(
     ),
     storageEnabled,
   );
-  const azureMonitor = options.azureMonitor ? { ...options.azureMonitor } : undefined;
   if (azureMonitor) {
     sessionBufferStorage.set(
       azureMonitor,
@@ -423,7 +424,7 @@ export async function useMicrosoftOpenTelemetry(
   try {
     // Reserve before construction or callbacks can re-enter startup, with rollback already armed.
     const owned = createOwnedInstrumentations(
-      { ...options, pageView },
+      { ...options, pageView, azureMonitor },
       () => getPageOperation(correlationState.current),
       () => readSamplingPercentage() ?? 100,
       (namespace) => {
@@ -459,6 +460,7 @@ export async function useMicrosoftOpenTelemetry(
         logRecordProcessors?.length !== 0,
         readSamplingPercentage,
         azureMonitorExporters,
+        () => configuration.snapshot().azureMonitor.disableBeacon,
       );
       stopAzureMonitorStartup = stop;
       startAzureMonitorDiagnostics = startDiagnostics;
