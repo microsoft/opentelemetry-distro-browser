@@ -73,6 +73,8 @@ export interface SendRequest {
   readonly onResponse?: (statusCode: number) => void;
   /** Checked before each attempt; when it returns `false` the request stops with an error. */
   readonly active?: () => boolean;
+  /** Commits final counters only when an older persisted snapshot cannot replay them. */
+  readonly account?: (onFinal: () => void) => void;
   /** Retains outstanding envelopes and calls onDrop only if they are later terminally removed. */
   readonly retain?: (onDrop: () => void, codes: string | readonly string[]) => boolean;
 }
@@ -223,9 +225,7 @@ export class Sender {
         currentRequest = retryRequest;
         retryCodes =
           this.#itemStats && result.statusCode === 206
-            ? breezeErrors
-                .filter((error) => isRetriable(error.statusCode) && !isSamplingRejection(error))
-                .map((error) => String(error.statusCode))
+            ? retriableErrors(breezeErrors).map((error) => String(error.statusCode))
             : String(result.statusCode);
         if (result.retryAfterMs === undefined) {
           remainingRetryWaitMs = await this.#waitForRetry(
@@ -249,30 +249,35 @@ export class Sender {
       result.transport === "beacon" ||
       (result.statusCode >= 200 && result.statusCode < 300 && result.statusCode !== 206)
     ) {
-      stats.countEnvelopes("Success", envelopes);
+      this.#account(request, () => stats.countEnvelopes("Success", envelopes));
       return;
     }
     if (result.statusCode === 206) {
       const response = result.response;
       if (response) {
-        const deferred: AzureMonitorEnvelope[] = [];
-        const codes: string[] = [];
-        const errors = new Map(response.errors.map((error) => [error.index, error]));
-        for (const [index, envelope] of envelopes.entries()) {
-          const error = errors.get(index);
-          if (!error) stats.countEnvelopes("Success", [envelope]);
-          else if (isSamplingRejection(error) || !isRetriable(error.statusCode)) {
-            stats.countEnvelopes(
-              "Dropped",
-              [envelope],
-              isSamplingRejection(error) ? "SAMPLING" : String(error.statusCode),
-            );
-          } else if (!willRetry) {
-            deferred.push(envelope);
-            codes.push(String(error.statusCode));
+        this.#account(request, () => {
+          const errors = new Map(response.errors.map((error) => [error.index, error]));
+          for (const [index, envelope] of envelopes.entries()) {
+            const error = errors.get(index);
+            if (!error) stats.countEnvelopes("Success", [envelope]);
+            else if (isSamplingRejection(error) || !isRetriable(error.statusCode)) {
+              stats.countEnvelopes(
+                "Dropped",
+                [envelope],
+                isSamplingRejection(error) ? "SAMPLING" : String(error.statusCode),
+              );
+            }
           }
+        });
+        if (!willRetry) {
+          const deferred = retriableErrors(response.errors);
+          this.#dropItems(
+            request,
+            deferred.map((error) => envelopes[error.index]),
+            deferred.map((error) => String(error.statusCode)),
+            true,
+          );
         }
-        this.#dropItems(request, deferred, codes, true);
         return;
       }
     }
@@ -285,6 +290,11 @@ export class Sender {
       );
   }
 
+  #account(request: SendRequest, onFinal: () => void): void {
+    if (request.account) request.account(onFinal);
+    else onFinal();
+  }
+
   #dropItems(
     request: SendRequest,
     envelopes: readonly AzureMonitorEnvelope[] | undefined,
@@ -293,7 +303,8 @@ export class Sender {
   ): void {
     if (!this.#itemStats || !envelopes?.length || request.active?.() === false) return;
     const onDrop = (): void => this.#itemStats?.countEnvelopes("Dropped", envelopes, codes);
-    if (!retain || !request.retain?.(onDrop, codes)) onDrop();
+    if (!retain) this.#account(request, onDrop);
+    else if (!request.retain?.(onDrop, codes)) onDrop();
   }
 
   #rememberThrottleDeadline(result: SenderResultType): void {
@@ -579,6 +590,10 @@ function reportPartial(
   return retryRequest;
 }
 
+function retriableErrors(errors: readonly BreezeError[]): readonly BreezeError[] {
+  return errors.filter((error) => isRetriable(error.statusCode) && !isSamplingRejection(error));
+}
+
 function getRetryRequest(
   request: SendRequest,
   result: SenderResult,
@@ -594,8 +609,7 @@ function getRetryRequest(
     return undefined;
   }
 
-  const envelopes = breezeErrors
-    .filter((error) => isRetriable(error.statusCode) && !isSamplingRejection(error))
+  const envelopes = retriableErrors(breezeErrors)
     .map((error) => request.envelopes?.[error.index])
     .filter((envelope): envelope is AzureMonitorEnvelope => envelope !== undefined);
   if (envelopes.length === 0) {

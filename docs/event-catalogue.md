@@ -324,6 +324,13 @@ the original page must not report a drop for a record that another page can stil
 Shutdown gives outstanding application sends a 30-second grace period, then aborts them and waits
 for their callbacks and accounting before the final stats reports. Cancellation also settles
 wrappers that ignore abort signals and retry waits; late results cannot restart delivery.
+Export callbacks are notifications: returned promises are not adopted into flush or shutdown,
+while synchronous callback exceptions remain observable. Disabled SDK Stats do not trigger extra
+buffer writes solely to transfer accounting.
+Final successes and permanent rejections also wait for stale-snapshot invalidation. If deletion
+fails but writing works, an empty tombstone prevents replay; otherwise accounting stays with the
+persisted snapshot until recovery or handoff. Partial-response envelopes and their persisted drop
+codes use the same ingestion error-array order.
 The original page does not count outcomes after another page adopts its batch. Invalid partial
 responses, including mismatched item counts, fail the export callback and retain outstanding
 envelopes when storage permits.

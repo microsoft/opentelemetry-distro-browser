@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-import { diag } from "@opentelemetry/api";
+import { diag, SpanKind } from "@opentelemetry/api";
 import { ExportResultCode, type ExportResult } from "@opentelemetry/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AzureMonitorExportClient, type AzureMonitorOptions } from "../../../src/exporter/base.js";
@@ -271,6 +271,34 @@ describe("Azure Monitor sessionStorage buffer", () => {
     loadPage();
     await createClient().forceFlush();
     expect(sentNames(fetch)).toEqual([["oversized"]]);
+  });
+
+  it("does not rewrite an oversized unload batch just to account for disabled stats", async () => {
+    const client = createClient();
+    const original = testSessionStorage.setItem.bind(testSessionStorage);
+    const write = vi
+      .spyOn(testSessionStorage, "setItem")
+      .mockImplementationOnce(original)
+      .mockImplementationOnce(() => {
+        throw new DOMException("Quota exceeded", "QuotaExceededError");
+      });
+    const oversized = { ...envelope("kept"), tags: { large: "x".repeat(MAX_BEACON_BODY_SIZE) } };
+    beginUnloading();
+    try {
+      await expect(exportAsync(client, [oversized])).resolves.toMatchObject({
+        code: ExportResultCode.FAILED,
+      });
+    } finally {
+      endUnloading();
+    }
+    expect(write).toHaveBeenCalledOnce();
+    expect(testSessionStorage.getItem(bufferKeys()[0])).toContain("kept");
+    write.mockRestore();
+    hidePage();
+    loadPage();
+    const fetch = stubFetch();
+    await createClient().forceFlush();
+    expect(sentNames(fetch)).toEqual([["kept"]]);
   });
 
   it("does not adopt telemetry from live documents or the same document", async () => {
@@ -901,8 +929,12 @@ describe("Azure Monitor sessionStorage buffer", () => {
       const remove = vi.spyOn(testSessionStorage, "removeItem").mockImplementation(() => {
         throw new DOMException("Storage blocked", "SecurityError");
       });
+      const write = vi.spyOn(testSessionStorage, "setItem").mockImplementation(() => {
+        throw new DOMException("Storage blocked", "SecurityError");
+      });
       await client.shutdown();
       remove.mockRestore();
+      write.mockRestore();
       vi.spyOn(Date, "now").mockReturnValue(Date.now() + MAX_SESSION_BUFFER_AGE_MS + 1);
       loadPage();
       const fetch = stubFetch();
@@ -923,6 +955,217 @@ describe("Azure Monitor sessionStorage buffer", () => {
       expect(fetch).toHaveBeenCalledOnce();
     },
   );
+
+  it("persists unordered partial errors in the same order as their deferred envelopes", async () => {
+    stubFetch(() =>
+      breezeResponse(
+        [
+          { index: 1, statusCode: 503 },
+          { index: 0, statusCode: 429 },
+        ],
+        {},
+        2,
+      ),
+    );
+    const client = createClient({ sdkStats: { enabled: true } });
+    beginUnloading();
+    try {
+      await exportAsync(client, [
+        envelope("dependency"),
+        spanToEnvelope(
+          createReadableSpan({ name: "request", kind: SpanKind.SERVER }),
+          TEST_INSTRUMENTATION_KEY,
+        ),
+      ]);
+    } finally {
+      endUnloading();
+    }
+    hidePage();
+    vi.spyOn(Date, "now").mockReturnValue(Date.now() + MAX_SESSION_BUFFER_AGE_MS + 1);
+    loadPage();
+    const fetch = stubFetch();
+    await createClient({ sdkStats: { enabled: true } }).forceFlush();
+    expect(fetch).toHaveBeenCalledOnce();
+    const [url, init] = fetch.mock.calls[0];
+    const metrics: AzureMonitorEnvelope[] = await new Request(url, init).json();
+    expect(metrics.map((item) => item.data.baseData)).toEqual([
+      expect.objectContaining({
+        metrics: [expect.objectContaining({ value: 1 })],
+        properties: expect.objectContaining({ telemetryType: "REQUEST", dropCode: "503" }),
+      }),
+      expect.objectContaining({
+        metrics: [expect.objectContaining({ value: 1 })],
+        properties: expect.objectContaining({ telemetryType: "DEPENDENCY", dropCode: "429" }),
+      }),
+    ]);
+  });
+
+  it.each([200, 400, 206])(
+    "holds HTTP %s outcomes until a stale released snapshot is invalidated or adopted",
+    async (status) => {
+      vi.spyOn(diag, "warn").mockImplementation(() => {});
+      const firstFetch = stubFetch(hang);
+      const client = createClient({ sdkStats: { enabled: true } });
+      const count = vi.spyOn(client.itemStats!, "countEnvelopes");
+      const items =
+        status === 206
+          ? [envelope("accepted"), envelope("retry"), envelope("bad")]
+          : [envelope("settled")];
+      const original = exportAsync(client, items);
+      await vi.waitFor(() => expect(hanging).toHaveLength(1));
+      hidePage();
+      const record = testSessionStorage.getItem(bufferKeys()[0]);
+      const write = vi.spyOn(testSessionStorage, "setItem").mockImplementation(() => {
+        throw new DOMException("Storage blocked", "SecurityError");
+      });
+      const remove = vi.spyOn(testSessionStorage, "removeItem").mockImplementation(() => {
+        throw new DOMException("Storage blocked", "SecurityError");
+      });
+      hanging.shift()!(
+        status === 206
+          ? breezeResponse(
+              [
+                { index: 1, statusCode: 503 },
+                { index: 2, statusCode: 400 },
+              ],
+              { "retry-after": "86400" },
+            )
+          : new Response(null, { status }),
+      );
+      await original;
+      expect(count).not.toHaveBeenCalled();
+      expect(testSessionStorage.getItem(bufferKeys()[0])).toBe(record);
+      write.mockRestore();
+      remove.mockRestore();
+      loadPage();
+      const fetch = stubFetch();
+      await createClient({ sdkStats: { enabled: true } }).forceFlush();
+      expect(sentNames(fetch)[0]).toEqual(
+        items.map((item) => (item.data.baseData as { name: string }).name),
+      );
+      const [url, init] = fetch.mock.calls[1];
+      const metrics: AzureMonitorEnvelope[] = await new Request(url, init).json();
+      expect(metrics[0].data.baseData).toMatchObject({
+        metrics: [{ name: "Item_Success_Count", value: items.length }],
+      });
+      firstFetch.mockResolvedValue(new Response(null));
+      await client.shutdown();
+      expect(count).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([200, 400])(
+    "uses a tombstone before counting HTTP %s when removal fails but writing works",
+    async (status) => {
+      vi.spyOn(diag, "warn").mockImplementation(() => {});
+      const firstFetch = stubFetch(hang);
+      const client = createClient({ sdkStats: { enabled: true } });
+      const count = vi.spyOn(client.itemStats!, "countEnvelopes");
+      const original = exportAsync(client, [envelope("settled")]);
+      await vi.waitFor(() => expect(hanging).toHaveLength(1));
+      hidePage();
+      const key = bufferKeys()[0];
+      const remove = vi.spyOn(testSessionStorage, "removeItem").mockImplementation(() => {
+        throw new DOMException("Removal blocked", "SecurityError");
+      });
+      hanging.shift()!(new Response(null, { status }));
+      await original;
+      expect(testSessionStorage.getItem(key)).toBe("[0]");
+      expect(count).toHaveBeenCalledOnce();
+      loadPage();
+      const fetch = stubFetch();
+      await createClient({ sdkStats: { enabled: true } }).forceFlush();
+      expect(fetch).not.toHaveBeenCalled();
+      remove.mockRestore();
+      firstFetch.mockResolvedValue(new Response(null));
+      await client.shutdown();
+    },
+  );
+
+  it.each([200, 206])(
+    "commits pending HTTP %s outcomes once after local storage recovery",
+    async (status) => {
+      vi.spyOn(diag, "warn").mockImplementation(() => {});
+      const firstFetch = stubFetch(hang);
+      const client = createClient({ sdkStats: { enabled: true } });
+      const count = vi.spyOn(client.itemStats!, "countEnvelopes");
+      const items =
+        status === 206
+          ? [envelope("accepted"), envelope("retry"), envelope("bad")]
+          : [envelope("accepted")];
+      const original = exportAsync(client, items);
+      await vi.waitFor(() => expect(hanging).toHaveLength(1));
+      hidePage();
+      const write = vi.spyOn(testSessionStorage, "setItem").mockImplementation(() => {
+        throw new DOMException("Storage blocked", "SecurityError");
+      });
+      const remove = vi.spyOn(testSessionStorage, "removeItem").mockImplementation(() => {
+        throw new DOMException("Storage blocked", "SecurityError");
+      });
+      hanging.shift()!(
+        status === 206
+          ? breezeResponse(
+              [
+                { index: 1, statusCode: 503 },
+                { index: 2, statusCode: 400 },
+              ],
+              { "retry-after": "86400" },
+            )
+          : new Response(null),
+      );
+      await original;
+      expect(count).not.toHaveBeenCalled();
+      write.mockRestore();
+      remove.mockRestore();
+      vi.spyOn(Date, "now").mockReturnValue(Date.now() + 61_000);
+      restorePage();
+      expect(count).toHaveBeenCalledWith("Success", [items[0]]);
+      expect(count).toHaveBeenCalledTimes(status === 206 ? 2 : 1);
+      if (status === 206) expect(count).toHaveBeenCalledWith("Dropped", [items[2]], "400");
+      hidePage();
+      firstFetch.mockResolvedValue(new Response(null));
+      await client.forceFlush();
+      await client.shutdown();
+      expect(count).toHaveBeenCalledTimes(status === 206 ? 3 : 1);
+    },
+  );
+
+  it("hands off outcome ownership for a dispatched request whose old snapshot could not be removed", async () => {
+    vi.spyOn(diag, "warn").mockImplementation(() => {});
+    const firstFetch = stubFetch(hang);
+    const client = createClient({ sdkStats: { enabled: true } });
+    const count = vi.spyOn(client.itemStats!, "countEnvelopes");
+    hidePage();
+    const originalWrite = testSessionStorage.setItem.bind(testSessionStorage);
+    const write = vi
+      .spyOn(testSessionStorage, "setItem")
+      .mockImplementation(() => {
+        throw new DOMException("Storage blocked", "SecurityError");
+      })
+      .mockImplementationOnce(originalWrite);
+    const remove = vi.spyOn(testSessionStorage, "removeItem").mockImplementation(() => {
+      throw new DOMException("Storage blocked", "SecurityError");
+    });
+    let original: Promise<ExportResult>;
+    beginUnloading();
+    try {
+      original = exportAsync(client, [envelope("dispatched")]);
+    } finally {
+      endUnloading();
+    }
+    await vi.waitFor(() => expect(hanging).toHaveLength(1));
+    write.mockRestore();
+    remove.mockRestore();
+    loadPage();
+    const fetch = stubFetch();
+    await createClient({ sdkStats: { enabled: true } }).forceFlush();
+    expect(sentNames(fetch)[0]).toEqual(["dispatched"]);
+    hanging.shift()!(new Response(null));
+    await original;
+    firstFetch.mockResolvedValue(new Response(null));
+    await client.shutdown();
+    expect(count).not.toHaveBeenCalled();
+  });
 
   it.each([false, true])(
     "defers released-buffer outcomes when both writing and removal fail (expired: %s)",

@@ -664,6 +664,22 @@ it.each(["available", "disabled", "unavailable", "quota", "oversized"] as const)
   },
 );
 
+it("does not adopt an export callback's never-settling return value", async () => {
+  const clock = installFakeClock();
+  const client = new AzureMonitorExportClient({ connectionString, sdkStats: { enabled: true } });
+  owners.push(client);
+  const callback = vi.fn(() => new Promise<void>((resolve) => finishers.push(resolve)));
+  client.export(request().envelopes, callback);
+  const stopped = vi.fn();
+  const shutdown = client.shutdown().then(stopped);
+  await vi.waitFor(() => expect(stopped).toHaveBeenCalledOnce());
+  await shutdown;
+  expect(callback).toHaveBeenCalledOnce();
+  expect(totals()).toEqual({ "Item_Success_Count:DEPENDENCY": 1 });
+  await clock.advance(MAX_SHUTDOWN_WAIT_MS);
+  expect(vi.getTimerCount()).toBe(0);
+});
+
 it.each([false, true])(
   "cancels a hung export at the shutdown deadline and completes final accounting (callback throws: %s)",
   async (callbackThrows) => {

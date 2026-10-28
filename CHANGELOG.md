@@ -25,6 +25,8 @@ All notable changes to this package are documented in this file.
   after a terminal storage failure, and protect active ingestion destinations from history eviction.
   Bound shutdown cancellation, protect each in-flight ingestion URL, persist deferred-expiry
   accounting across page loads, and wait for confirmed invalidation before reporting storage loss.
+  Avoid accounting-only writes when stats are disabled, ignore export callback return values,
+  preserve partial-error ordering, and defer final outcomes until stale snapshots cannot replay.
 - Support per-instance runtime session lifetime updates and Application Insights millisecond aliases
   `sessionRenewalMs` and `sessionExpirationMs` at initialization and through `updateCfg`.
 - Support per-instance runtime sampling updates through dynamic configuration

@@ -185,10 +185,12 @@ export class AzureMonitorExportClient {
     // Envelopes that cannot fit the unload beacon wait for the next page load.
     if (dropped.length > 0) {
       const id = this.#buffer?.add(JSON.stringify(dropped));
-      const onDrop = (): void => {
-        this.itemStats?.countEnvelopes("Dropped", dropped, "PAYLOAD_TOO_LARGE");
-      };
-      if (id === undefined || !this.#buffer?.retain(id, onDrop, "PAYLOAD_TOO_LARGE")) onDrop();
+      if (this.itemStats) {
+        const onDrop = (): void => {
+          this.itemStats?.countEnvelopes("Dropped", dropped, "PAYLOAD_TOO_LARGE");
+        };
+        if (id === undefined || !this.#buffer?.retain(id, onDrop, "PAYLOAD_TOO_LARGE")) onDrop();
+      }
     }
     if (error) {
       callback({ code: ExportResultCode.FAILED, error });
@@ -218,7 +220,9 @@ export class AzureMonitorExportClient {
       })
       .catch(toFailedExportResult)
       // Callback errors must not be reported back to the same callback as export failures.
-      .then(callback);
+      .then((result) => {
+        callback(result);
+      });
     this.#track(operation);
   }
 
@@ -266,6 +270,10 @@ export class AzureMonitorExportClient {
         },
         // Stop retrying a batch another document adopted and delivered.
         active: () => id === undefined || this.#buffer?.owns(id) !== false,
+        account: (onFinal) => {
+          if (id === undefined) onFinal();
+          else this.#buffer?.account(id, onFinal);
+        },
         retain: (onDrop, codes) => {
           settle(true);
           return id !== undefined && this.#buffer?.retain(id, onDrop, codes) === true;

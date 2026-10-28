@@ -78,7 +78,8 @@ export class SessionBuffer {
   #stored = false;
   /** The stored record is marked released for adoption. */
   #released = false;
-  #persisted = new Set<number>();
+  #persisted = new Map<number, string>();
+  readonly #outcomes = new Map<number, (() => void)[]>();
   #disposed = false;
   readonly #onExpired: ((body: string, codes: DropCodes) => void) | undefined;
 
@@ -115,6 +116,18 @@ export class SessionBuffer {
   public owns(id: number): boolean {
     this.#reconcile();
     return this.#live.has(id);
+  }
+
+  /** Holds final outcomes while the persisted version still contains settled envelopes. */
+  public account(id: number, onFinal: () => void): void {
+    this.#reconcile();
+    if (!this.#live.has(id)) return;
+    if (!this.#hasStaleCopy(id)) onFinal();
+    else {
+      const callbacks = this.#outcomes.get(id) ?? [];
+      callbacks.push(onFinal);
+      this.#outcomes.set(id, callbacks);
+    }
   }
 
   /** Transfers drop accounting until the persisted batch is invalidated or handed off. */
@@ -196,7 +209,7 @@ export class SessionBuffer {
         : [];
       // Live records belong to another open document; leave them until they expire.
       if (!released && entries.some(([time]) => now - time <= MAX_SESSION_BUFFER_AGE_MS)) continue;
-      if (!this.#storage.removeItem(key) || !released) continue;
+      if (!this.#invalidate(key) || !released) continue;
       for (const [time, envelopes, metadata] of entries) {
         const body = JSON.stringify(envelopes);
         const codes =
@@ -225,7 +238,10 @@ export class SessionBuffer {
     this.#disposed = true;
     this.#unsubscribe();
     this.#reconcile();
-    const invalidated = !this.#stored || this.#storage.removeItem(this.#key);
+    const invalidated = !this.#stored || this.#invalidate(this.#key);
+    if (invalidated) this.#persisted.clear();
+    this.#commitOutcomes();
+    this.#outcomes.clear();
     for (const id of this.#entries.keys()) {
       if (invalidated || !this.#persisted.has(id)) this.#drop(id);
     }
@@ -240,18 +256,37 @@ export class SessionBuffer {
     entry?.[3]?.();
   }
 
+  #invalidate(key: string): boolean {
+    return this.#storage.removeItem(key) || this.#storage.setItem(key, "[0]");
+  }
+
+  #hasStaleCopy(id: number): boolean {
+    const entry = this.#entries.get(id);
+    return (
+      this.#persisted.has(id) && (entry?.[2] === true || this.#persisted.get(id) !== entry?.[1])
+    );
+  }
+
+  #commitOutcomes(): void {
+    for (const [id, callbacks] of this.#outcomes) {
+      if (this.#hasStaleCopy(id)) continue;
+      this.#outcomes.delete(id);
+      for (const callback of callbacks) callback();
+    }
+  }
+
   /**
-   * Drops entries handed off to a document that adopted this page's released record. Dispatched
-   * entries were not in the record, so they stay owned.
+   * Drops IDs handed off with this page's released snapshot. Dispatched requests stay owned only
+   * when their stored copies were successfully invalidated before the handoff.
    */
   #reconcile(): void {
     if (!this.#released) return;
     const read = this.#storage.getItem(this.#key);
-    if (!read.success || read.value !== null) return;
-    for (const id of this.#persisted) {
-      if (this.#entries.get(id)?.[2]) continue;
+    if (!read.success || (read.value !== null && read.value !== "[0]")) return;
+    for (const id of this.#persisted.keys()) {
       this.#entries.delete(id);
       this.#live.delete(id);
+      this.#outcomes.delete(id);
     }
     this.#stored = this.#released = false;
     this.#persisted.clear();
@@ -260,7 +295,7 @@ export class SessionBuffer {
   #write(): void {
     const now = Date.now();
     const parts: string[] = [];
-    const persisted = new Set<number>();
+    const persisted = new Map<number, string>();
     const dropped: number[] = [];
     let length = 0;
     // Newest first, so the oldest batches are evicted even when adopted records interleave.
@@ -282,21 +317,22 @@ export class SessionBuffer {
       }
       length += part.length + 1;
       parts.unshift(part);
-      persisted.add(id);
+      persisted.set(id, body);
     }
     const stored =
       parts.length > 0 &&
       this.#storage.setItem(this.#key, `[${pageHidden ? 1 : 0},${parts.join(",")}]`);
     // A failed write is not terminal while an older record may still be adopted.
-    if (!stored && this.#stored && !this.#storage.removeItem(this.#key)) return;
+    if (!stored && this.#stored && !this.#invalidate(this.#key)) return;
     this.#stored = stored;
     this.#released = stored && pageHidden;
-    this.#persisted = stored ? persisted : new Set();
+    this.#persisted = stored ? persisted : new Map<number, string>();
     for (const id of dropped) this.#drop(id);
     if (!stored) {
       for (const [id, entry] of this.#entries) {
         if (entry[3]) this.#drop(id);
       }
     }
+    this.#commitOutcomes();
   }
 }
