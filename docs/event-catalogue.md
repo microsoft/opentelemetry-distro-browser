@@ -283,52 +283,9 @@ sends an `SDKLoadFailed` exception directly to the configured ingestion endpoint
 log from the SDK, since initialization may never occur. Its reported URL omits credentials, query
 and fragment. Source: [loader implementation](../src/snippet.ts).
 
-Internal exporter network SDK Stats are a separate SDK-owned delivery path, not customer
+Internal exporter network health statistics are a separate SDK-owned delivery path, not customer
 events or a public Metrics API. They are not included in the event schemas above. See the
-[SDK Stats implementation](../src/exporter/sdkStats.ts).
-
-Standalone Azure Monitor exporters can opt into customer SDK Stats with `sdkStats.enabled`.
-They report item successes, dispatched retries and terminal drops to the customer's destination,
-not application sampling or processor queue drops. Conversion is incremental, so failures include
-completed secondary envelopes even within one record; unclassifiable records produce diagnostics
-without blocking the failure callback.
-Known final HTTP outcomes survive body-read failures, but the export callback still reports the
-read failure. Invalid partial responses fail the callback and retain outstanding envelopes.
-
-Stats-enabled log exporters exclude exact SDK resource-timing URLs, including redirects, but leave
-other URLs and application records eligible. Active senders and attempts hold their URLs through
-completion; a separate 256-entry history retains recent inactive URLs. These registries are shared
-across package copies and independent of distribution state. Stats warnings bypass nested console
-instrumentation even through teardown/restart, without requiring a context manager.
-
-Buffered telemetry is not dropped merely because delivery is deferred. Final counters wait until a
-stale snapshot is invalidated or handed off; an empty tombstone handles failed deletion when writes
-still work. If neither operation succeeds, outcomes stay pending. Eviction of an in-flight storage
-copy is not request loss. Persisted drop codes follow the partial-response envelope order, allowing a
-later page to count expiry after invalidation; legacy codes default to `CLIENT_EXCEPTION`. The old
-page stops accounting after handoff. Disabled stats add no accounting-only storage writes.
-Known retry codes, including replacement network-failure codes, are saved before waiting. Metadata
-cannot evict payloads or pause payload/release writes; quota failures retry the smaller payload-only
-representation. Unreleased snapshots become terminal on shutdown because they cannot be adopted;
-released snapshots retain their handoff ownership.
-
-Flush and shutdown share a 29-second budget across draining and reporting, inside the processor's
-30-second cleanup deadline. An ordinary flush timeout stops waiting without cancelling application
-retries. Shutdown gives pending exports up to 15 seconds; the distribution starts that grace before
-its processors wait for callbacks and completes owned reporting alongside unrelated active flushes.
-Flush reports already-collected counts alongside outstanding exports, so a hung send cannot
-consume their reporting budget. Both attempt reports before surfacing errors; flush makes
-at most one follow-up for new counters, using only the remaining budget. Concurrent shutdown calls
-share work; later cleanup calls resolve even after failure. Callback return values are ignored,
-synchronous throws remain observable, and late
-transport results cannot restart delivery. Retryable report counts stay in memory until the next
-report, not across page loads; accepted and permanently rejected counts are not replayed.
-
-Application unload requests retain their 60 KiB keepalive budget across SDK copies in the realm.
-Reservations are initialized lazily and independently of the distribution registry. Diagnostics share a separate
-4 KiB, one-request allowance within the browser's 64 KiB limit; larger or concurrent reports use
-ordinary fetch instead of displacing application traffic. Both reporters follow up once for counts
-collected behind an in-flight report, within the same deadline.
+[statistics implementation](../src/exporter/sdkStats.ts).
 
 ## Azure Monitor mapping
 

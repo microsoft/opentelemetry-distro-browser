@@ -13,11 +13,7 @@ All notable changes to this package are documented in this file.
 - Add internal customer SDK Stats reporting with isolated diagnostics and lifecycle handling.
   Retain retryable customer stats counts in memory for the next report, and preserve console
   instrumentation teardown and synchronous restart inside diagnostic callbacks.
-- Add opt-in customer SDK Stats to standalone Azure Monitor span and log exporters through
-  `sdkStats.enabled`, reporting item successes, drops, and dispatched retries to the configured
-  Application Insights resource. Isolate diagnostic traffic, preserve conversion and partial-response
-  outcomes, and coordinate retained telemetry across page loads and storage failures. Shutdown is
-  bounded, shares concurrent work, and allows harmless repeated cleanup after completion or failure.
+- Add opt-in customer SDK Stats to standalone Azure Monitor exporters.
 - Support per-instance runtime session lifetime updates and Application Insights millisecond aliases
   `sessionRenewalMs` and `sessionExpirationMs` at initialization and through `updateCfg`.
 - Support per-instance runtime sampling updates through dynamic configuration
