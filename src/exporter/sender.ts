@@ -69,20 +69,13 @@ export interface SendRequest {
    * Called after each 206 response with the envelopes that are still retriable, or an empty array
    * when none remain.
    */
-  readonly onPartial?: (
-    envelopes: readonly AzureMonitorEnvelope[],
-    codes?: readonly string[],
-  ) => void;
+  readonly onPartial?: (envelopes: readonly AzureMonitorEnvelope[]) => void;
   /** Called with each response status before its body is read. */
   readonly onResponse?: (statusCode: number) => void;
-  /** Called when a transport attempt fails without an HTTP response, before any retry wait. */
-  readonly onNetworkError?: () => void;
   /** Checked before each attempt; when it returns `false` the request stops with an error. */
   readonly active?: () => boolean;
-  /** Commits final counters only when an older persisted snapshot cannot replay them. */
-  readonly account?: (onFinal: () => void) => void;
-  /** Retains outstanding envelopes and calls onDrop only if they are later terminally removed. */
-  readonly retain?: (onDrop: () => void, codes: string | readonly string[]) => boolean;
+  /** Retains outstanding envelopes for replay without recording a terminal drop. */
+  readonly retain?: () => boolean;
 }
 
 export interface SenderResult {
@@ -188,7 +181,6 @@ export class Sender {
           }
           retryCodes =
             error.statusCode === undefined ? "CLIENT_EXCEPTION" : String(error.statusCode);
-          if (error.statusCode === undefined) currentRequest.onNetworkError?.();
           if (error.statusCode !== undefined && !isRetriable(error.statusCode)) {
             throw error.cause;
           }
@@ -256,26 +248,24 @@ export class Sender {
       result.transport === "beacon" ||
       (result.statusCode >= 200 && result.statusCode < 300 && result.statusCode !== 206)
     ) {
-      this.#account(request, () => stats.countEnvelopes("Success", envelopes));
+      stats.countEnvelopes("Success", envelopes);
       return;
     }
     if (result.statusCode === 206) {
       const response = result.response;
       if (response) {
-        this.#account(request, () => {
-          const errors = new Map(response.errors.map((error) => [error.index, error]));
-          for (const [index, envelope] of envelopes.entries()) {
-            const error = errors.get(index);
-            if (!error) stats.countEnvelopes("Success", [envelope]);
-            else if (isSamplingRejection(error) || !isRetriable(error.statusCode)) {
-              stats.countEnvelopes(
-                "Dropped",
-                [envelope],
-                isSamplingRejection(error) ? "SAMPLING" : String(error.statusCode),
-              );
-            }
+        const errors = new Map(response.errors.map((error) => [error.index, error]));
+        for (const [index, envelope] of envelopes.entries()) {
+          const error = errors.get(index);
+          if (!error) stats.countEnvelopes("Success", [envelope]);
+          else if (isSamplingRejection(error) || !isRetriable(error.statusCode)) {
+            stats.countEnvelopes(
+              "Dropped",
+              [envelope],
+              isSamplingRejection(error) ? "SAMPLING" : String(error.statusCode),
+            );
           }
-        });
+        }
         if (!willRetry) {
           const deferred = retriableErrors(response.errors);
           this.#dropItems(
@@ -297,11 +287,6 @@ export class Sender {
       );
   }
 
-  #account(request: SendRequest, onFinal: () => void): void {
-    if (request.account) request.account(onFinal);
-    else onFinal();
-  }
-
   #dropItems(
     request: SendRequest,
     envelopes: readonly AzureMonitorEnvelope[] | undefined,
@@ -309,9 +294,7 @@ export class Sender {
     retain: boolean,
   ): void {
     if (!this.#itemStats || !envelopes?.length || request.active?.() === false) return;
-    const onDrop = (): void => this.#itemStats?.countEnvelopes("Dropped", envelopes, codes);
-    if (!retain) this.#account(request, onDrop);
-    else if (!request.retain?.(onDrop, codes)) onDrop();
+    if (!retain || !request.retain?.()) this.#itemStats.countEnvelopes("Dropped", envelopes, codes);
   }
 
   #rememberThrottleDeadline(result: SenderResultType): void {
@@ -594,12 +577,7 @@ function reportPartial(
   const retryRequest = getRetryRequest(request, result, response?.errors ?? []);
   if (result.statusCode === 206) {
     // An unreadable response leaves every envelope outstanding, without an immediate retry.
-    request.onPartial?.(
-      response ? (retryRequest?.envelopes ?? []) : (request.envelopes ?? []),
-      response
-        ? retriableErrors(response.errors).map((error) => String(error.statusCode))
-        : undefined,
-    );
+    request.onPartial?.(response ? (retryRequest?.envelopes ?? []) : (request.envelopes ?? []));
   }
   return retryRequest;
 }

@@ -22,14 +22,7 @@ export function createSessionBufferStorage(namePrefix?: string): WebKeyValueStor
   );
 }
 
-type DropCodes = string | readonly string[];
-type Entry = [
-  time: number,
-  body: string,
-  dispatched?: boolean,
-  onDrop?: () => void,
-  codes?: DropCodes,
-];
+type Entry = [time: number, body: string, dispatched?: boolean];
 
 const pageListeners = new Set<() => void>();
 let pageHidden = false;
@@ -57,13 +50,13 @@ function subscribeToPageTransitions(listener: () => void): () => void {
  * next page load in the same tab can send them.
  *
  * @remarks
- * Each record is `[released, [time, envelopes, dropCodes?], ...]` under a key unique to the destination,
+ * Each record is `[released, [time, envelopes], ...]` under a key unique to the destination,
  * document and exporter. A record is released only on `pagehide`, and only released records from
  * another document are adopted, so live same-origin frames, including hidden ones, never send each
  * other's telemetry. Adoption removes the record. Before each use, a page whose released record is
  * gone drops its copy, ignores later outcomes of requests started before the handoff and stops
- * their retries. Failed writes attempt to invalidate the record; if removal also fails, terminal
- * accounting waits until invalidation or handoff is confirmed.
+ * their retries. Failed writes attempt to invalidate the record. SDK Stats do not persist
+ * accounting metadata or track losses after a batch has been retained.
  */
 export class SessionBuffer {
   readonly #entries = new Map<number, Entry>();
@@ -77,18 +70,11 @@ export class SessionBuffer {
   readonly #live = new Set<number>();
   /** The stored record is marked released for adoption. */
   #released = false;
-  #persisted = new Map<number, string>();
-  readonly #outcomes = new Map<number, (() => void)[]>();
+  #persisted = new Set<number>();
   #disposed = false;
-  readonly #onExpired: ((body: string, codes: DropCodes) => void) | undefined;
 
-  public constructor(
-    destination: string,
-    storage = createSessionBufferStorage(),
-    onExpired?: (body: string, codes: DropCodes) => void,
-  ) {
+  public constructor(destination: string, storage = createSessionBufferStorage()) {
     this.#storage = storage;
-    this.#onExpired = onExpired;
     // Encoded so a `|` in the endpoint cannot make one destination's prefix match another's keys.
     this.#prefix = `${SESSION_BUFFER_KEY_PREFIX}${encodeURIComponent(destination)}|`;
     this.#pagePrefix = `${this.#prefix}${globalThis.performance?.timeOrigin}|`;
@@ -117,40 +103,21 @@ export class SessionBuffer {
     return this.#live.has(id);
   }
 
-  /** Holds final outcomes while the persisted version still contains settled envelopes. */
-  public account(id: number, onFinal: () => void): void {
-    this.#reconcile();
-    if (!this.#live.has(id)) return;
-    if (!this.#hasStaleCopy(id)) onFinal();
-    else {
-      const callbacks = this.#outcomes.get(id) ?? [];
-      callbacks.push(onFinal);
-      this.#outcomes.set(id, callbacks);
-    }
-  }
-
-  /** Transfers drop accounting until the persisted batch is invalidated or handed off. */
-  public retain(id: number, onDrop: () => void, codes?: DropCodes): boolean {
+  /** Whether a batch is retained for replay, rather than an observed terminal drop. */
+  public retain(id: number): boolean {
     this.#reconcile();
     const entry = this.#entries.get(id);
-    if (this.#persisted.has(id) && entry && !entry[2]) {
-      entry[3] = onDrop;
-      if (entry[4] !== codes) {
-        entry[4] = codes;
-        this.#write(true);
-      }
-      return true;
-    }
+    if (this.#persisted.has(id) && entry && !entry[2]) return true;
     // A caller reporting a terminal drop must never have this batch restored by a later write.
     this.#entries.delete(id);
     return false;
   }
 
   /** Buffers a serialized envelope array and returns its ID. */
-  public add(body: string, time = Date.now(), codes?: DropCodes): number {
+  public add(body: string, time = Date.now()): number {
     this.#reconcile();
     const id = this.#nextId++;
-    this.#entries.set(id, [time, body, false, undefined, codes]);
+    this.#entries.set(id, [time, body]);
     this.#write();
     return id;
   }
@@ -170,16 +137,12 @@ export class SessionBuffer {
    * Keeps `body` for a buffered ID, replacing any earlier body, or removes it once delivered or
    * permanently rejected. Evicted, removed and handed-off IDs stay gone.
    */
-  public settle(id: number, body: string, keep: boolean, codes?: DropCodes): void {
+  public settle(id: number, body: string, keep: boolean): void {
     const entry = this.owns(id) ? this.#entries.get(id) : undefined;
-    if (!entry) return;
-    const metadataOnly = keep && !entry[2] && entry[1] === body;
-    if (metadataOnly) {
-      if (codes === undefined || codes === entry[4]) return;
-      entry[4] = codes;
-    } else if (keep) this.#entries.set(id, [entry[0], body, false, undefined, codes]);
+    if (!entry || (keep && !entry[2] && entry[1] === body)) return;
+    if (keep) this.#entries.set(id, [entry[0], body]);
     else this.#entries.delete(id);
-    this.#write(metadataOnly);
+    this.#write();
   }
 
   /**
@@ -204,7 +167,7 @@ export class SessionBuffer {
         ? record
             .slice(1)
             .filter(
-              (entry): entry is [number, unknown[], unknown?] =>
+              (entry): entry is [number, unknown[]] =>
                 Array.isArray(entry) &&
                 typeof entry[0] === "number" &&
                 Number.isFinite(entry[0]) &&
@@ -215,21 +178,11 @@ export class SessionBuffer {
       // Live records belong to another open document; leave them until they expire.
       if (!released && entries.some(([time]) => now - time <= MAX_SESSION_BUFFER_AGE_MS)) continue;
       if (!this.#invalidate(key) || !released) continue;
-      for (const [time, envelopes, metadata] of entries) {
+      for (const [time, envelopes] of entries) {
+        if (now - time > MAX_SESSION_BUFFER_AGE_MS) continue;
         const body = JSON.stringify(envelopes);
-        const codes =
-          typeof metadata === "string" ||
-          (Array.isArray(metadata) &&
-            metadata.length === envelopes.length &&
-            metadata.every((code) => typeof code === "string"))
-            ? metadata
-            : undefined;
-        if (now - time > MAX_SESSION_BUFFER_AGE_MS) {
-          this.#onExpired?.(body, codes ?? "CLIENT_EXCEPTION");
-          continue;
-        }
         const id = this.#nextId++;
-        this.#entries.set(id, [time, body, false, undefined, codes]);
+        this.#entries.set(id, [time, body]);
         adopted.push([id, body]);
       }
     }
@@ -242,41 +195,15 @@ export class SessionBuffer {
     if (this.#disposed) return;
     this.#disposed = true;
     this.#unsubscribe();
-    this.#reconcile();
-    const invalidated = !this.#persisted.size || this.#invalidate(this.#key) || !this.#released;
-    if (invalidated) this.#persisted.clear();
-    this.#commitOutcomes();
-    this.#outcomes.clear();
-    for (const id of this.#entries.keys()) {
-      if (invalidated || !this.#persisted.has(id)) this.#drop(id);
-    }
+    this.#invalidate(this.#key);
+    this.#persisted.clear();
     this.#entries.clear();
     // Requests that settle later must not recreate the record.
     this.#live.clear();
   }
 
-  #drop(id: number): void {
-    const entry = this.#entries.get(id);
-    this.#entries.delete(id);
-    entry?.[3]?.();
-  }
-
   #invalidate(key: string): boolean {
     return this.#storage.removeItem(key) || this.#storage.setItem(key, "[0]");
-  }
-
-  #hasStaleCopy(id: number): boolean {
-    const stored = this.#persisted.get(id);
-    const entry = this.#entries.get(id);
-    return stored !== undefined && (entry?.[2] === true || stored !== entry?.[1]);
-  }
-
-  #commitOutcomes(): void {
-    for (const [id, callbacks] of this.#outcomes) {
-      if (this.#hasStaleCopy(id)) continue;
-      this.#outcomes.delete(id);
-      for (const callback of callbacks) callback();
-    }
   }
 
   /**
@@ -287,25 +214,24 @@ export class SessionBuffer {
     if (!this.#released) return;
     const read = this.#storage.getItem(this.#key);
     if (!read.success || (read.value !== null && read.value !== "[0]")) return;
-    for (const id of this.#persisted.keys()) {
+    for (const id of this.#persisted) {
       this.#entries.delete(id);
       this.#live.delete(id);
-      this.#outcomes.delete(id);
     }
     this.#released = false;
     this.#persisted.clear();
   }
 
-  #write(metadataOnly = false): void {
+  #write(): void {
     const now = Date.now();
-    const parts: [text: string, codes: DropCodes | undefined][] = [];
-    const persisted = new Map<number, string>();
+    const parts: string[] = [];
+    const persisted = new Set<number>();
     const dropped: number[] = [];
     let length = 0;
     // Newest first, so the oldest batches are evicted even when adopted records interleave.
     const entries = [...this.#entries].sort(([, [left]], [, [right]]) => left - right).reverse();
     let full = false;
-    for (const [id, [time, body, dispatched, , codes]] of entries) {
+    for (const [id, [time, body, dispatched]] of entries) {
       if (dispatched) continue;
       const part = `[${time},${body}]`;
       // Once a batch overflows, it and every older batch are evicted. A batch that cannot fit
@@ -320,40 +246,16 @@ export class SessionBuffer {
         continue;
       }
       length += part.length + 1;
-      parts.unshift([part, codes]);
-      persisted.set(id, body);
+      parts.unshift(part);
+      persisted.add(id);
     }
-    // Optional accounting must not evict payloads that already fit.
-    let hasMetadata = false;
-    const serialized = parts.map(([part, codes]) => {
-      if (codes === undefined) return part;
-      const extra = `,${JSON.stringify(codes)}`;
-      if (length + extra.length > MAX_SESSION_BUFFER_LENGTH) return part;
-      length += extra.length;
-      hasMetadata = true;
-      return `${part.slice(0, -1)}${extra}]`;
-    });
     const stored =
       parts.length > 0 &&
-      this.#storage.setItem(
-        this.#key,
-        `[${pageHidden ? 1 : 0},${serialized.join(",")}]`,
-        hasMetadata
-          ? `[${pageHidden ? 1 : 0},${parts.map(([part]) => part).join(",")}]`
-          : undefined,
-        metadataOnly,
-      );
-    if (!stored && metadataOnly) return;
+      this.#storage.setItem(this.#key, `[${pageHidden ? 1 : 0},${parts.join(",")}]`);
     // A failed write is not terminal while an older record may still be adopted.
     if (!stored && this.#persisted.size && !this.#invalidate(this.#key)) return;
     this.#released = stored && pageHidden;
-    this.#persisted = stored ? persisted : new Map<number, string>();
-    for (const id of dropped) this.#drop(id);
-    if (!stored) {
-      for (const [id, entry] of this.#entries) {
-        if (entry[3]) this.#drop(id);
-      }
-    }
-    this.#commitOutcomes();
+    this.#persisted = stored ? persisted : new Set<number>();
+    for (const id of dropped) this.#entries.delete(id);
   }
 }

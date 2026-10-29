@@ -16,7 +16,7 @@ import { Sender } from "../../../src/exporter/sender.js";
 import { spanToEnvelopes } from "../../../src/exporter/spanUtils.js";
 import { beginUnloading, endUnloading } from "../../../src/exporter/common.js";
 import {
-  MAX_LIFECYCLE_WAIT_MS,
+  MAX_FLUSH_WAIT_MS,
   MAX_SEND_ATTEMPTS,
   MAX_SHUTDOWN_WAIT_MS,
 } from "../../../src/exporter/constants.js";
@@ -34,7 +34,6 @@ import {
 } from "../../../src/exporter/sessionBuffer.js";
 import { setSessionStorage, testSessionStorage } from "../../fixtures/sessionStorageSetup.js";
 import { isSdkIngestionUrl, rememberSdkIngestionUrl } from "../../../src/shared/globalOwnership.js";
-import { useMicrosoftOpenTelemetry } from "../../../src/index.js";
 import { getInternalSdkStatsConfiguration } from "../../fixtures/sdkStatsConfigurationMock.js";
 
 const endpoint = "https://customer.example.test";
@@ -522,7 +521,6 @@ it("does not count an in-flight batch as dropped when its buffer copy is evicted
   await client.shutdown();
   expect(totals()).toEqual({
     "Item_Success_Count:DEPENDENCY": 1,
-    "Item_Dropped_Count:DEPENDENCY:PAYLOAD_TOO_LARGE": 2,
   });
 });
 
@@ -555,7 +553,6 @@ it.each(["void", "throws", "promise"] as const)(
     expect(callback).toHaveBeenCalledOnce();
     expect(totals()).toEqual({
       "Item_Success_Count:DEPENDENCY": 1,
-      "Item_Dropped_Count:REQUEST:503": 1,
     });
   },
 );
@@ -624,7 +621,7 @@ it("reports collected counts despite a hung flush without cancelling application
   const finishSecond = holdNextFetch();
   const sending = exportAsync(client, request([SpanKind.SERVER]).envelopes);
   await vi.waitFor(() => expect(totals()).toEqual({ "Item_Success_Count:DEPENDENCY": 1 }));
-  await clock.advance(MAX_LIFECYCLE_WAIT_MS);
+  await clock.advance(MAX_FLUSH_WAIT_MS);
   await flushing;
   expect(fetch.mock.calls[1][1]?.signal?.aborted).toBe(false);
   expect(fetch.mock.calls[3][1]?.signal?.aborted).toBe(false);
@@ -663,107 +660,11 @@ it.each([20, 30])(
   },
 );
 
-it("reports owned stats while shutdown waits for an unrelated active flush", async () => {
-  const clock = installFakeClock();
-  const handle = await useMicrosoftOpenTelemetry({
-    azureMonitor: { connectionString, sdkStats: { enabled: true } },
-    spanProcessors: [],
-    logRecordProcessors: [
-      {
-        onEmit() {},
-        forceFlush: () => new Promise(() => {}),
-        shutdown: async () => {},
-      },
-    ],
-    pageView: { enabled: false },
-    session: { enabled: false },
-  });
-  owners.push(handle);
-  const response = new Response(null);
-  vi.spyOn(response, "text").mockResolvedValue("");
-  fetch.mockResolvedValueOnce(response);
-  logs.getLogger("mixed-processors").emit({ body: "retained count" });
-  const flushing = expect(handle.forceFlush()).rejects.toThrow("Operation timed out");
-  await clock.advance(0);
-  const shutdown = expect(handle.shutdown()).rejects.toThrow("Operation timed out");
-  await vi.waitFor(() => expect(totals()).toEqual({ "Item_Success_Count:TRACE": 1 }));
-  await clock.advance(30_000);
-  await Promise.all([flushing, shutdown]);
-  expect(vi.getTimerCount()).toBe(0);
-});
-
-it("shares the drain deadline with a late interval report and its follow-up", async () => {
-  const clock = installFakeClock();
-  getInternalSdkStatsConfiguration.mockReturnValue({
-    instrumentationKey: TEST_INSTRUMENTATION_KEY,
-    endpoint: "https://internal.example.test/v2/track",
-    collectionIntervalMillis: 14000,
-  });
-  const client = createClient({
-    connectionString,
-    sdkStats: { enabled: true, collectionIntervalMillis: 14000 },
-  });
-  await exportAsync(client, request().envelopes);
-  const normal = fetch.getMockImplementation()!;
-  const finish = holdNextFetch();
-  const sending = exportAsync(client, request().envelopes);
-  fetch.mockImplementation(() => new Promise(() => {}));
-  await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
-  const start = performance.now();
-  const settled = vi.fn();
-  const flush = client.forceFlush().then(settled);
-  await clock.advance(14500);
-  finish(new Response(null));
-  await sending;
-  await clock.advance(start + MAX_LIFECYCLE_WAIT_MS - performance.now());
-  await flush;
-  expect(settled).toHaveBeenCalledOnce();
-  expect(fetch.mock.calls.slice(2).every(([, init]) => init?.signal?.aborted)).toBe(true);
-  fetch.mockImplementation(normal);
-  await client.shutdown();
-  expect(vi.getTimerCount()).toBe(0);
-});
-
-it.each(["logs", "spans"] as const)(
-  "bounds default %s processor shutdown and final reports together",
-  async (signal) => {
-    const clock = installFakeClock();
-    const handle = await useMicrosoftOpenTelemetry({
-      azureMonitor: { connectionString, sdkStats: { enabled: true } },
-      pageView: { enabled: false },
-      session: { enabled: false },
-      ...(signal === "logs" ? { spanProcessors: [] } : { logRecordProcessors: [] }),
-    });
-    owners.push(handle);
-    fetch.mockImplementation(() => new Promise(() => {}));
-    if (signal === "logs") logs.getLogger("deadline").emit({ body: "pending" });
-    else trace.getTracer("deadline").startSpan("pending").end();
-    const stopped = vi.fn();
-    const result = handle
-      .shutdown()
-      .then(
-        () => undefined,
-        (error: unknown) => error,
-      )
-      .finally(stopped);
-    await clock.advance(MAX_LIFECYCLE_WAIT_MS);
-    expect(stopped).toHaveBeenCalledOnce();
-    expect(await result).toBeInstanceOf(Error);
-    expect(fetch).toHaveBeenCalledTimes(2);
-    expect(fetch.mock.calls.every(([, init]) => init?.signal?.aborted)).toBe(true);
-    const [url, init] = fetch.mock.calls[1];
-    const metrics: AzureMonitorEnvelope<MetricData>[] = await new Request(url, init).json();
-    expect(metrics[0].data.baseData.metrics[0]).toMatchObject({
-      name: "Item_Dropped_Count",
-      value: 1,
-    });
-    expect(vi.getTimerCount()).toBe(0);
-  },
-);
-
 it("lets shutdown own final reports when an earlier flush is still draining", async () => {
   const clock = installFakeClock();
-  const client = createClient();
+  const options = { connectionString, sdkStats: { enabled: true } };
+  sessionBufferStorage.set(options, null);
+  const client = createClient(options);
   fetch.mockImplementation(() => new Promise(() => {}));
   client.export(request().envelopes, () => {});
   const flushing = expect(client.forceFlush()).rejects.toThrow("shutdown timed out");
@@ -781,7 +682,9 @@ it.each(["fetch", "body", "retry"] as const)(
   "cancels a hung %s at shutdown and reports its outcome once",
   async (phase) => {
     const clock = installFakeClock();
-    const client = createClient();
+    const options = { connectionString, sdkStats: { enabled: true } };
+    sessionBufferStorage.set(options, null);
+    const client = createClient(options);
     const finish = phase === "fetch" ? holdNextFetch() : () => {};
     if (phase !== "fetch") {
       const response = new Response(null, { status: 503, headers: { "retry-after": "30" } });
@@ -854,7 +757,9 @@ it.each(["available", "disabled", "unavailable", "quota"] as const)(
       ...(storage === "available" ? {} : { "Item_Dropped_Count:REQUEST:503": 1 }),
     });
     await client.shutdown();
-    expect(totals()["Item_Dropped_Count:REQUEST:503"]).toBe(1);
+    expect(totals()["Item_Dropped_Count:REQUEST:503"]).toBe(
+      storage === "available" ? undefined : 1,
+    );
   },
 );
 

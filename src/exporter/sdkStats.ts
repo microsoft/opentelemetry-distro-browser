@@ -33,8 +33,8 @@ export interface InternalSdkStats {
   updateEndpoint(endpoint: string): void;
   countResponse(status: number, duration: number, endpoint?: string): void;
   countException(error: unknown, endpoint?: string): void;
-  forceFlush(deadline?: number): Promise<void>;
-  shutdown(pending?: Promise<unknown>, deadline?: number): Promise<void>;
+  forceFlush(): Promise<void>;
+  shutdown(pending?: Promise<unknown>): Promise<void>;
 }
 
 export function createInternalSdkStats(
@@ -112,18 +112,14 @@ export function createInternalSdkStats(
     schedule();
   }
 
-  function forceFlush(deadline?: number): Promise<void> {
-    const operation =
-      flushing && (counts.size || requests)
-        ? flushing.then(() => startReport(deadline))
-        : startReport(deadline);
-    return withReportDeadline(operation, sending, deadline);
+  function forceFlush(): Promise<void> {
+    return flushing && (counts.size || requests) ? flushing.then(startReport) : startReport();
   }
 
-  function startReport(deadline?: number): Promise<void> {
+  function startReport(): Promise<void> {
     if (!flushing) {
       clearTimer();
-      flushing = flush(isUnloading(), deadline)
+      flushing = flush(isUnloading())
         .catch(reportFailure)
         .finally(() => {
           flushing = undefined;
@@ -133,15 +129,15 @@ export function createInternalSdkStats(
     return flushing;
   }
 
-  async function shutdown(pending?: Promise<unknown>, deadline?: number): Promise<void> {
+  async function shutdown(pending?: Promise<unknown>): Promise<void> {
     stopped = true;
     clearTimer();
     try {
       await pending;
     } finally {
       try {
-        await withReportDeadline(flushing, sending, deadline);
-        await forceFlush(deadline);
+        await flushing;
+        await forceFlush();
       } finally {
         disabled = true;
         counts.clear();
@@ -167,7 +163,7 @@ export function createInternalSdkStats(
     }, interval);
   }
 
-  async function flush(unloading: boolean, deadline?: number): Promise<void> {
+  async function flush(unloading: boolean): Promise<void> {
     const currentRoute = route;
     if (disabled || !currentRoute || (!counts.size && !requests)) return;
     const envelopes: AzureMonitorEnvelope<MetricData>[] = [];
@@ -202,7 +198,7 @@ export function createInternalSdkStats(
     }));
     const controller = (sending = new AbortController());
     try {
-      await sendSdkStats(statsSender, envelopes, controller, unloading, undefined, deadline);
+      await sendSdkStats(statsSender, envelopes, controller, unloading);
     } finally {
       sending = undefined;
       if (statsSender !== sender) statsSender.dispose();
@@ -237,11 +233,8 @@ export async function sendSdkStats(
   controller: AbortController,
   unloading: boolean,
   callbacks?: Pick<SendRequest, "onResponse" | "onPartial">,
-  deadline = Infinity,
 ): Promise<void> {
   try {
-    const remaining = Math.min(10_000, deadline - performance.now());
-    if (remaining <= 0) throw new Error("SDK stats deadline exceeded.");
     const result = await callWithTimeout(
       sender.send({
         ...callbacks,
@@ -253,7 +246,7 @@ export async function sendSdkStats(
         sdkStats: true,
         retry: false,
       }),
-      remaining,
+      10_000,
     );
     if (
       result.transport === "fetch" &&
@@ -264,18 +257,6 @@ export async function sendSdkStats(
   } finally {
     controller.abort();
   }
-}
-
-/** A lifecycle join can shorten a report that started on its ordinary interval. */
-export function withReportDeadline(
-  operation: Promise<void> | undefined,
-  controller: AbortController | undefined,
-  deadline?: number,
-): Promise<void> {
-  if (!operation) return Promise.resolve();
-  if (!controller || deadline === undefined) return operation;
-  const timer = setTimeout(() => controller.abort(), Math.max(0, deadline - performance.now()));
-  return operation.finally(() => clearTimeout(timer));
 }
 
 function resolveRoute(

@@ -3,7 +3,7 @@
 
 import type { ExportResult } from "@opentelemetry/core";
 import type { LogRecordExporter, ReadableLogRecord } from "@opentelemetry/sdk-logs";
-import { AzureMonitorExportClient, exporterClients, type AzureMonitorOptions } from "./base.js";
+import { AzureMonitorExportClient, type AzureMonitorOptions } from "./base.js";
 import { logItemType, appendLogEnvelopes } from "./logUtils.js";
 import { customerSdkStats } from "./customerSdkStats.js";
 
@@ -15,8 +15,8 @@ import { customerSdkStats } from "./customerSdkStats.js";
  * Application and inherited span contexts retain their parent-ID mapping.
  * Built-in page-view diagnostics remain on OpenTelemetry records but are omitted from
  * Azure Monitor custom properties and measurements.
- * Shutdown allows 15 seconds for application exports, reserving time for final SDK Stats reports
- * within the enclosing processor's 30-second cleanup deadline.
+ * Shutdown allows 15 seconds for outstanding application exports, followed by best-effort
+ * SDK Stats reporting. Enclosing processors may impose their own deadlines.
  *
  * @public
  */
@@ -26,7 +26,6 @@ export class AzureMonitorLogRecordExporter implements LogRecordExporter {
   /** Standalone export requires a resolved string; the distribution owns startup buffering. */
   public constructor(options: AzureMonitorOptions) {
     this.#client = new AzureMonitorExportClient(options);
-    exporterClients.set(this, this.#client);
     if (this.#client.itemStats) customerSdkStats.set(this, this.#client.itemStats);
   }
 

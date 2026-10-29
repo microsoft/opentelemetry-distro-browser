@@ -7,12 +7,7 @@ import type { SpanExporter } from "@opentelemetry/sdk-trace-base";
 import { isRetriable } from "./breezeUtils.js";
 import { getSdkVersion, isUnloading } from "./common.js";
 import { Sender } from "./sender.js";
-import {
-  createSdkStatsEnvelope,
-  reportFailure,
-  sendSdkStats,
-  withReportDeadline,
-} from "./sdkStats.js";
+import { createSdkStatsEnvelope, reportFailure, sendSdkStats } from "./sdkStats.js";
 import { isSdkIngestionUrl } from "../shared/globalOwnership.js";
 import type { AzureMonitorEnvelope, MetricData } from "./telemetryModels.js";
 
@@ -21,10 +16,14 @@ import type { AzureMonitorEnvelope, MetricData } from "./telemetryModels.js";
  *
  * @remarks
  * Transport counters count envelopes. Queue and sampling drops count source records.
- * Standalone exporters observe only export outcomes.
+ * Standalone exporters count observed delivery, retry and terminal-drop outcomes, not a durable
+ * delivery ledger. Retained telemetry is not a drop; later buffer expiry or eviction is not counted.
+ * Cross-page drop attribution and deduplicated accounting after storage failures are deferred.
  * Reports bypass application pipelines and time out after 10 seconds.
  * Retryable counts remain in memory for the next report, but are not persisted across page loads.
  * Shutdown makes one final attempt after any in-flight report, then discards remaining counts.
+ * Reports are best-effort: page exit or enclosing processor deadlines may prevent completion,
+ * and retrying an unacknowledged report can duplicate counts.
  * @public
  */
 export interface AzureMonitorSdkStatsOptions {
@@ -67,8 +66,8 @@ export interface CustomerSdkStats {
     code?: string | readonly string[],
   ): void;
   shouldCollectLog: (record: ReadableLogRecord) => boolean;
-  forceFlush(deadline?: number): Promise<void>;
-  shutdown(pending?: Promise<unknown>, deadline?: number): Promise<void>;
+  forceFlush(): Promise<void>;
+  shutdown(pending?: Promise<unknown>): Promise<void>;
 }
 
 // Keeps stats off the public exporter API.
@@ -123,7 +122,6 @@ export function createCustomerSdkStats(
   const sender = new Sender({ endpoint: ingestionEndpoint, disableBeacon: true });
   let timer: ReturnType<typeof setTimeout> | undefined;
   let flushing: Promise<void> | undefined;
-  let sending: AbortController | undefined;
   let shutdownPromise: Promise<void> | undefined;
   let stopping = false;
   let stopped = false;
@@ -151,14 +149,12 @@ export function createCustomerSdkStats(
     }
   }
 
-  function forceFlush(deadline?: number): Promise<void> {
+  function forceFlush(): Promise<void> {
     // Include counters collected behind an older report without retrying failures in a loop.
-    const operation =
-      flushing && counts.size ? flushing.then(() => flush(deadline)) : flush(deadline);
-    return withReportDeadline(operation, sending, deadline);
+    return flushing && counts.size ? flushing.then(flush) : flush();
   }
 
-  function flush(deadline?: number): Promise<void> {
+  function flush(): Promise<void> {
     if (flushing) return flushing;
     clearTimeout(timer);
     timer = undefined;
@@ -179,25 +175,18 @@ export function createCustomerSdkStats(
       );
     }
     counts.clear();
-    const controller = (sending = new AbortController());
-    flushing = sendSdkStats(
-      sender,
-      [...pending.keys()],
-      controller,
-      isUnloading(),
-      {
-        onResponse: (status) => {
-          if (!isRetriable(status)) pending.clear();
-        },
-        onPartial: (remaining) => {
-          const retriable = new Set(remaining);
-          for (const envelope of pending.keys()) {
-            if (!retriable.has(envelope)) pending.delete(envelope);
-          }
-        },
+    const controller = new AbortController();
+    flushing = sendSdkStats(sender, [...pending.keys()], controller, isUnloading(), {
+      onResponse: (status) => {
+        if (!isRetriable(status)) pending.clear();
       },
-      deadline,
-    )
+      onPartial: (remaining) => {
+        const retriable = new Set(remaining);
+        for (const envelope of pending.keys()) {
+          if (!retriable.has(envelope)) pending.delete(envelope);
+        }
+      },
+    })
       .catch((error: unknown) => {
         for (const [key, value] of pending.values()) {
           counts.set(key, (counts.get(key) ?? 0) + value);
@@ -205,14 +194,13 @@ export function createCustomerSdkStats(
         reportFailure(error, "Customer SDK stats export failed");
       })
       .finally(() => {
-        sending = undefined;
         flushing = undefined;
         schedule();
       });
     return flushing;
   }
 
-  function shutdown(pending?: Promise<unknown>, deadline?: number): Promise<void> {
+  function shutdown(pending?: Promise<unknown>): Promise<void> {
     if (!shutdownPromise) {
       stopping = true;
       clearTimeout(timer);
@@ -221,8 +209,8 @@ export function createCustomerSdkStats(
         try {
           await pending;
         } finally {
-          await withReportDeadline(flushing, sending, deadline);
-          await flush(deadline);
+          await flushing;
+          await flush();
           stopped = true;
           counts.clear();
           sender.dispose();

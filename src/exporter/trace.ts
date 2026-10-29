@@ -3,7 +3,7 @@
 
 import type { ExportResult } from "@opentelemetry/core";
 import type { ReadableSpan, SpanExporter } from "@opentelemetry/sdk-trace-base";
-import { AzureMonitorExportClient, exporterClients, type AzureMonitorOptions } from "./base.js";
+import { AzureMonitorExportClient, type AzureMonitorOptions } from "./base.js";
 import { isUnloading } from "./common.js";
 import { appendSpanEnvelopes } from "./spanUtils.js";
 import { customerSdkStats, spanItemType } from "./customerSdkStats.js";
@@ -14,8 +14,8 @@ import { customerSdkStats, spanItemType } from "./customerSdkStats.js";
  * @remarks
  * Synthetic page-operation contexts supply an operation ID, but not a parent ID.
  * Application and inherited span contexts retain their parent-ID mapping.
- * Shutdown allows 15 seconds for application exports, reserving time for final SDK Stats reports
- * within the enclosing processor's 30-second cleanup deadline.
+ * Shutdown allows 15 seconds for outstanding application exports, followed by best-effort
+ * SDK Stats reporting. Enclosing processors may impose their own deadlines.
  *
  * @public
  */
@@ -25,7 +25,6 @@ export class AzureMonitorSpanExporter implements SpanExporter {
   /** Standalone export requires a resolved string; the distribution owns startup buffering. */
   public constructor(options: AzureMonitorOptions) {
     this.#client = new AzureMonitorExportClient(options);
-    exporterClients.set(this, this.#client);
     if (this.#client.itemStats) customerSdkStats.set(this, this.#client.itemStats);
   }
 

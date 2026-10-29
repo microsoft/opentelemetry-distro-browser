@@ -9,7 +9,7 @@ import { isValidInstrumentationKey, parseConnectionString } from "./connectionSt
 import {
   MAX_BATCH_SIZE_IN_BYTES,
   MAX_BEACON_BODY_SIZE,
-  MAX_LIFECYCLE_WAIT_MS,
+  MAX_FLUSH_WAIT_MS,
   MAX_PENDING_KEEPALIVE_BODY_SIZE,
   MAX_SHUTDOWN_WAIT_MS,
 } from "./constants.js";
@@ -31,8 +31,6 @@ const noop = (): void => {};
 
 /** Internal per-destination policy; standalone exporter options remain startup-only. */
 export const unloadBeaconPolicies = new WeakMap<object, () => boolean>();
-/** Coordinates owned processor shutdown without exposing controls on the public exporters. */
-export const exporterClients = new WeakMap<object, AzureMonitorExportClient>();
 
 /**
  * Azure Monitor destination configuration.
@@ -69,8 +67,6 @@ export class AzureMonitorExportClient {
   readonly #buffer: SessionBuffer | undefined;
   readonly #controller = new AbortController();
   #shutdown: Promise<void> | undefined;
-  #shutdownStarted: number | undefined;
-  #shutdownTimer: ReturnType<typeof setTimeout> | undefined;
 
   public constructor(options: AzureMonitorOptions) {
     const { instrumentationKey, ingestionEndpoint } = parseConnectionString(
@@ -100,13 +96,7 @@ export class AzureMonitorExportClient {
     this.#buffer =
       storage === null
         ? undefined
-        : new SessionBuffer(`${instrumentationKey}|${ingestionEndpoint}`, storage, (body, codes) =>
-            this.itemStats?.countEnvelopes(
-              "Dropped",
-              JSON.parse(body) as AzureMonitorEnvelope[],
-              codes,
-            ),
-          );
+        : new SessionBuffer(`${instrumentationKey}|${ingestionEndpoint}`, storage);
     for (const [id, body] of this.#buffer?.adopt() ?? []) {
       this.#track(
         this.#send(body, JSON.parse(body) as AzureMonitorEnvelope[], false, id).then(noop, noop),
@@ -181,14 +171,9 @@ export class AzureMonitorExportClient {
     const { requests, dropped, error } = batchResult;
     // Envelopes that cannot fit the unload beacon wait for the next page load.
     if (dropped.length > 0) {
-      const codes = this.itemStats ? "PAYLOAD_TOO_LARGE" : undefined;
-      const id = this.#buffer?.add(JSON.stringify(dropped), Date.now(), codes);
-      if (this.itemStats) {
-        const onDrop = (): void => {
-          this.itemStats?.countEnvelopes("Dropped", dropped, "PAYLOAD_TOO_LARGE");
-        };
-        if (id === undefined || !this.#buffer?.retain(id, onDrop, "PAYLOAD_TOO_LARGE")) onDrop();
-      }
+      const id = this.#buffer?.add(JSON.stringify(dropped));
+      if (id === undefined || !this.#buffer?.retain(id))
+        this.itemStats?.countEnvelopes("Dropped", dropped, "PAYLOAD_TOO_LARGE");
     }
     if (error) {
       callback({ code: ExportResultCode.FAILED, error });
@@ -239,8 +224,8 @@ export class AzureMonitorExportClient {
     let outstanding = body;
     /** Ingestion accepted or permanently rejected the batch. */
     let final = false;
-    const settle = (keep: boolean, codes?: string | readonly string[]): void => {
-      if (id !== undefined) this.#buffer?.settle(id, outstanding, keep, codes);
+    const settle = (keep: boolean): void => {
+      if (id !== undefined) this.#buffer?.settle(id, outstanding, keep);
     };
     const end = (): void => {
       if (id !== undefined) this.#buffer?.end(id);
@@ -256,26 +241,21 @@ export class AzureMonitorExportClient {
         onDispatch: () => {
           if (id !== undefined) this.#buffer?.dispatch(id);
         },
-        onPartial: (rest, codes) => {
+        onPartial: (rest) => {
           if (rest.length > 0) outstanding = JSON.stringify(rest);
-          settle(rest.length > 0, this.itemStats ? codes : undefined);
+          settle(rest.length > 0);
         },
         // A known status settles the batch even if its body cannot be read. A partial response
         // keeps the whole batch, including a dispatched one, until `onPartial` narrows it.
         onResponse: (status) => {
           final = status !== 206 && !isRetriable(status);
-          settle(!final, this.itemStats && !final ? String(status) : undefined);
+          settle(!final);
         },
-        onNetworkError: () => settle(true, this.itemStats ? "CLIENT_EXCEPTION" : undefined),
         // Stop retrying a batch another document adopted and delivered.
         active: () => id === undefined || this.#buffer?.owns(id) !== false,
-        account: (onFinal) => {
-          if (id === undefined) onFinal();
-          else this.#buffer?.account(id, onFinal);
-        },
-        retain: (onDrop, codes) => {
+        retain: () => {
           settle(true);
-          return id !== undefined && this.#buffer?.retain(id, onDrop, codes) === true;
+          return id !== undefined && this.#buffer?.retain(id) === true;
         },
       })
       .then(
@@ -298,22 +278,11 @@ export class AzureMonitorExportClient {
     this.#pending.add(tracked);
   }
 
-  /** Starts cancellation before processors wait for their outstanding export callbacks. */
-  public prepareShutdown(): number {
-    if (this.#shutdownStarted === undefined) {
-      this.#shutdownStarted = performance.now();
-      this.#shutdownTimer = setTimeout(() => this.#controller.abort(), MAX_SHUTDOWN_WAIT_MS);
-    }
-    return this.#shutdownStarted;
-  }
-
   async #drain(): Promise<unknown[]> {
     const pending = Promise.allSettled([...this.#pending]);
     try {
       // A flush timeout stops waiting, not delivery. Only shutdown cancels application exports.
-      const results = await (this.#stopped
-        ? pending
-        : callWithTimeout(pending, MAX_LIFECYCLE_WAIT_MS));
+      const results = await (this.#stopped ? pending : callWithTimeout(pending, MAX_FLUSH_WAIT_MS));
       const errors = results.flatMap((result) =>
         result.status === "rejected" ? [result.reason as unknown] : [],
       );
@@ -326,10 +295,9 @@ export class AzureMonitorExportClient {
 
   public forceFlush(): Promise<void> {
     if (this.#stopped) return this.#shutdown ?? Promise.resolve();
-    const deadline = (this.#shutdownStarted ?? performance.now()) + MAX_LIFECYCLE_WAIT_MS;
     const report = () =>
       waitForAll(
-        [this.itemStats?.forceFlush(deadline), this.#stats.forceFlush(deadline)],
+        [this.itemStats?.forceFlush(), this.#stats.forceFlush()],
         "SDK stats flush failed",
       );
     // Already-collected counts must not wait behind a different hung export.
@@ -349,19 +317,19 @@ export class AzureMonitorExportClient {
   public shutdown(): Promise<void> {
     if (this.#shutdown) return this.#shutdown;
     if (this.#stopped) return Promise.resolve();
-    const deadline = this.prepareShutdown() + MAX_LIFECYCLE_WAIT_MS;
     this.#stopped = true;
+    const timer = setTimeout(() => this.#controller.abort(), MAX_SHUTDOWN_WAIT_MS);
     const pending = this.#drain().finally(() => this.#buffer?.dispose());
     this.#shutdown = waitForAll(
       [
         pending.then((errors) => throwErrors(errors, "Pending exports failed")),
-        this.#stats.shutdown(pending, deadline),
-        this.itemStats?.shutdown(pending, deadline),
+        this.#stats.shutdown(pending),
+        this.itemStats?.shutdown(pending),
       ],
       "Exporter shutdown failed",
     ).finally(() => {
       this.#shutdown = undefined;
-      clearTimeout(this.#shutdownTimer);
+      clearTimeout(timer);
       this.#sender.dispose();
     });
     return this.#shutdown;
