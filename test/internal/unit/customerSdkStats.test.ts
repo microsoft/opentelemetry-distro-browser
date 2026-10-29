@@ -588,7 +588,9 @@ it.each(["available", "disabled", "unavailable", "quota", "oversized"] as const)
       endUnloading();
     }
     expect(totals()).toEqual({
-      ...(storage === "available" ? {} : { "Item_Dropped_Count:TRACE:PAYLOAD_TOO_LARGE": 1 }),
+      ...(["disabled", "oversized"].includes(storage)
+        ? { "Item_Dropped_Count:TRACE:PAYLOAD_TOO_LARGE": 1 }
+        : {}),
       "Item_Success_Count:DEPENDENCY": 1,
     });
   },
@@ -754,12 +756,10 @@ it.each(["available", "disabled", "unavailable", "quota"] as const)(
       "Item_Success_Count:DEPENDENCY": 1,
       "Item_Dropped_Count:DEPENDENCY:400": 1,
       "Item_Dropped_Count:REQUEST:SAMPLING": 1,
-      ...(storage === "available" ? {} : { "Item_Dropped_Count:REQUEST:503": 1 }),
+      ...(storage === "disabled" ? { "Item_Dropped_Count:REQUEST:503": 1 } : {}),
     });
     await client.shutdown();
-    expect(totals()["Item_Dropped_Count:REQUEST:503"]).toBe(
-      storage === "available" ? undefined : 1,
-    );
+    expect(totals()["Item_Dropped_Count:REQUEST:503"]).toBe(storage === "disabled" ? 1 : undefined);
   },
 );
 

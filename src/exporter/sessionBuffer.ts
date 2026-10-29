@@ -103,14 +103,11 @@ export class SessionBuffer {
     return this.#live.has(id);
   }
 
-  /** Whether a batch is retained for replay, rather than an observed terminal drop. */
+  /** Whether a batch remains buffered in memory or storage, rather than discarded. */
   public retain(id: number): boolean {
     this.#reconcile();
     const entry = this.#entries.get(id);
-    if (this.#persisted.has(id) && entry && !entry[2]) return true;
-    // A caller reporting a terminal drop must never have this batch restored by a later write.
-    this.#entries.delete(id);
-    return false;
+    return !!entry && !entry[2];
   }
 
   /** Buffers a serialized envelope array and returns its ID. */

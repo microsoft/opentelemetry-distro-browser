@@ -17,7 +17,7 @@ import type { AzureMonitorEnvelope, MetricData } from "./telemetryModels.js";
  * @remarks
  * Transport counters count envelopes. Queue and sampling drops count source records.
  * Standalone exporters count observed delivery, retry and terminal-drop outcomes, not a durable
- * delivery ledger. Retained telemetry is not a drop; later buffer expiry or eviction is not counted.
+ * delivery ledger. Telemetry retained in memory or storage is not a drop; later expiry or eviction is not counted.
  * Cross-page drop attribution and deduplicated accounting after storage failures are deferred.
  * Reports bypass application pipelines and time out after 10 seconds.
  * Retryable counts remain in memory for the next report, but are not persisted across page loads.

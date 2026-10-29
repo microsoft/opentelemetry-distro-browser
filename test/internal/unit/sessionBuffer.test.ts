@@ -779,7 +779,7 @@ describe("Azure Monitor sessionStorage buffer", () => {
     });
     expect(() => buffer.add('[{"name":"second"}]')).not.toThrow();
     expect(storage.length).toBe(0);
-    expect(buffer.retain(first)).toBe(false);
+    expect(buffer.retain(first)).toBe(true);
     expect(() => buffer.settle(first, "", false)).not.toThrow();
     // Later batches back off instead of retrying the failing write each time.
     buffer.add('[{"name":"third"}]');
@@ -914,7 +914,7 @@ describe("Azure Monitor sessionStorage buffer", () => {
   });
 
   it.each(["payload", "partial", "retry"] as const)(
-    "never restores a terminal %s drop after a transient storage failure",
+    "keeps recoverable %s telemetry with stats enabled after a transient storage failure",
     async (mode) => {
       vi.spyOn(diag, "warn").mockImplementation(() => {});
       const write = vi.spyOn(testSessionStorage, "setItem").mockImplementation(() => {
@@ -929,8 +929,8 @@ describe("Azure Monitor sessionStorage buffer", () => {
       const count = vi.spyOn(client.itemStats!, "countEnvelopes");
       const item =
         mode === "payload"
-          ? { ...envelope("terminal"), tags: { large: "x".repeat(MAX_BEACON_BODY_SIZE) } }
-          : envelope("terminal");
+          ? { ...envelope("recoverable"), tags: { large: "x".repeat(MAX_BEACON_BODY_SIZE) } }
+          : envelope("recoverable");
       if (mode !== "retry") beginUnloading();
       try {
         await expect(exportAsync(client, [item])).resolves.toMatchObject({
@@ -939,16 +939,16 @@ describe("Azure Monitor sessionStorage buffer", () => {
       } finally {
         if (mode !== "retry") endUnloading();
       }
-      expect(count.mock.calls.filter(([outcome]) => outcome === "Dropped")).toHaveLength(1);
+      expect(count.mock.calls.filter(([outcome]) => outcome === "Dropped")).toHaveLength(0);
       write.mockRestore();
       vi.spyOn(Date, "now").mockReturnValue(Date.now() + 61_000);
       hidePage();
-      expect(bufferKeys()).toEqual([]);
+      expect(bufferKeys()).toHaveLength(1);
       loadPage();
       const fetch = stubFetch();
       await createClient().forceFlush();
-      expect(fetch).not.toHaveBeenCalled();
-      expect(count.mock.calls.filter(([outcome]) => outcome === "Dropped")).toHaveLength(1);
+      expect(sentNames(fetch)).toEqual([["recoverable"]]);
+      expect(count.mock.calls.filter(([outcome]) => outcome === "Dropped")).toHaveLength(0);
     },
   );
 
