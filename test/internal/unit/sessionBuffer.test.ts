@@ -149,6 +149,31 @@ afterEach(async () => {
 });
 
 describe("Azure Monitor sessionStorage buffer", () => {
+  it("recovers an unpersisted oversized batch without stats after storage becomes writable", async () => {
+    vi.spyOn(diag, "warn").mockImplementation(() => {});
+    const write = vi.spyOn(testSessionStorage, "setItem").mockImplementation(() => {
+      throw new DOMException("Quota exceeded", "QuotaExceededError");
+    });
+    const client = createClient({ sdkStats: { enabled: false } });
+    const item = { ...envelope("recoverable"), tags: { large: "x".repeat(MAX_BEACON_BODY_SIZE) } };
+    beginUnloading();
+    try {
+      await expect(exportAsync(client, [item])).resolves.toMatchObject({
+        code: ExportResultCode.FAILED,
+      });
+    } finally {
+      endUnloading();
+    }
+    expect(bufferKeys()).toEqual([]);
+    write.mockRestore();
+    vi.spyOn(Date, "now").mockReturnValue(Date.now() + 61_000);
+    hidePage();
+    loadPage();
+    const fetch = stubFetch();
+    await createClient().forceFlush();
+    expect(sentNames(fetch)).toEqual([["recoverable"]]);
+  });
+
   it.each(["expiry", "shutdown", "replay"] as const)(
     "keeps retained telemetry out of drop counters when its later outcome is %s",
     async (outcome) => {

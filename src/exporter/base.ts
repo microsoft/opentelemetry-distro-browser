@@ -172,8 +172,8 @@ export class AzureMonitorExportClient {
     // Envelopes that cannot fit the unload beacon wait for the next page load.
     if (dropped.length > 0) {
       const id = this.#buffer?.add(JSON.stringify(dropped));
-      if (id === undefined || !this.#buffer?.retain(id))
-        this.itemStats?.countEnvelopes("Dropped", dropped, "PAYLOAD_TOO_LARGE");
+      if (this.itemStats && (id === undefined || !this.#buffer?.retain(id)))
+        this.itemStats.countEnvelopes("Dropped", dropped, "PAYLOAD_TOO_LARGE");
     }
     if (error) {
       callback({ code: ExportResultCode.FAILED, error });

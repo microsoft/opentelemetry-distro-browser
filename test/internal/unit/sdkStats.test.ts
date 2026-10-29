@@ -477,14 +477,14 @@ it.each([true, false])(
   },
 );
 
-it("sends stats using keepalive without disclosing the page referrer", async () => {
+it("sends large unload reports without taking application keepalive space or disclosing referrers", async () => {
   const stats = createStats();
   stats.countResponse(200, 10);
   beginUnloading();
   try {
     await stats.forceFlush();
     expect(transport.mock.calls[0][1]).toMatchObject({
-      keepalive: true,
+      keepalive: false,
       credentials: "omit",
       referrerPolicy: "no-referrer",
     });
@@ -505,7 +505,7 @@ it("does not fall back to beacon because beacon cannot suppress private page ref
   try {
     await stats.forceFlush();
     const [, init] = transport.mock.calls.at(-1)!;
-    expect(init?.keepalive).toBe(true);
+    expect(init?.keepalive).toBe(false);
     expect(beacon).not.toHaveBeenCalled();
     expect(diag.warn).toHaveBeenCalledWith(
       "SDK stats export failed",

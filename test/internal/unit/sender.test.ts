@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { MAX_RETRY_WAIT_MS } from "../../../src/exporter/constants.js";
+import { MAX_BEACON_BODY_SIZE, MAX_RETRY_WAIT_MS } from "../../../src/exporter/constants.js";
 import { Sender } from "../../../src/exporter/sender.js";
 import type { AzureMonitorEnvelope } from "../../../src/exporter/telemetryModels.js";
 import { installFakeClock } from "../../fixtures/clock.js";
@@ -13,7 +13,7 @@ afterEach(() => {
 });
 
 describe("Sender", () => {
-  it.each([4096, 4097])(
+  it.each([536, 537, 3000])(
     "keeps the application unload allowance when a %i-byte stats report starts first",
     async (size) => {
       let release!: () => void;
@@ -24,10 +24,14 @@ describe("Sender", () => {
             release = () => resolve(new Response(null));
           }),
       );
+      const beacon = vi.fn(
+        (_url: string | URL, body?: BodyInit | null) =>
+          body instanceof Blob && (size <= 536 ? size : 0) + body.size <= 65536,
+      );
       const sender = new Sender({
         endpoint: "https://example.test/v2/track",
         fetch,
-        disableBeacon: true,
+        sendBeacon: beacon,
       });
       const request = { contentType: "application/json", unloading: true };
       const stats = sender.send({ ...request, sdkStats: true, body: new Uint8Array(size) });
@@ -35,10 +39,14 @@ describe("Sender", () => {
         await sender.send({ ...request, body: new Uint8Array(60 * 1024) });
         await sender.send({ ...request, sdkStats: true, body: new Uint8Array(size) });
         expect(fetch.mock.calls.map(([, init]) => init?.keepalive)).toEqual([
-          size === 4096,
+          size <= 536,
           true,
           false,
         ]);
+        await expect(
+          sender.send({ ...request, body: new Uint8Array(MAX_BEACON_BODY_SIZE) }),
+        ).resolves.toEqual({ transport: "beacon" });
+        expect(beacon).toHaveBeenCalledOnce();
       } finally {
         release();
         await stats;
@@ -46,6 +54,41 @@ describe("Sender", () => {
       }
     },
   );
+
+  it("keeps a cancelled wait's reservation until the underlying request settles", async () => {
+    let release!: () => void;
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response(null));
+    fetch.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = () => resolve(new Response(null));
+        }),
+    );
+    const sender = new Sender({ endpoint: "https://example.test/v2/track", fetch });
+    const controller = new AbortController();
+    const request = {
+      contentType: "application/json",
+      unloading: true,
+      sdkStats: true,
+      body: new Uint8Array(512),
+    };
+    const pending = expect(
+      sender.send({ ...request, signal: controller.signal }),
+    ).rejects.toThrow();
+    try {
+      controller.abort();
+      await pending;
+      await sender.send(request);
+      expect(fetch.mock.calls[1][1]?.keepalive).toBe(false);
+      release();
+      await Promise.resolve();
+      await sender.send(request);
+      expect(fetch.mock.calls[2][1]?.keepalive).toBe(true);
+    } finally {
+      release();
+      sender.dispose();
+    }
+  });
 
   it.each([
     ["Wed, 01 Jan 2025 00:00:02 GMT", 2_000],

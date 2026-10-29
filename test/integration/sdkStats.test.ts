@@ -47,7 +47,7 @@ it.each(["index.js", "index.min.js"])(
       disableBeacon: true,
     });
     const request = { contentType: "application/json", unloading: true };
-    const pending = sender.send({ ...request, sdkStats: true, body: new Uint8Array(4096) });
+    const pending = sender.send({ ...request, sdkStats: true, body: new Uint8Array(536) });
     let handle: MicrosoftOpenTelemetryBrowser | undefined;
     try {
       handle = await distro.useMicrosoftOpenTelemetry({

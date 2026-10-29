@@ -349,11 +349,13 @@ export class Sender {
     assertActive(request);
     const signal = request.signal;
     let releaseAttempt: (() => void) | undefined;
+    let transport: Promise<unknown> | undefined;
     const unloading = request.unloading === true;
     const lane = request.sdkStats ? 1 : 0;
     const reservation = getKeepaliveReservations()[lane];
     const keepaliveAvailable =
-      reservation[0] + request.body.byteLength <= (lane ? 4096 : MAX_PENDING_KEEPALIVE_BODY_SIZE) &&
+      reservation[0] + request.body.byteLength <=
+        (lane ? 65536 - MAX_BEACON_BODY_SIZE : MAX_PENDING_KEEPALIVE_BODY_SIZE) &&
       reservation[1] < (lane ? 1 : MAX_PENDING_KEEPALIVE_REQUESTS);
     if (unloading && !keepaliveAvailable && !request.sdkStats) {
       return this.#sendWithBeacon(request);
@@ -393,6 +395,7 @@ export class Sender {
                 ...(signal ? { signal } : {}),
                 ...(request.sdkStats ? { credentials: "omit", referrerPolicy: "no-referrer" } : {}),
               });
+              transport = pending;
               if (retryCodes) {
                 this.#itemStats?.countEnvelopes("Retry", request.envelopes, retryCodes);
               }
@@ -424,7 +427,9 @@ export class Sender {
       const retryAfterMs = parseRetryAfterHeader(response.headers.get("retry-after"));
       let result: string;
       try {
-        result = await withAbort(response.text(), signal);
+        const body = response.text();
+        transport = body;
+        result = await withAbort(body, signal);
       } catch (error) {
         this.#stats?.countException(error, endpoint);
         onBodyError(response.status);
@@ -449,11 +454,16 @@ export class Sender {
         ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
       };
     } finally {
-      releaseAttempt?.();
-      if (useKeepalive) {
-        reservation[0] -= request.body.byteLength;
-        reservation[1]--;
-      }
+      const release = () => {
+        releaseAttempt?.();
+        if (useKeepalive) {
+          reservation[0] -= request.body.byteLength;
+          reservation[1]--;
+        }
+      };
+      // Cancelling our wait does not prove that a wrapper cancelled the browser request.
+      if (transport) void transport.then(release, release);
+      else release();
     }
   }
 

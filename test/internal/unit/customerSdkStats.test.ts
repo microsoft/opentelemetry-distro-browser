@@ -1023,7 +1023,7 @@ it("counts unload transport failures as drops and beacon queueing as success wit
   });
 });
 
-it("reports customer stats with keepalive but never falls back to beacon", async () => {
+it("reports customer stats on unload without falling back to beacon", async () => {
   const stats = create();
   const beacon = vi.spyOn(navigator, "sendBeacon");
   stats.count("Success", "TRACE");
@@ -1034,7 +1034,8 @@ it("reports customer stats with keepalive but never falls back to beacon", async
   } finally {
     endUnloading();
   }
-  expect(fetch.mock.calls[0][1]?.keepalive).toBe(true);
+  const body = fetch.mock.calls[0][1]?.body as Uint8Array;
+  expect(fetch.mock.calls[0][1]?.keepalive).toBe(body.byteLength <= 536);
   expect(beacon).not.toHaveBeenCalled();
   await stats.forceFlush();
   expect(fetch).toHaveBeenCalledTimes(2);

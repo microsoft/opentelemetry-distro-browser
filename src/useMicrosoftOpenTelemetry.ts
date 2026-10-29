@@ -10,6 +10,7 @@ import { createSession } from "./session/createSession.js";
 import { createUserContext } from "./user/createUserContext.js";
 import { createKeyValueStorage } from "./storage/keyValueStorage.js";
 import { createSessionBufferStorage, sessionBufferStorage } from "./exporter/sessionBuffer.js";
+import { validateSdkStatsOptions } from "./exporter/customerSdkStats.js";
 import type { LogRecordProcessor } from "@opentelemetry/sdk-logs";
 import type { SpanProcessor } from "@opentelemetry/sdk-trace-base";
 import { beginUnloading, endUnloading } from "./exporter/common.js";
@@ -164,6 +165,7 @@ function createOwnedInstrumentations(
 export async function useMicrosoftOpenTelemetry(
   options: MicrosoftOpenTelemetryBrowserOptions = {},
 ): Promise<MicrosoftOpenTelemetryBrowser> {
+  validateSdkStatsOptions(options.azureMonitor?.sdkStats);
   let stopping = false;
   const sessionOptions = options.session;
   const inactivityTimeout = sessionOptions?.inactivityTimeout;
