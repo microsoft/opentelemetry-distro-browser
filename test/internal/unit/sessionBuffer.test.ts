@@ -450,14 +450,16 @@ describe("Azure Monitor sessionStorage buffer", () => {
   it.each([false, true])(
     "keeps a batch after a metadata-only write failure (release after recovery: %s)",
     (release) => {
-      vi.spyOn(diag, "warn").mockImplementation(() => {});
+      vi.spyOn(diag, "warn").mockImplementation(() => {
+        throw new Error("Diagnostic logger failed");
+      });
       const buffer = new SessionBuffer("metadata-only");
       const body = '[{"name":"kept"}]';
       const id = buffer.add(body);
       buffer.begin(id);
       const before = testSessionStorage.getItem(bufferKeys()[0]);
       const restoreStorage = blockStorage("setItem");
-      buffer.settle(id, body, true, "503");
+      expect(() => buffer.settle(id, body, true, "503")).not.toThrow();
       const onDrop = vi.fn();
       expect(buffer.retain(id, onDrop, "503")).toBe(true);
       expect(testSessionStorage.getItem(bufferKeys()[0])).toBe(before);

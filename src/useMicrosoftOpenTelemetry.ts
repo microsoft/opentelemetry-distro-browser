@@ -10,6 +10,7 @@ import { createSession } from "./session/createSession.js";
 import { createUserContext } from "./user/createUserContext.js";
 import { createKeyValueStorage } from "./storage/keyValueStorage.js";
 import { createSessionBufferStorage, sessionBufferStorage } from "./exporter/sessionBuffer.js";
+import { exporterClients } from "./exporter/base.js";
 import type { LogRecordProcessor } from "@opentelemetry/sdk-logs";
 import type { SpanProcessor } from "@opentelemetry/sdk-trace-base";
 import { beginUnloading, endUnloading } from "./exporter/common.js";
@@ -336,6 +337,8 @@ export async function useMicrosoftOpenTelemetry(
     });
     void (async () => {
       stopping = true;
+      for (const exporter of azureMonitorExporters)
+        exporterClients.get(exporter)?.prepareShutdown();
       const errors: unknown[] = [];
       for (const cleanup of [
         () => {

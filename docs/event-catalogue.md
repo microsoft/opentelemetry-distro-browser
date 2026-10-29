@@ -312,11 +312,12 @@ cannot evict payloads or pause payload/release writes; quota failures retry the 
 representation. Unreleased snapshots become terminal on shutdown because they cannot be adopted;
 released snapshots retain their handoff ownership.
 
-Flush and shutdown give pending exports 15 seconds, then cancel only those captured by the call.
-Both attempt their stats reports before surfacing errors; reports remain bounded and flush makes
-at most one follow-up for new counters. Shutdown owns final reporting, reserving time inside the
-processor's 30-second cleanup deadline. Concurrent shutdown calls share work; later cleanup calls resolve even
-after failure. Callback return values are ignored, synchronous throws remain observable, and late
+Flush and shutdown share a 29-second budget across draining and reporting, inside the processor's
+30-second cleanup deadline. Pending exports get up to 15 seconds; the distribution starts that grace
+before its processors wait for callbacks. Both attempt reports before surfacing errors; flush makes
+at most one follow-up for new counters, using only the remaining budget. Concurrent shutdown calls
+share work; later cleanup calls resolve even after failure. Callback return values are ignored,
+synchronous throws remain observable, and late
 transport results cannot restart delivery. Retryable report counts stay in memory until the next
 report, not across page loads; accepted and permanently rejected counts are not replayed.
 

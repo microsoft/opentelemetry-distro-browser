@@ -6,6 +6,8 @@ export const MAX_RETRY_AFTER_MS: number = 24 * 60 * 60 * 1000;
 export const MAX_RETRY_WAIT_MS: number = 30_000;
 /** Drain grace leaves time for stats reports inside the processor's 30-second lifecycle deadline. */
 export const MAX_SHUTDOWN_WAIT_MS: number = 15_000;
+/** Includes draining and all reports, with cleanup headroom inside a 30-second processor task. */
+export const MAX_LIFECYCLE_WAIT_MS: number = 29_000;
 export const MAX_SEND_ATTEMPTS: number = 4;
 export const RETRY_DELAY_MS: number = 1_000;
 export const MAX_RETRY_DELAY_MS: number = 64_000;

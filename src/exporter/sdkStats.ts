@@ -33,8 +33,8 @@ export interface InternalSdkStats {
   updateEndpoint(endpoint: string): void;
   countResponse(status: number, duration: number, endpoint?: string): void;
   countException(error: unknown, endpoint?: string): void;
-  forceFlush(): Promise<void>;
-  shutdown(pending?: Promise<unknown>): Promise<void>;
+  forceFlush(deadline?: number): Promise<void>;
+  shutdown(pending?: Promise<unknown>, deadline?: number): Promise<void>;
 }
 
 export function createInternalSdkStats(
@@ -112,10 +112,10 @@ export function createInternalSdkStats(
     schedule();
   }
 
-  function forceFlush(): Promise<void> {
+  function forceFlush(deadline?: number): Promise<void> {
     if (!flushing) {
       clearTimer();
-      flushing = flush(isUnloading())
+      flushing = flush(isUnloading(), deadline)
         .catch(reportFailure)
         .finally(() => {
           flushing = undefined;
@@ -125,7 +125,7 @@ export function createInternalSdkStats(
     return flushing;
   }
 
-  async function shutdown(pending?: Promise<unknown>): Promise<void> {
+  async function shutdown(pending?: Promise<unknown>, deadline?: number): Promise<void> {
     stopped = true;
     clearTimer();
     try {
@@ -133,7 +133,7 @@ export function createInternalSdkStats(
     } finally {
       try {
         await flushing;
-        await forceFlush();
+        await forceFlush(deadline);
       } finally {
         disabled = true;
         counts.clear();
@@ -153,13 +153,13 @@ export function createInternalSdkStats(
   }
 
   function schedule(): void {
-    if (stopped || disabled || timer !== undefined) return;
+    if (stopped || disabled || flushing || timer !== undefined) return;
     timer = setTimeout(() => {
       void forceFlush();
     }, interval);
   }
 
-  async function flush(unloading: boolean): Promise<void> {
+  async function flush(unloading: boolean, deadline?: number): Promise<void> {
     const currentRoute = route;
     if (disabled || !currentRoute || (!counts.size && !requests)) return;
     const envelopes: AzureMonitorEnvelope<MetricData>[] = [];
@@ -194,7 +194,7 @@ export function createInternalSdkStats(
     }));
     const controller = (sending = new AbortController());
     try {
-      await sendSdkStats(statsSender, envelopes, controller, unloading);
+      await sendSdkStats(statsSender, envelopes, controller, unloading, undefined, deadline);
     } finally {
       sending = undefined;
       if (statsSender !== sender) statsSender.dispose();
@@ -229,6 +229,7 @@ export async function sendSdkStats(
   controller: AbortController,
   unloading: boolean,
   callbacks?: Pick<SendRequest, "onResponse" | "onPartial">,
+  deadline = Infinity,
 ): Promise<void> {
   try {
     const result = await callWithTimeout(
@@ -242,7 +243,7 @@ export async function sendSdkStats(
         sdkStats: true,
         retry: false,
       }),
-      10_000,
+      Math.max(0, Math.min(10_000, deadline - performance.now())),
     );
     if (
       result.transport === "fetch" &&

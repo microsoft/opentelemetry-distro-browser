@@ -3,7 +3,7 @@
 
 import type { ExportResult } from "@opentelemetry/core";
 import type { LogRecordExporter, ReadableLogRecord } from "@opentelemetry/sdk-logs";
-import { AzureMonitorExportClient, type AzureMonitorOptions } from "./base.js";
+import { AzureMonitorExportClient, exporterClients, type AzureMonitorOptions } from "./base.js";
 import { logItemType, appendLogEnvelopes } from "./logUtils.js";
 import { customerSdkStats } from "./customerSdkStats.js";
 
@@ -26,6 +26,7 @@ export class AzureMonitorLogRecordExporter implements LogRecordExporter {
   /** Standalone export requires a resolved string; the distribution owns startup buffering. */
   public constructor(options: AzureMonitorOptions) {
     this.#client = new AzureMonitorExportClient(options);
+    exporterClients.set(this, this.#client);
     if (this.#client.itemStats) customerSdkStats.set(this, this.#client.itemStats);
   }
 

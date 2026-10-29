@@ -3,7 +3,7 @@
 
 import type { ExportResult } from "@opentelemetry/core";
 import type { ReadableSpan, SpanExporter } from "@opentelemetry/sdk-trace-base";
-import { AzureMonitorExportClient, type AzureMonitorOptions } from "./base.js";
+import { AzureMonitorExportClient, exporterClients, type AzureMonitorOptions } from "./base.js";
 import { isUnloading } from "./common.js";
 import { appendSpanEnvelopes } from "./spanUtils.js";
 import { customerSdkStats, spanItemType } from "./customerSdkStats.js";
@@ -25,6 +25,7 @@ export class AzureMonitorSpanExporter implements SpanExporter {
   /** Standalone export requires a resolved string; the distribution owns startup buffering. */
   public constructor(options: AzureMonitorOptions) {
     this.#client = new AzureMonitorExportClient(options);
+    exporterClients.set(this, this.#client);
     if (this.#client.itemStats) customerSdkStats.set(this, this.#client.itemStats);
   }
 

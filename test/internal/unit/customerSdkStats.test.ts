@@ -4,7 +4,6 @@
 import { context, diag, propagation, SpanKind, trace } from "@opentelemetry/api";
 import { logs } from "@opentelemetry/api-logs";
 import { ExportResultCode, type ExportResult } from "@opentelemetry/core";
-import { LoggerProvider } from "@opentelemetry/sdk-logs";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import {
   createCustomerSdkStats,
@@ -16,7 +15,11 @@ import { AzureMonitorSpanExporter } from "../../../src/exporter/trace.js";
 import { Sender } from "../../../src/exporter/sender.js";
 import { spanToEnvelopes } from "../../../src/exporter/spanUtils.js";
 import { beginUnloading, endUnloading } from "../../../src/exporter/common.js";
-import { MAX_SEND_ATTEMPTS, MAX_SHUTDOWN_WAIT_MS } from "../../../src/exporter/constants.js";
+import {
+  MAX_LIFECYCLE_WAIT_MS,
+  MAX_SEND_ATTEMPTS,
+  MAX_SHUTDOWN_WAIT_MS,
+} from "../../../src/exporter/constants.js";
 import { AzureMonitorExportClient, type AzureMonitorOptions } from "../../../src/exporter/base.js";
 import type { AzureMonitorEnvelope, MetricData } from "../../../src/exporter/telemetryModels.js";
 import { createReadableLogRecord, createReadableSpan } from "../../fixtures/telemetry.js";
@@ -31,7 +34,7 @@ import {
 } from "../../../src/exporter/sessionBuffer.js";
 import { setSessionStorage, testSessionStorage } from "../../fixtures/sessionStorageSetup.js";
 import { isSdkIngestionUrl, rememberSdkIngestionUrl } from "../../../src/shared/globalOwnership.js";
-import { BrowserBatchLogRecordProcessor } from "../../../src/browserBatchLogRecordProcessor.js";
+import { useMicrosoftOpenTelemetry } from "../../../src/index.js";
 import { getInternalSdkStatsConfiguration } from "../../fixtures/sdkStatsConfigurationMock.js";
 
 const endpoint = "https://customer.example.test";
@@ -639,42 +642,75 @@ it("bounds a hung flush without cancelling exports started after it", async () =
   expect(vi.getTimerCount()).toBe(0);
 });
 
-it("finishes a hung log exporter and final report within its processor cleanup deadline", async () => {
+it("shares the drain deadline with a late interval report and its follow-up", async () => {
   const clock = installFakeClock();
-  const exporter = createExporter("logs");
-  const provider = new LoggerProvider({
-    processors: [
-      new BrowserBatchLogRecordProcessor({
-        exporter,
-        maxExportBatchSize: 1,
-        exportTimeoutMillis: 1,
-      }),
-    ],
+  getInternalSdkStatsConfiguration.mockReturnValue({
+    instrumentationKey: TEST_INSTRUMENTATION_KEY,
+    endpoint: "https://internal.example.test/v2/track",
+    collectionIntervalMillis: 14000,
   });
-  owners.push(provider);
+  const client = createClient({
+    connectionString,
+    sdkStats: { enabled: true, collectionIntervalMillis: 14000 },
+  });
+  await exportAsync(client, request().envelopes);
+  const normal = fetch.getMockImplementation()!;
+  const finish = holdNextFetch();
+  const sending = exportAsync(client, request().envelopes);
   fetch.mockImplementation(() => new Promise(() => {}));
-  provider.getLogger("deadline").emit({ body: "pending" });
-  const stopped = vi.fn();
-  const result = provider
-    .shutdown()
-    .then(
-      () => undefined,
-      (error: unknown) => error,
-    )
-    .finally(stopped);
-  await clock.advance(MAX_SHUTDOWN_WAIT_MS + 10_002);
-  expect(stopped).toHaveBeenCalledOnce();
-  expect(await result).toBeInstanceOf(Error);
-  expect(fetch).toHaveBeenCalledTimes(2);
-  expect(fetch.mock.calls.every(([, init]) => init?.signal?.aborted)).toBe(true);
-  const [url, init] = fetch.mock.calls[1];
-  const metrics: AzureMonitorEnvelope<MetricData>[] = await new Request(url, init).json();
-  expect(metrics[0].data.baseData.metrics[0]).toMatchObject({
-    name: "Item_Dropped_Count",
-    value: 1,
-  });
+  await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
+  const start = performance.now();
+  const settled = vi.fn();
+  const flush = client.forceFlush().then(settled);
+  await clock.advance(14500);
+  finish(new Response(null));
+  await sending;
+  await clock.advance(start + MAX_LIFECYCLE_WAIT_MS - performance.now() - 1);
+  expect(settled).not.toHaveBeenCalled();
+  await clock.advance(1);
+  await flush;
+  expect(fetch.mock.calls.slice(2).every(([, init]) => init?.signal?.aborted)).toBe(true);
+  fetch.mockImplementation(normal);
+  await client.shutdown();
   expect(vi.getTimerCount()).toBe(0);
 });
+
+it.each(["logs", "spans"] as const)(
+  "bounds default %s processor shutdown and final reports together",
+  async (signal) => {
+    const clock = installFakeClock();
+    const handle = await useMicrosoftOpenTelemetry({
+      azureMonitor: { connectionString, sdkStats: { enabled: true } },
+      pageView: { enabled: false },
+      session: { enabled: false },
+      ...(signal === "logs" ? { spanProcessors: [] } : { logRecordProcessors: [] }),
+    });
+    owners.push(handle);
+    fetch.mockImplementation(() => new Promise(() => {}));
+    if (signal === "logs") logs.getLogger("deadline").emit({ body: "pending" });
+    else trace.getTracer("deadline").startSpan("pending").end();
+    const stopped = vi.fn();
+    const result = handle
+      .shutdown()
+      .then(
+        () => undefined,
+        (error: unknown) => error,
+      )
+      .finally(stopped);
+    await clock.advance(MAX_LIFECYCLE_WAIT_MS);
+    expect(stopped).toHaveBeenCalledOnce();
+    expect(await result).toBeInstanceOf(Error);
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(fetch.mock.calls.every(([, init]) => init?.signal?.aborted)).toBe(true);
+    const [url, init] = fetch.mock.calls[1];
+    const metrics: AzureMonitorEnvelope<MetricData>[] = await new Request(url, init).json();
+    expect(metrics[0].data.baseData.metrics[0]).toMatchObject({
+      name: "Item_Dropped_Count",
+      value: 1,
+    });
+    expect(vi.getTimerCount()).toBe(0);
+  },
+);
 
 it("lets shutdown own final reports when an earlier flush is still draining", async () => {
   const clock = installFakeClock();

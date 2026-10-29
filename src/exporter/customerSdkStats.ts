@@ -62,8 +62,8 @@ export interface CustomerSdkStats {
     code?: string | readonly string[],
   ): void;
   shouldCollectLog: (record: ReadableLogRecord) => boolean;
-  forceFlush(): Promise<void>;
-  shutdown(pending?: Promise<unknown>): Promise<void>;
+  forceFlush(deadline?: number): Promise<void>;
+  shutdown(pending?: Promise<unknown>, deadline?: number): Promise<void>;
 }
 
 // Keeps stats off the public exporter API.
@@ -145,12 +145,12 @@ export function createCustomerSdkStats(
     }
   }
 
-  function forceFlush(): Promise<void> {
+  function forceFlush(deadline?: number): Promise<void> {
     // Include counters collected behind an older report without retrying failures in a loop.
-    return flushing && counts.size ? flushing.then(flush) : flush();
+    return flushing && counts.size ? flushing.then(() => flush(deadline)) : flush(deadline);
   }
 
-  function flush(): Promise<void> {
+  function flush(deadline?: number): Promise<void> {
     if (flushing) return flushing;
     clearTimeout(timer);
     timer = undefined;
@@ -172,17 +172,24 @@ export function createCustomerSdkStats(
     }
     counts.clear();
     const controller = new AbortController();
-    flushing = sendSdkStats(sender, [...pending.keys()], controller, isUnloading(), {
-      onResponse: (status) => {
-        if (!isRetriable(status)) pending.clear();
+    flushing = sendSdkStats(
+      sender,
+      [...pending.keys()],
+      controller,
+      isUnloading(),
+      {
+        onResponse: (status) => {
+          if (!isRetriable(status)) pending.clear();
+        },
+        onPartial: (remaining) => {
+          const retriable = new Set(remaining);
+          for (const envelope of pending.keys()) {
+            if (!retriable.has(envelope)) pending.delete(envelope);
+          }
+        },
       },
-      onPartial: (remaining) => {
-        const retriable = new Set(remaining);
-        for (const envelope of pending.keys()) {
-          if (!retriable.has(envelope)) pending.delete(envelope);
-        }
-      },
-    })
+      deadline,
+    )
       .catch((error: unknown) => {
         for (const [key, value] of pending.values()) {
           counts.set(key, (counts.get(key) ?? 0) + value);
@@ -196,7 +203,7 @@ export function createCustomerSdkStats(
     return flushing;
   }
 
-  function shutdown(pending?: Promise<unknown>): Promise<void> {
+  function shutdown(pending?: Promise<unknown>, deadline?: number): Promise<void> {
     if (!shutdownPromise) {
       stopping = true;
       clearTimeout(timer);
@@ -206,7 +213,7 @@ export function createCustomerSdkStats(
           await pending;
         } finally {
           await flushing;
-          await flush();
+          await flush(deadline);
           stopped = true;
           counts.clear();
           sender.dispose();
