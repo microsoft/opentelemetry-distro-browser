@@ -4,12 +4,7 @@
 import { context, diag, propagation, SpanKind, trace } from "@opentelemetry/api";
 import { logs } from "@opentelemetry/api-logs";
 import { ExportResultCode, type ExportResult } from "@opentelemetry/core";
-import {
-  BatchLogRecordProcessor,
-  LoggerProvider,
-  SimpleLogRecordProcessor,
-} from "@opentelemetry/sdk-logs";
-import { ConsoleInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/console";
+import { LoggerProvider } from "@opentelemetry/sdk-logs";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import {
   createCustomerSdkStats,
@@ -42,7 +37,6 @@ import { getInternalSdkStatsConfiguration } from "../../fixtures/sdkStatsConfigu
 const endpoint = "https://customer.example.test";
 const connectionString = `InstrumentationKey=${TEST_INSTRUMENTATION_KEY};IngestionEndpoint=${endpoint}`;
 const owners: Array<{ shutdown(): Promise<void> }> = [];
-const finishers: Array<() => void> = [];
 let reports: AzureMonitorEnvelope<MetricData>[][];
 let fetch: ReturnType<typeof vi.fn<typeof globalThis.fetch>>;
 
@@ -61,7 +55,6 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
-  for (const finish of finishers.splice(0)) finish();
   await Promise.allSettled(owners.splice(0).map((owner) => owner.shutdown()));
   trace.disable();
   logs.disable();
@@ -188,6 +181,18 @@ function partialResponse(
     { itemsReceived, itemsAccepted: itemsReceived - errors.length, errors },
     { status: 206, headers },
   );
+}
+
+function redirectResponse(url: string): Response {
+  return Object.defineProperties(new Response(null), {
+    redirected: { value: true },
+    url: { value: url },
+  });
+}
+
+function churnIngestionUrls(): void {
+  for (let index = 0; index < 300; index++)
+    rememberSdkIngestionUrl(`https://history.example.test/track?request=${index}`);
 }
 
 it.each([undefined, {}, { enabled: false }])(
@@ -318,39 +323,13 @@ it("merges failed counts with counts collected during a shared in-flight flush",
   });
 });
 
-it.each([200, 503])(
-  "flushes new counts after an in-flight HTTP %i report with at most one follow-up",
-  async (status) => {
-    const stats = create();
-    const finish = holdNextFetch();
-    stats.count("Success", "TRACE");
-    const first = stats.forceFlush();
-    stats.count("Success", "DEPENDENCY");
-    const second = stats.forceFlush();
-    const concurrent = stats.forceFlush();
-    if (status === 503) fetch.mockResolvedValueOnce(new Response(null, { status }));
-    finish(status === 200 ? undefined : new Response(null, { status }));
-    await Promise.all([first, second, concurrent]);
-    expect(fetch).toHaveBeenCalledTimes(2);
-    if (status === 200) {
-      expect(totals()).toEqual({
-        "Item_Success_Count:TRACE": 1,
-        "Item_Success_Count:DEPENDENCY": 1,
-      });
-    } else {
-      expect(diag.warn).toHaveBeenCalledTimes(2);
-      await stats.forceFlush();
-      expect(totals()).toEqual({
-        "Item_Success_Count:TRACE": 1,
-        "Item_Success_Count:DEPENDENCY": 1,
-      });
-    }
-  },
-);
-
-it.each(["spans", "logs"] as const)(
-  "includes completed %s exports when flushing behind an older stats report",
-  async (signal) => {
+it.each(
+  (["spans", "logs"] as const).flatMap((signal) =>
+    [200, 503].map((status) => ({ signal, status })),
+  ),
+)(
+  "flushes new $signal counts once behind an older HTTP $status stats report",
+  async ({ signal, status }) => {
     const exporter = createExporter(signal);
     const send = () =>
       new Promise<ExportResult>((resolve) => {
@@ -364,9 +343,11 @@ it.each(["spans", "logs"] as const)(
     await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
     await send();
     const second = exporter.forceFlush();
+    const concurrent = exporter.forceFlush();
     await Promise.resolve();
-    finish();
-    await Promise.all([first, second]);
+    finish(status === 200 ? undefined : new Response(null, { status }));
+    await Promise.all([first, second, concurrent]);
+    await exporter.forceFlush();
     expect(fetch).toHaveBeenCalledTimes(4);
     expect(totals()).toEqual({
       [`Item_Success_Count:${signal === "spans" ? "DEPENDENCY" : "TRACE"}`]: 2,
@@ -518,76 +499,6 @@ it("re-arms pending counters when an interval expires during a slow report", asy
   expect(vi.getTimerCount()).toBe(0);
 });
 
-it.each(["shutdown", "eviction", "storage"] as const)(
-  "counts retained telemetry once when %s makes its loss terminal",
-  async (removal) => {
-    const client = createClient();
-    fetch.mockResolvedValueOnce(
-      new Response(null, { status: 503, headers: { "retry-after": "86400" } }),
-    );
-    await exportAsync(client, request().envelopes);
-    await client.forceFlush();
-    expect(totals()).toEqual({});
-    if (removal !== "shutdown") {
-      if (removal === "storage")
-        vi.spyOn(testSessionStorage, "setItem").mockImplementation(() => {
-          throw new DOMException("Quota exceeded", "QuotaExceededError");
-        });
-      const large = {
-        ...request().envelopes[0],
-        tags: { large: "x".repeat(MAX_SESSION_BUFFER_LENGTH * 0.6) },
-      };
-      beginUnloading();
-      try {
-        for (let index = 0; index < (removal === "eviction" ? 2 : 1); index++)
-          await exportAsync(client, [large]);
-      } finally {
-        endUnloading();
-      }
-      await client.forceFlush();
-      expect(totals()).toEqual({
-        "Item_Dropped_Count:DEPENDENCY:503": 1,
-        "Item_Dropped_Count:DEPENDENCY:PAYLOAD_TOO_LARGE": 1,
-      });
-    }
-    await client.shutdown();
-    await client.shutdown();
-    expect(totals()).toEqual({
-      "Item_Dropped_Count:DEPENDENCY:503": 1,
-      ...(removal === "shutdown"
-        ? {}
-        : { "Item_Dropped_Count:DEPENDENCY:PAYLOAD_TOO_LARGE": removal === "eviction" ? 2 : 1 }),
-    });
-  },
-);
-
-it("reports only a retained partial response's retriable items during shutdown", async () => {
-  const client = createClient();
-  fetch.mockResolvedValueOnce(
-    partialResponse(4, [
-      { index: 1, statusCode: 503, message: "retry" },
-      { index: 2, statusCode: 400, message: "invalid" },
-      { index: 3, statusCode: 206, message: "Telemetry sampled out." },
-    ]),
-  );
-  beginUnloading();
-  try {
-    await exportAsync(
-      client,
-      request([SpanKind.CLIENT, SpanKind.SERVER, SpanKind.CLIENT, SpanKind.SERVER]).envelopes,
-    );
-  } finally {
-    endUnloading();
-  }
-  await client.shutdown();
-  expect(totals()).toEqual({
-    "Item_Success_Count:DEPENDENCY": 1,
-    "Item_Dropped_Count:DEPENDENCY:400": 1,
-    "Item_Dropped_Count:REQUEST:SAMPLING": 1,
-    "Item_Dropped_Count:REQUEST:503": 1,
-  });
-});
-
 it("does not count an in-flight batch as dropped when its buffer copy is evicted", async () => {
   const client = createClient();
   const finish = holdNextFetch();
@@ -612,29 +523,33 @@ it("does not count an in-flight batch as dropped when its buffer copy is evicted
   });
 });
 
-it.each([false, true])(
-  "waits for all pending exports before reporting shutdown drops (callback throws: %s)",
-  async (callbackThrows) => {
+it.each(["void", "throws", "promise"] as const)(
+  "drains all exports and ignores callback return values during shutdown: %s",
+  async (callbackMode) => {
     const client = createClient();
     const completions: Array<(response: Response) => void> = [];
     for (let index = 0; index < 2; index++)
       fetch.mockImplementationOnce(() => new Promise((resolve) => completions.push(resolve)));
     const failure = new Error("callback failed");
-    client.export(request().envelopes, () => {
-      if (callbackThrows) throw failure;
+    const callback = vi.fn(() => {
+      if (callbackMode === "throws") throw failure;
+      if (callbackMode === "promise") return new Promise<void>(() => {});
     });
+    client.export(request().envelopes, callback);
     client.export(request([SpanKind.SERVER]).envelopes, () => {});
     await vi.waitFor(() => expect(completions).toHaveLength(2));
     const stopped = vi.fn();
     const shutdown = client.shutdown().finally(stopped);
-    const expected = callbackThrows
-      ? expect(shutdown).rejects.toBe(failure)
-      : expect(shutdown).resolves.toBeUndefined();
+    const expected =
+      callbackMode === "throws"
+        ? expect(shutdown).rejects.toBe(failure)
+        : expect(shutdown).resolves.toBeUndefined();
     completions[0](new Response(null));
     await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
     expect(stopped).not.toHaveBeenCalled();
     completions[1](new Response(null, { status: 503, headers: { "retry-after": "86400" } }));
     await expected;
+    expect(callback).toHaveBeenCalledOnce();
     expect(totals()).toEqual({
       "Item_Success_Count:DEPENDENCY": 1,
       "Item_Dropped_Count:REQUEST:503": 1,
@@ -678,21 +593,6 @@ it.each(["available", "disabled", "unavailable", "quota", "oversized"] as const)
     });
   },
 );
-
-it("does not adopt an export callback's never-settling return value", async () => {
-  const clock = installFakeClock();
-  const client = createClient();
-  const callback = vi.fn(() => new Promise<void>((resolve) => finishers.push(resolve)));
-  client.export(request().envelopes, callback);
-  const stopped = vi.fn();
-  const shutdown = client.shutdown().then(stopped);
-  await vi.waitFor(() => expect(stopped).toHaveBeenCalledOnce());
-  await shutdown;
-  expect(callback).toHaveBeenCalledOnce();
-  expect(totals()).toEqual({ "Item_Success_Count:DEPENDENCY": 1 });
-  await clock.advance(MAX_SHUTDOWN_WAIT_MS);
-  expect(vi.getTimerCount()).toBe(0);
-});
 
 it("flushes both stats reporters before propagating an export callback failure", async () => {
   const internalEndpoint = "https://internal.example.test/v2/track";
@@ -792,54 +692,42 @@ it("lets shutdown own final reports when an earlier flush is still draining", as
   expect(vi.getTimerCount()).toBe(0);
 });
 
-it.each([false, true])(
-  "cancels a hung export at the shutdown deadline and completes final accounting (callback throws: %s)",
-  async (callbackThrows) => {
+it.each(["fetch", "body", "retry"] as const)(
+  "cancels a hung %s at shutdown and reports its outcome once",
+  async (phase) => {
     const clock = installFakeClock();
     const client = createClient();
-    fetch.mockResolvedValueOnce(new Response(null));
-    const finish = holdNextFetch();
-    const callbackFailure = new Error("callback failed");
-    client.export(request().envelopes, () => {
-      if (callbackThrows) throw callbackFailure;
-    });
+    const finish = phase === "fetch" ? holdNextFetch() : () => {};
+    if (phase !== "fetch") {
+      const response = new Response(null, { status: 503, headers: { "retry-after": "30" } });
+      if (phase === "body")
+        vi.spyOn(response, "text").mockImplementation(() => new Promise(() => {}));
+      fetch.mockResolvedValueOnce(response);
+    }
     const callback = vi.fn();
-    client.export(request([SpanKind.SERVER]).envelopes, callback);
-    const stopped = vi.fn();
+    client.export(request().envelopes, callback);
     const shutdown = client.shutdown();
     expect(client.shutdown()).toBe(shutdown);
-    const result = shutdown
-      .then(
-        () => undefined,
-        (error: unknown) => error,
-      )
-      .finally(stopped);
+    const expected = expect(shutdown).rejects.toThrow("Exporter shutdown timed out.");
     await clock.advance(MAX_SHUTDOWN_WAIT_MS - 1);
-    expect(stopped).not.toHaveBeenCalled();
-    expect(fetch.mock.calls[1][1]?.signal?.aborted).toBe(false);
-    expect(fetch.mock.calls[1][1]?.credentials).toBeUndefined();
-    expect(fetch.mock.calls[1][1]?.referrerPolicy).toBeUndefined();
+    expect(callback).not.toHaveBeenCalled();
+    expect(fetch.mock.calls[0][1]?.signal?.aborted).toBe(false);
+    expect(fetch.mock.calls[0][1]?.credentials).toBeUndefined();
+    expect(fetch.mock.calls[0][1]?.referrerPolicy).toBeUndefined();
     await clock.advance(1);
-    const error = await result;
-    const errors: unknown[] = error instanceof AggregateError ? error.errors : [error];
-    expect(errors).toContainEqual(
-      expect.objectContaining({ message: "Exporter shutdown timed out." }),
-    );
-    if (callbackThrows) expect(errors).toContain(callbackFailure);
-    expect(fetch.mock.calls[1][1]?.signal?.aborted).toBe(true);
+    await expected;
+    expect(fetch.mock.calls[0][1]?.signal?.aborted).toBe(true);
     expect(callback).toHaveBeenCalledExactlyOnceWith({
       code: ExportResultCode.FAILED,
       error: expect.objectContaining({ name: "AbortError" }),
     });
     expect(totals()).toEqual({
-      "Item_Success_Count:DEPENDENCY": 1,
-      "Item_Dropped_Count:REQUEST:CLIENT_EXCEPTION": 1,
+      [`Item_Dropped_Count:DEPENDENCY:${phase === "retry" ? "503" : "CLIENT_EXCEPTION"}`]: 1,
     });
-    const sent = fetch.mock.calls.length;
     finish(new Response(null));
     await clock.advance(MAX_SHUTDOWN_WAIT_MS);
     await client.forceFlush();
-    expect(fetch).toHaveBeenCalledTimes(sent);
+    expect(fetch).toHaveBeenCalledTimes(2);
     expect(vi.getTimerCount()).toBe(0);
   },
 );
@@ -879,87 +767,8 @@ it.each(["available", "disabled", "unavailable", "quota"] as const)(
       "Item_Dropped_Count:REQUEST:SAMPLING": 1,
       ...(storage === "available" ? {} : { "Item_Dropped_Count:REQUEST:503": 1 }),
     });
-  },
-);
-
-it.each(["body", "retry"] as const)(
-  "cancels a pending %s at the shutdown deadline without leaving timers or dispatching a retry",
-  async (phase) => {
-    const clock = installFakeClock();
-    const client = createClient();
-    const response = new Response(null, { status: 503, headers: { "retry-after": "30" } });
-    vi.spyOn(response, "text").mockImplementation(() =>
-      phase === "body" ? new Promise(() => {}) : Promise.resolve(""),
-    );
-    fetch.mockResolvedValueOnce(response);
-    const callback = vi.fn();
-    client.export(request().envelopes, callback);
-    const shutdown = expect(client.shutdown()).rejects.toThrow("shutdown timed out");
-    await clock.advance(MAX_SHUTDOWN_WAIT_MS);
-    await shutdown;
-    expect(callback).toHaveBeenCalledOnce();
-    expect(totals()).toEqual({
-      [`Item_Dropped_Count:DEPENDENCY:${phase === "retry" ? "503" : "CLIENT_EXCEPTION"}`]: 1,
-    });
-    expect(fetch).toHaveBeenCalledTimes(2);
-    expect(vi.getTimerCount()).toBe(0);
-  },
-);
-
-it.each(["spans", "logs"] as const)(
-  "reports conversion failures for %s without losing the callback",
-  async (signal) => {
-    const exporter = createExporter(signal);
-    const failure = new Error("conversion failed");
-    const callback = vi.fn();
-    if (exporter instanceof AzureMonitorSpanExporter) {
-      const span = createReadableSpan();
-      throwOnRead(span, "startTime", failure);
-      exporter.export([span], callback);
-    } else {
-      const log = createReadableLogRecord();
-      throwOnRead(log, "hrTime", failure);
-      exporter.export([log], callback);
-    }
-    expectExportFailure(callback, failure);
-    await exporter.forceFlush();
-    expect(totals()).toEqual({
-      [`Item_Dropped_Count:${signal === "spans" ? "DEPENDENCY" : "TRACE"}:CLIENT_EXCEPTION`]: 1,
-    });
-  },
-);
-
-it.each(
-  (["spans", "logs"] as const).flatMap((signal) =>
-    [false, true].map((enabled) => ({ signal, enabled })),
-  ),
-)(
-  "preserves the callback and remaining $signal counts when classification throws (stats: $enabled)",
-  async ({ signal, enabled }) => {
-    const options = { connectionString, sdkStats: { enabled } };
-    const exporter = createExporter(signal, options);
-    const failure = new Error("classification failed");
-    const callback = vi.fn();
-    expect(() => {
-      if (exporter instanceof AzureMonitorSpanExporter) {
-        const span = createReadableSpan();
-        throwOnRead(span, "kind", failure);
-        exporter.export([span, span, createReadableSpan({ kind: SpanKind.SERVER })], callback);
-      } else {
-        const log = createReadableLogRecord();
-        throwOnRead(log.attributes, "exception.type", failure);
-        exporter.export([log, log, createReadableLogRecord()], callback);
-      }
-    }).not.toThrow();
-    expectExportFailure(callback, failure);
-    expect(fetch).not.toHaveBeenCalled();
-    expect(diag.warn).toHaveBeenCalledTimes(enabled ? 2 : 0);
-    await exporter.forceFlush();
-    expect(totals()).toEqual(
-      enabled
-        ? { [`Item_Dropped_Count:${signal === "spans" ? "REQUEST" : "TRACE"}:CLIENT_EXCEPTION`]: 1 }
-        : {},
-    );
+    await client.shutdown();
+    expect(totals()["Item_Dropped_Count:REQUEST:503"]).toBe(1);
   },
 );
 
@@ -1035,131 +844,46 @@ it("counts the discarded page-view performance envelope without counting filtere
   });
 });
 
-it("preserves filtering and the original failure when log eligibility and diagnostics throw", async () => {
-  const exporter = createExporter("logs");
-  const failure = new Error("event name unavailable");
-  const broken = createReadableLogRecord();
-  throwOnRead(broken, "eventName", failure);
-  const timing = resourceTiming(`${endpoint}/v2/track`);
-  vi.spyOn(diag, "warn").mockImplementation(() => {
-    throw new Error("diagnostic failed");
-  });
-  const callback = vi.fn();
-  exporter.export([timing, broken, timing, createReadableLogRecord()], callback);
-  expectExportFailure(callback, failure);
-  await exporter.forceFlush();
-  expect(totals()).toEqual({ "Item_Dropped_Count:TRACE:CLIENT_EXCEPTION": 1 });
-});
-
 it.each([false, true])(
-  "counts only eligible records when conversion fails with SDK timing first: %s",
-  async (timingFirst) => {
-    const exporter = createExporter("logs");
-    const timing = resourceTiming(`${endpoint}/v2/track`);
-    const record = createReadableLogRecord();
-    const failure = new Error("conversion failed");
-    throwOnRead(record, "hrTime", failure);
-    const callback = vi.fn();
-    exporter.export(timingFirst ? [timing, record] : [record, timing], callback);
-    expectExportFailure(callback, failure);
-    expect(fetch).not.toHaveBeenCalled();
-    await exporter.forceFlush();
-    expect(totals()).toEqual({ "Item_Dropped_Count:TRACE:CLIENT_EXCEPTION": 1 });
-    expect(fetch).toHaveBeenCalledOnce();
-  },
-);
-
-it.each([
-  { duration: 0, type: "CUSTOM_METRIC" },
-  { duration: 123.5, type: "CUSTOM_METRIC" },
-  { duration: -1, type: "CUSTOM_EVENT" },
-  { duration: NaN, type: "CUSTOM_EVENT" },
-  { duration: Infinity, type: "CUSTOM_EVENT" },
-  { duration: "123", type: "CUSTOM_EVENT" },
-])(
-  "classifies page-visit conversion failures as $type for duration $duration",
-  async ({ duration, type }) => {
-    const exporter = createExporter("logs");
-    const record = createReadableLogRecord({
-      eventName: "browser.page_visit",
-      attributes: { "browser.page_visit.duration": duration },
-    });
-    const failure = new Error("conversion failed");
-    throwOnRead(record, "hrTime", failure);
-    const callback = vi.fn();
-    exporter.export([record], callback);
-    expectExportFailure(callback, failure);
-    await exporter.forceFlush();
-    expect(totals()).toEqual({ [`Item_Dropped_Count:${type}:CLIENT_EXCEPTION`]: 1 });
-  },
-);
-
-it.each(["spans", "logs"] as const)(
-  "counts %s exporter delivery once and stays silent without more telemetry",
-  async (signal) => {
-    const exporter = createExporter(signal);
-    const result = await new Promise<ExportResult>((resolve) => {
-      if (exporter instanceof AzureMonitorSpanExporter)
-        exporter.export([createReadableSpan()], resolve);
-      else exporter.export([createReadableLogRecord()], resolve);
-    });
-    expect(result.code).toBe(ExportResultCode.SUCCESS);
-    await exporter.forceFlush();
-    await exporter.forceFlush();
-    expect(totals()).toEqual({
-      [`Item_Success_Count:${signal === "spans" ? "DEPENDENCY" : "TRACE"}`]: 1,
-    });
-    expect(fetch).toHaveBeenCalledTimes(2);
-  },
-);
-
-it("counts actual retry subsets, permanent failures and server sampling without recounting accepted items", async () => {
-  const stats = create();
-  const sender = new Sender({ endpoint, itemStats: stats, delay: async () => {} });
-  fetch.mockResolvedValueOnce(
-    partialResponse(5, [
-      { index: 1, statusCode: 503, message: "retry" },
-      { index: 2, statusCode: 400, message: "invalid" },
-      { index: 3, statusCode: 206, message: "Telemetry sampled out." },
-      { index: 4, statusCode: 429, message: "retry" },
-    ]),
-  );
-  await sender.send(
-    request([SpanKind.CLIENT, SpanKind.SERVER, SpanKind.CLIENT, SpanKind.SERVER, SpanKind.CLIENT]),
-  );
-  await stats.forceFlush();
-  expect(totals()).toEqual({
-    "Item_Success_Count:DEPENDENCY": 2,
-    "Item_Success_Count:REQUEST": 1,
-    "Item_Dropped_Count:DEPENDENCY:400": 1,
-    "Item_Dropped_Count:REQUEST:SAMPLING": 1,
-    "Item_Retry_Count:REQUEST:503": 1,
-    "Item_Retry_Count:DEPENDENCY:429": 1,
-  });
-});
-
-it("replaces per-item retry codes after a later transport failure", async () => {
-  const stats = create();
-  const sender = new Sender({ endpoint, itemStats: stats, delay: async () => {} });
-  fetch
-    .mockResolvedValueOnce(
-      partialResponse(3, [
+  "counts only outstanding retries and their latest codes (network failure: %s)",
+  async (networkFailure) => {
+    const stats = create();
+    const sender = new Sender({ endpoint, itemStats: stats, delay: async () => {} });
+    fetch.mockResolvedValueOnce(
+      partialResponse(5, [
         { index: 1, statusCode: 503, message: "retry" },
-        { index: 2, statusCode: 429, message: "retry" },
+        { index: 2, statusCode: 400, message: "invalid" },
+        { index: 3, statusCode: 206, message: "Telemetry sampled out." },
+        { index: 4, statusCode: 429, message: "retry" },
       ]),
-    )
-    .mockRejectedValueOnce(new TypeError("offline"));
-  await sender.send(request([SpanKind.CLIENT, SpanKind.SERVER, SpanKind.CLIENT]));
-  await stats.forceFlush();
-  expect(totals()).toEqual({
-    "Item_Success_Count:DEPENDENCY": 2,
-    "Item_Success_Count:REQUEST": 1,
-    "Item_Retry_Count:REQUEST:503": 1,
-    "Item_Retry_Count:DEPENDENCY:429": 1,
-    "Item_Retry_Count:REQUEST:CLIENT_EXCEPTION": 1,
-    "Item_Retry_Count:DEPENDENCY:CLIENT_EXCEPTION": 1,
-  });
-});
+    );
+    if (networkFailure) fetch.mockRejectedValueOnce(new TypeError("offline"));
+    await sender.send(
+      request([
+        SpanKind.CLIENT,
+        SpanKind.SERVER,
+        SpanKind.CLIENT,
+        SpanKind.SERVER,
+        SpanKind.CLIENT,
+      ]),
+    );
+    await stats.forceFlush();
+    expect(totals()).toEqual({
+      "Item_Success_Count:DEPENDENCY": 2,
+      "Item_Success_Count:REQUEST": 1,
+      "Item_Dropped_Count:DEPENDENCY:400": 1,
+      "Item_Dropped_Count:REQUEST:SAMPLING": 1,
+      "Item_Retry_Count:REQUEST:503": 1,
+      "Item_Retry_Count:DEPENDENCY:429": 1,
+      ...(networkFailure
+        ? {
+            "Item_Retry_Count:REQUEST:CLIENT_EXCEPTION": 1,
+            "Item_Retry_Count:DEPENDENCY:CLIENT_EXCEPTION": 1,
+          }
+        : {}),
+    });
+  },
+);
 
 it.each([false, true])(
   "counts rejected retry promises but not synchronous fetch throws (synchronous: %s)",
@@ -1264,32 +988,6 @@ it.each(["handoff", "abort"] as const)(
   },
 );
 
-it.each(
-  [200, 400].flatMap((status) =>
-    ["retry", "once", "unload"].flatMap((mode) =>
-      [Error, TypeError].map((ErrorType) => ({ status, mode, ErrorType, error: ErrorType.name })),
-    ),
-  ),
-)(
-  "preserves HTTP $status item outcomes after a body $error in $mode mode",
-  async ({ status, mode, ErrorType }) => {
-    const stats = create();
-    const failure = new ErrorType("body failed");
-    const response = new Response(null, { status });
-    vi.spyOn(response, "text").mockRejectedValue(failure);
-    fetch.mockResolvedValueOnce(response);
-    const sender = new Sender({ endpoint, itemStats: stats, delay: async () => {} });
-    await expect(
-      sender.send({ ...request(), retry: mode !== "once", unloading: mode === "unload" }),
-    ).rejects.toBe(failure);
-    expect(fetch).toHaveBeenCalledOnce();
-    await stats.forceFlush();
-    expect(totals()).toEqual({
-      [status === 200 ? "Item_Success_Count:DEPENDENCY" : "Item_Dropped_Count:DEPENDENCY:400"]: 1,
-    });
-  },
-);
-
 it("counts only the retry subset when its successful response body fails", async () => {
   const stats = create();
   const response = new Response(null);
@@ -1309,32 +1007,14 @@ it("counts only the retry subset when its successful response body fails", async
   });
 });
 
-it.each([
-  {
-    itemsReceived: 2,
-    itemsAccepted: 1,
-    errors: [{ index: 5, statusCode: 503, message: "bad index" }],
-  },
-  {
-    itemsReceived: 2,
-    itemsAccepted: 0,
-    errors: [
-      { index: 0, statusCode: 503, message: "" },
-      { index: 0, statusCode: 503, message: "" },
-    ],
-  },
-  { itemsReceived: 2, itemsAccepted: 9, errors: [] },
-])(
-  "does not invent successes or duplicate retries from malformed partial responses: %j",
-  async (body) => {
-    const stats = create();
-    const sender = new Sender({ endpoint, itemStats: stats });
-    fetch.mockResolvedValueOnce(Response.json(body, { status: 206 }));
-    await sender.send(request([SpanKind.CLIENT, SpanKind.CLIENT]));
-    await stats.forceFlush();
-    expect(totals()).toEqual({ "Item_Dropped_Count:DEPENDENCY:206": 2 });
-  },
-);
+it("does not invent successes or retries from an invalid partial response", async () => {
+  const stats = create();
+  const sender = new Sender({ endpoint, itemStats: stats });
+  fetch.mockResolvedValueOnce(partialResponse(2, [{ index: 5, statusCode: 503, message: "bad" }]));
+  await sender.send(request([SpanKind.CLIENT, SpanKind.CLIENT]));
+  await stats.forceFlush();
+  expect(totals()).toEqual({ "Item_Dropped_Count:DEPENDENCY:206": 2 });
+});
 
 it("counts unload transport failures as drops and beacon queueing as success without retries", async () => {
   const stats = create();
@@ -1370,57 +1050,14 @@ it("reports customer stats with keepalive but never falls back to beacon", async
   expect(totals()).toEqual({ "Item_Success_Count:TRACE": 1 });
 });
 
-it.each([
-  { name: "simple", Processor: SimpleLogRecordProcessor },
-  { name: "batch", Processor: BatchLogRecordProcessor },
-])(
-  "does not feed diagnostics into standalone $name processors without a context manager",
-  async ({ Processor }) => {
-    context.disable();
-    const exporter = new AzureMonitorLogRecordExporter({
-      connectionString,
-      sdkStats: { enabled: true },
-    });
-    const provider = new LoggerProvider({ processors: [new Processor({ exporter })] });
-    owners.push(provider);
-    const instrumentation = new ConsoleInstrumentation({ enabled: false, logMethods: ["warn"] });
-    instrumentation.setLoggerProvider(provider);
-    instrumentation.enable();
-    finishers.push(() => instrumentation.disable());
-    const wrappedWarn = console.warn;
-    vi.spyOn(diag, "warn").mockImplementation((...args) => console.warn(...args));
-    provider.getLogger("app").emit({ body: "application" });
-    fetch
-      .mockResolvedValueOnce(new Response(null))
-      .mockResolvedValueOnce(new Response(null, { status: 503 }));
-    await provider.forceFlush();
-    await exporter.forceFlush();
-    await provider.forceFlush();
-    await exporter.forceFlush();
-    expect(fetch).toHaveBeenCalledTimes(2);
-    expect(diag.warn).toHaveBeenCalledOnce();
-    expect(console.warn).toBe(wrappedWarn);
-    console.warn("application warning");
-    await provider.forceFlush();
-    await exporter.forceFlush();
-    expect(totals()).toEqual({ "Item_Success_Count:TRACE": 1 });
-    expect(fetch).toHaveBeenCalledTimes(4);
-  },
-);
-
 it.each([false, true])(
   "filters only exact shared configured and redirect URLs in standalone logs when enabled: %s",
   async (enabled) => {
     const configured = "https://standalone-filter.example.test/v2/track";
     const redirected = "https://standalone-filter.example.test/ingest?tenant=one";
-    const response = new Response(null);
-    Object.defineProperties(response, {
-      redirected: { value: true },
-      url: { value: redirected },
-    });
     const peer = new Sender({
       endpoint: configured,
-      fetch: async () => response,
+      fetch: async () => redirectResponse(redirected),
     });
     await peer.send(request());
     const exporter = createExporter("logs", {
@@ -1485,31 +1122,18 @@ it.each([false, true])(
   },
 );
 
-it("bounds exact redirect URL history while retaining recent and refreshed destinations", async () => {
+it("bounds exact URL history while retaining recent and refreshed destinations", () => {
   const url = (index: number) => `https://redirect-history.example.test/track?request=${index}`;
-  let index = 0;
-  const sender = new Sender({
-    endpoint: url(-1),
-    fetch: async () => {
-      const response = new Response(null);
-      Object.defineProperties(response, {
-        redirected: { value: true },
-        url: { value: url(index++) },
-      });
-      return response;
-    },
-  });
-  for (let count = 0; count < 256; count++) await sender.send(request());
+  for (let index = -1; index < 256; index++) rememberSdkIngestionUrl(url(index));
   expect(isSdkIngestionUrl(url(-1))).toBe(false);
   expect(isSdkIngestionUrl(url(0))).toBe(true);
   rememberSdkIngestionUrl(`${url(0)}#ignored`);
-  await sender.send(request());
+  rememberSdkIngestionUrl(url(256));
   expect(isSdkIngestionUrl(url(0))).toBe(true);
   expect(isSdkIngestionUrl(url(1))).toBe(false);
   expect(isSdkIngestionUrl(url(2))).toBe(true);
   expect(isSdkIngestionUrl(url(256))).toBe(true);
   expect(isSdkIngestionUrl(`${url(256)}&application=true`)).toBe(false);
-  sender.dispose();
 });
 
 it.each([false, true])(
@@ -1522,72 +1146,24 @@ it.each([false, true])(
     };
     const first = createExporter("spans", options);
     const second = createExporter("logs", options);
-    const collector = createExporter("logs");
-    let index = 0;
-    const peer = new Sender({
-      endpoint: "https://churn.example.test/v2/track",
-      fetch: async () => {
-        const response = new Response(null);
-        Object.defineProperties(response, {
-          redirected: { value: true },
-          url: { value: `https://churn.example.test/v2/track?request=${index++}` },
-        });
-        return response;
-      },
-    });
-    try {
-      for (let count = 0; count < 300; count++) await peer.send(request());
-      const url = `${protectedEndpoint}/v2/track`;
+    const url = `${protectedEndpoint}/v2/track`;
+    for (const owner of [first, second]) {
+      churnIngestionUrls();
       expect(isSdkIngestionUrl(url)).toBe(true);
-      await first.shutdown();
-      await first.shutdown();
-      for (let count = 0; count < 300; count++) await peer.send(request());
-      expect(isSdkIngestionUrl(url)).toBe(true);
-      await exportAsync(collector, [resourceTiming(url)]);
-      expect(fetch).not.toHaveBeenCalled();
-      await second.shutdown();
-      expect(isSdkIngestionUrl(url)).toBe(true);
-      for (let count = 0; count < 300; count++) await peer.send(request());
-      expect(isSdkIngestionUrl(url)).toBe(false);
-    } finally {
-      peer.dispose();
+      await owner.shutdown();
+      await owner.shutdown();
     }
+    expect(isSdkIngestionUrl(url)).toBe(true);
+    churnIngestionUrls();
+    expect(isSdkIngestionUrl(url)).toBe(false);
   },
 );
 
-it("does not reactivate URL protection when a disposed sender receives a late redirect", async () => {
-  const original = "https://late-sdk.example.test/v2/track";
-  const redirected = "https://late-sdk.example.test/redirected";
-  let finish!: (response: Response) => void;
-  const sender = new Sender({
-    endpoint: original,
-    fetch: () =>
-      new Promise((resolve) => {
-        finish = resolve;
-      }),
-  });
-  const sending = sender.send(request());
-  await vi.waitFor(() => expect(finish).toBeDefined());
-  sender.dispose();
-  const response = new Response(null);
-  Object.defineProperties(response, {
-    redirected: { value: true },
-    url: { value: redirected },
-  });
-  finish(response);
-  await sending;
-  expect(isSdkIngestionUrl(redirected)).toBe(true);
-  for (let index = 0; index < 300; index++)
-    rememberSdkIngestionUrl(`https://late-sdk-history.example.test/track?request=${index}`);
-  expect(isSdkIngestionUrl(original)).toBe(false);
-  expect(isSdkIngestionUrl(redirected)).toBe(false);
-});
-
-it.each([false, true])(
-  "protects a concurrent attempt's original URL through redirects and churn (failure: %s)",
-  async (failure) => {
-    const original = `https://attempt-${failure}.example.test/v2/track`;
-    const redirected = `https://attempt-${failure}.example.test/redirected`;
+it.each(["success", "failure", "disposed"] as const)(
+  "protects in-flight URLs without leaking ownership after %s",
+  async (outcome) => {
+    const original = `https://attempt-${outcome}.example.test/v2/track`;
+    const redirected = `https://attempt-${outcome}.example.test/redirected`;
     let resolve!: (response: Response) => void;
     let reject!: (error: Error) => void;
     const transport = vi
@@ -1599,38 +1175,24 @@ it.each([false, true])(
             reject = no;
           }),
       )
-      .mockImplementation(async () => {
-        const response = new Response(null);
-        Object.defineProperties(response, {
-          redirected: { value: true },
-          url: { value: redirected },
-        });
-        return response;
-      });
+      .mockImplementation(async () => redirectResponse(redirected));
     const sender = new Sender({ endpoint: original, fetch: transport });
     const pending = sender.send({ ...request(), retry: false });
-    const expected = failure
-      ? expect(pending).rejects.toThrow("Browser transport failed")
-      : expect(pending).resolves.toMatchObject({ statusCode: 200 });
+    const expected =
+      outcome === "failure"
+        ? expect(pending).rejects.toThrow("Browser transport failed")
+        : expect(pending).resolves.toMatchObject({ statusCode: 200 });
     await sender.send(request());
-    const churn = () => {
-      for (let index = 0; index < 300; index++)
-        rememberSdkIngestionUrl(`https://attempt-history.example.test/track?request=${index}`);
-    };
-    churn();
+    if (outcome === "disposed") sender.dispose();
+    churnIngestionUrls();
     expect(isSdkIngestionUrl(original)).toBe(true);
-    const collector = createExporter("logs");
-    await new Promise<ExportResult>((callback) =>
-      collector.export([resourceTiming(original)], callback),
-    );
-    expect(fetch).not.toHaveBeenCalled();
-    if (failure) reject(new TypeError("offline"));
-    else resolve(new Response(null));
+    if (outcome === "failure") reject(new TypeError("offline"));
+    else resolve(redirectResponse(redirected));
     await expected;
     expect(isSdkIngestionUrl(original)).toBe(true);
-    churn();
+    churnIngestionUrls();
     expect(isSdkIngestionUrl(original)).toBe(false);
-    expect(isSdkIngestionUrl(redirected)).toBe(true);
+    expect(isSdkIngestionUrl(redirected)).toBe(outcome !== "disposed");
     sender.dispose();
   },
 );

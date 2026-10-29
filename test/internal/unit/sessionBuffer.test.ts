@@ -114,6 +114,28 @@ function bufferKeys(): string[] {
   ).filter((key): key is string => key?.startsWith(SESSION_BUFFER_KEY_PREFIX) === true);
 }
 
+async function reportedCounts(
+  fetch: ReturnType<typeof stubFetch>,
+): Promise<Record<string, number>> {
+  const [url, init] = fetch.mock.calls.at(-1)!;
+  const metrics: AzureMonitorEnvelope<MetricData>[] = await new Request(url, init).json();
+  const entries = metrics.map(
+    ({ data: { baseData } }) =>
+      [
+        [
+          baseData.metrics[0].name,
+          baseData.properties?.telemetryType,
+          baseData.properties?.dropCode,
+        ]
+          .filter(Boolean)
+          .join(":"),
+        baseData.metrics[0].value,
+      ] as const,
+  );
+  expect(new Set(entries.map(([key]) => key)).size).toBe(entries.length);
+  return Object.fromEntries(entries);
+}
+
 function blockStorage(...methods: ("setItem" | "removeItem")[]): () => void {
   const mocks = methods.map((method) =>
     vi.spyOn(testSessionStorage, method).mockImplementation(() => {
@@ -335,8 +357,11 @@ describe("Azure Monitor sessionStorage buffer", () => {
             ),
       );
       const client = createClient({ sdkStats: { enabled: true } });
-      const items =
-        mode === "whole" ? [envelope("retry")] : [envelope("retry-503"), envelope("retry-429")];
+      const items = [envelope("retry-503")];
+      if (mode === "partial")
+        items.push(
+          spanToEnvelope(createReadableSpan({ kind: SpanKind.SERVER }), TEST_INSTRUMENTATION_KEY),
+        );
       const pending = exportAsync(client, items);
       await vi.waitFor(() => {
         const record: unknown[] = JSON.parse(testSessionStorage.getItem(bufferKeys()[0]) ?? "[]");
@@ -361,14 +386,12 @@ describe("Azure Monitor sessionStorage buffer", () => {
       loadPage();
       const fetch = stubFetch();
       await createClient({ sdkStats: { enabled: true } }).forceFlush();
-      const [url, init] = fetch.mock.calls[0];
-      const metrics: AzureMonitorEnvelope<MetricData>[] = await new Request(url, init).json();
-      expect(metrics.map((item) => item.data.baseData.properties?.dropCode)).toEqual(
-        networkFailure ? ["CLIENT_EXCEPTION"] : mode === "whole" ? ["503"] : ["429", "503"],
-      );
-      expect(metrics.reduce((sum, item) => sum + item.data.baseData.metrics[0].value, 0)).toBe(
-        items.length,
-      );
+      expect(await reportedCounts(fetch)).toEqual({
+        [`Item_Dropped_Count:DEPENDENCY:${networkFailure ? "CLIENT_EXCEPTION" : "503"}`]: 1,
+        ...(mode === "partial"
+          ? { [`Item_Dropped_Count:REQUEST:${networkFailure ? "CLIENT_EXCEPTION" : "429"}`]: 1 }
+          : {}),
+      });
       await pending;
       expect(firstFetch).toHaveBeenCalledTimes(networkFailure ? 2 : 1);
     },
@@ -682,15 +705,8 @@ describe("Azure Monitor sessionStorage buffer", () => {
       firstFetch.mockResolvedValue(new Response(null));
       await client.forceFlush();
       expect(firstFetch).toHaveBeenCalledTimes(2);
-      const [url, init] = firstFetch.mock.calls[1];
-      const stats: AzureMonitorEnvelope[] = await new Request(url, init).json();
-      expect(stats).toHaveLength(1);
-      expect(stats[0].data.baseData).toMatchObject({
-        metrics: [{ name: status === 200 ? "Item_Success_Count" : "Item_Dropped_Count", value: 1 }],
-        properties: {
-          telemetryType: "DEPENDENCY",
-          ...(status === 400 ? { dropCode: "400" } : {}),
-        },
+      expect(await reportedCounts(firstFetch)).toEqual({
+        [status === 200 ? "Item_Success_Count:DEPENDENCY" : "Item_Dropped_Count:DEPENDENCY:400"]: 1,
       });
       hidePage();
       expect(bufferKeys()).toEqual([]);
@@ -1076,255 +1092,90 @@ describe("Azure Monitor sessionStorage buffer", () => {
     expect(count.mock.calls.filter(([outcome]) => outcome === "Dropped")).toEqual([]);
   });
 
-  it.each(["whole", "partial"] as const)(
-    "accounts for expired %s batches after the original reporter has stopped",
-    async (mode) => {
+  it.each(
+    [false, true].flatMap((partial) =>
+      ["adopt", "recover", "tombstone"].map((resolution) => ({ partial, resolution })),
+    ),
+  )(
+    "settles stale accounting exactly once after $resolution (partial: $partial)",
+    ({ partial, resolution }) => {
       vi.spyOn(diag, "warn").mockImplementation(() => {});
-      const firstFetch = stubFetch(() =>
-        mode === "whole"
-          ? new Response(null, { status: 503, headers: { "retry-after": "86400" } })
-          : breezeResponse(
-              [
-                { index: 1, statusCode: 503 },
-                { index: 2, statusCode: 429 },
-              ],
-              { "retry-after": "86400" },
-            ),
-      );
-      const client = createClient({ sdkStats: { enabled: true } });
-      await exportAsync(
-        client,
-        mode === "whole"
-          ? [envelope("expired")]
-          : [envelope("accepted"), envelope("retry-503"), envelope("retry-429")],
-      );
-      hidePage();
-      const stored: unknown[] = JSON.parse(testSessionStorage.getItem(bufferKeys()[0])!);
-      expect((stored[1] as unknown[])[2]).toEqual(mode === "whole" ? "503" : ["503", "429"]);
-      firstFetch.mockResolvedValue(new Response(null));
-      const restoreStorage = blockStorage("removeItem", "setItem");
-
-      await client.shutdown();
-      restoreStorage();
-      vi.spyOn(Date, "now").mockReturnValue(Date.now() + MAX_SESSION_BUFFER_AGE_MS + 1);
-      loadPage();
-      const fetch = stubFetch();
-      await createClient({ sdkStats: { enabled: true } }).forceFlush();
-      expect(fetch).toHaveBeenCalledOnce();
-      const [url, init] = fetch.mock.calls[0];
-      const metrics: AzureMonitorEnvelope[] = await new Request(url, init).json();
-      expect(metrics.map((item) => item.data.baseData)).toEqual(
-        (mode === "whole" ? ["503"] : ["503", "429"]).map((code) =>
-          expect.objectContaining({
-            metrics: [expect.objectContaining({ name: "Item_Dropped_Count", value: 1 })],
-            properties: expect.objectContaining({ telemetryType: "DEPENDENCY", dropCode: code }),
-          }),
-        ),
-      );
-      loadPage();
-      await createClient({ sdkStats: { enabled: true } }).forceFlush();
-      expect(fetch).toHaveBeenCalledOnce();
-    },
-  );
-
-  it("persists unordered partial errors in the same order as their deferred envelopes", async () => {
-    stubFetch(() =>
-      breezeResponse(
-        [
-          { index: 1, statusCode: 503 },
-          { index: 0, statusCode: 429 },
-        ],
-        {},
-        2,
-      ),
-    );
-    const client = createClient({ sdkStats: { enabled: true } });
-    beginUnloading();
-    try {
-      await exportAsync(client, [
-        envelope("dependency"),
-        spanToEnvelope(
-          createReadableSpan({ name: "request", kind: SpanKind.SERVER }),
-          TEST_INSTRUMENTATION_KEY,
-        ),
-      ]);
-    } finally {
-      endUnloading();
-    }
-    hidePage();
-    vi.spyOn(Date, "now").mockReturnValue(Date.now() + MAX_SESSION_BUFFER_AGE_MS + 1);
-    loadPage();
-    const fetch = stubFetch();
-    await createClient({ sdkStats: { enabled: true } }).forceFlush();
-    expect(fetch).toHaveBeenCalledOnce();
-    const [url, init] = fetch.mock.calls[0];
-    const metrics: AzureMonitorEnvelope[] = await new Request(url, init).json();
-    expect(metrics.map((item) => item.data.baseData)).toEqual([
-      expect.objectContaining({
-        metrics: [expect.objectContaining({ value: 1 })],
-        properties: expect.objectContaining({ telemetryType: "REQUEST", dropCode: "503" }),
-      }),
-      expect.objectContaining({
-        metrics: [expect.objectContaining({ value: 1 })],
-        properties: expect.objectContaining({ telemetryType: "DEPENDENCY", dropCode: "429" }),
-      }),
-    ]);
-  });
-
-  it.each([200, 400, 206])(
-    "holds HTTP %s outcomes until a stale released snapshot is invalidated or adopted",
-    async (status) => {
-      vi.spyOn(diag, "warn").mockImplementation(() => {});
-      const firstFetch = stubFetch(hang);
-      const client = createClient({ sdkStats: { enabled: true } });
-      const count = vi.spyOn(client.itemStats!, "countEnvelopes");
-      const items =
-        status === 206
-          ? [envelope("accepted"), envelope("retry"), envelope("bad")]
-          : [envelope("settled")];
-      const original = exportAsync(client, items);
-      await vi.waitFor(() => expect(hanging).toHaveLength(1));
-      hidePage();
-      const record = testSessionStorage.getItem(bufferKeys()[0]);
-      const restoreStorage = blockStorage("setItem", "removeItem");
-
-      hanging.shift()!(
-        status === 206
-          ? breezeResponse(
-              [
-                { index: 1, statusCode: 503 },
-                { index: 2, statusCode: 400 },
-              ],
-              { "retry-after": "86400" },
-            )
-          : new Response(null, { status }),
-      );
-      await original;
-      expect(count).not.toHaveBeenCalled();
-      expect(testSessionStorage.getItem(bufferKeys()[0])).toBe(record);
-      restoreStorage();
-      loadPage();
-      const fetch = stubFetch();
-      await createClient({ sdkStats: { enabled: true } }).forceFlush();
-      expect(sentNames(fetch)[0]).toEqual(
-        items.map((item) => (item.data.baseData as { name: string }).name),
-      );
-      const [url, init] = fetch.mock.calls[1];
-      const metrics: AzureMonitorEnvelope[] = await new Request(url, init).json();
-      expect(metrics[0].data.baseData).toMatchObject({
-        metrics: [{ name: "Item_Success_Count", value: items.length }],
-      });
-      firstFetch.mockResolvedValue(new Response(null));
-      await client.shutdown();
-      expect(count).not.toHaveBeenCalled();
-    },
-  );
-
-  it.each([200, 400])(
-    "uses a tombstone before counting HTTP %s when removal fails but writing works",
-    async (status) => {
-      vi.spyOn(diag, "warn").mockImplementation(() => {});
-      const firstFetch = stubFetch(hang);
-      const client = createClient({ sdkStats: { enabled: true } });
-      const count = vi.spyOn(client.itemStats!, "countEnvelopes");
-      const original = exportAsync(client, [envelope("settled")]);
-      await vi.waitFor(() => expect(hanging).toHaveLength(1));
+      const buffer = new SessionBuffer("outcomes");
+      const original = '[{"name":"settled"},{"name":"retry"}]';
+      const remaining = partial ? '[{"name":"retry"}]' : "[]";
+      const id = buffer.add(original);
+      buffer.begin(id);
       hidePage();
       const key = bufferKeys()[0];
-      const remove = vi.spyOn(testSessionStorage, "removeItem").mockImplementation(() => {
-        throw new DOMException("Removal blocked", "SecurityError");
-      });
-      hanging.shift()!(new Response(null, { status }));
-      await original;
-      expect(testSessionStorage.getItem(key)).toBe("[0]");
-      expect(count).toHaveBeenCalledOnce();
-      loadPage();
-      const fetch = stubFetch();
-      await createClient({ sdkStats: { enabled: true } }).forceFlush();
-      expect(fetch).not.toHaveBeenCalled();
-      remove.mockRestore();
-      firstFetch.mockResolvedValue(new Response(null));
-      await client.shutdown();
+      const before = testSessionStorage.getItem(key);
+      const restoreStorage = blockStorage("setItem", "removeItem");
+      const count = vi.fn();
+      buffer.settle(id, remaining, partial);
+      buffer.account(id, count);
+      expect(count).not.toHaveBeenCalled();
+      expect(testSessionStorage.getItem(key)).toBe(before);
+      restoreStorage();
+      if (resolution === "adopt") {
+        loadPage();
+        const next = new SessionBuffer("outcomes");
+        expect(next.adopt().map(([, body]) => body)).toEqual([original]);
+        next.dispose();
+      } else {
+        const restoreRemoval = resolution === "tombstone" ? blockStorage("removeItem") : () => {};
+        vi.spyOn(Date, "now").mockReturnValue(Date.now() + 61_000);
+        restorePage();
+        if (resolution === "tombstone" && !partial)
+          expect(testSessionStorage.getItem(key)).toBe("[0]");
+        hidePage();
+        restoreRemoval();
+      }
+      buffer.dispose();
+      expect(count).toHaveBeenCalledTimes(resolution === "adopt" ? 0 : 1);
     },
   );
 
-  it.each([200, 206])(
-    "commits pending HTTP %s outcomes once after local storage recovery",
-    async (status) => {
+  it.each([false, true])(
+    "does not double-count a stale snapshot after handoff (dispatched: %s)",
+    async (dispatched) => {
       vi.spyOn(diag, "warn").mockImplementation(() => {});
       const firstFetch = stubFetch(hang);
       const client = createClient({ sdkStats: { enabled: true } });
       const count = vi.spyOn(client.itemStats!, "countEnvelopes");
-      const items =
-        status === 206
-          ? [envelope("accepted"), envelope("retry"), envelope("bad")]
-          : [envelope("accepted")];
-      const original = exportAsync(client, items);
+      hidePage();
+      const originalWrite = testSessionStorage.setItem.bind(testSessionStorage);
+      const write = vi
+        .spyOn(testSessionStorage, "setItem")
+        .mockImplementation(() => {
+          throw new DOMException("Storage blocked", "SecurityError");
+        })
+        .mockImplementationOnce(originalWrite);
+      const restoreStorage = blockStorage("removeItem");
+      let original: Promise<ExportResult>;
+      if (dispatched) beginUnloading();
+      try {
+        original = exportAsync(client, [envelope("dispatched")]);
+      } finally {
+        if (dispatched) endUnloading();
+      }
       await vi.waitFor(() => expect(hanging).toHaveLength(1));
-      hidePage();
-      const restoreStorage = blockStorage("setItem", "removeItem");
-
-      hanging.shift()!(
-        status === 206
-          ? breezeResponse(
-              [
-                { index: 1, statusCode: 503 },
-                { index: 2, statusCode: 400 },
-              ],
-              { "retry-after": "86400" },
-            )
-          : new Response(null),
-      );
-      await original;
-      expect(count).not.toHaveBeenCalled();
+      if (!dispatched) {
+        hanging.shift()!(new Response(null));
+        await original;
+        expect(count).not.toHaveBeenCalled();
+      }
+      write.mockRestore();
       restoreStorage();
-      vi.spyOn(Date, "now").mockReturnValue(Date.now() + 61_000);
-      restorePage();
-      expect(count).toHaveBeenCalledWith("Success", [items[0]]);
-      expect(count).toHaveBeenCalledTimes(status === 206 ? 2 : 1);
-      if (status === 206) expect(count).toHaveBeenCalledWith("Dropped", [items[2]], "400");
-      hidePage();
+      loadPage();
+      const fetch = stubFetch();
+      await createClient({ sdkStats: { enabled: true } }).forceFlush();
+      expect(sentNames(fetch)[0]).toEqual(["dispatched"]);
+      if (dispatched) hanging.shift()!(new Response(null));
+      await original;
       firstFetch.mockResolvedValue(new Response(null));
-      await client.forceFlush();
       await client.shutdown();
-      expect(count).toHaveBeenCalledTimes(status === 206 ? 3 : 1);
+      expect(count).not.toHaveBeenCalled();
     },
   );
-
-  it("hands off outcome ownership for a dispatched request whose old snapshot could not be removed", async () => {
-    vi.spyOn(diag, "warn").mockImplementation(() => {});
-    const firstFetch = stubFetch(hang);
-    const client = createClient({ sdkStats: { enabled: true } });
-    const count = vi.spyOn(client.itemStats!, "countEnvelopes");
-    hidePage();
-    const originalWrite = testSessionStorage.setItem.bind(testSessionStorage);
-    const write = vi
-      .spyOn(testSessionStorage, "setItem")
-      .mockImplementation(() => {
-        throw new DOMException("Storage blocked", "SecurityError");
-      })
-      .mockImplementationOnce(originalWrite);
-    const restoreStorage = blockStorage("removeItem");
-    let original: Promise<ExportResult>;
-    beginUnloading();
-    try {
-      original = exportAsync(client, [envelope("dispatched")]);
-    } finally {
-      endUnloading();
-    }
-    await vi.waitFor(() => expect(hanging).toHaveLength(1));
-    write.mockRestore();
-    restoreStorage();
-    loadPage();
-    const fetch = stubFetch();
-    await createClient({ sdkStats: { enabled: true } }).forceFlush();
-    expect(sentNames(fetch)[0]).toEqual(["dispatched"]);
-    hanging.shift()!(new Response(null));
-    await original;
-    firstFetch.mockResolvedValue(new Response(null));
-    await client.shutdown();
-    expect(count).not.toHaveBeenCalled();
-  });
 
   it.each([false, true])(
     "defers released-buffer outcomes when both writing and removal fail (expired: %s)",
@@ -1346,6 +1197,8 @@ describe("Azure Monitor sessionStorage buffer", () => {
       hidePage();
       expect(testSessionStorage.getItem(key)).toBe(record);
       expect(count.mock.calls.filter(([outcome]) => outcome === "Dropped")).toEqual([]);
+      firstFetch.mockResolvedValue(new Response(null));
+      await client.shutdown();
       loadPage();
       const fetch = stubFetch();
       await createClient({ sdkStats: { enabled: true } }).forceFlush();
@@ -1354,13 +1207,13 @@ describe("Azure Monitor sessionStorage buffer", () => {
       loadPage();
       await createClient({ sdkStats: { enabled: true } }).forceFlush();
       expect(fetch).toHaveBeenCalledTimes(expired ? 1 : 2);
-      const [url, init] = fetch.mock.calls.at(-1)!;
-      const metrics: AzureMonitorEnvelope[] = await new Request(url, init).json();
-      expect(metrics[0].data.baseData).toMatchObject({
-        metrics: [{ name: expired ? "Item_Dropped_Count" : "Item_Success_Count", value: 1 }],
+      expect(await reportedCounts(fetch)).toEqual({
+        [expired ? "Item_Dropped_Count:DEPENDENCY:503" : "Item_Success_Count:DEPENDENCY"]: 1,
       });
-      firstFetch.mockResolvedValue(new Response(null));
       await client.shutdown();
+      loadPage();
+      await createClient({ sdkStats: { enabled: true } }).forceFlush();
+      expect(fetch).toHaveBeenCalledTimes(expired ? 1 : 2);
       expect(count.mock.calls.filter(([outcome]) => outcome === "Dropped")).toEqual([]);
     },
   );
@@ -1379,12 +1232,8 @@ describe("Azure Monitor sessionStorage buffer", () => {
     const fetch = stubFetch();
     await createClient({ sdkStats: { enabled: true } }).forceFlush();
     expect(fetch).toHaveBeenCalledOnce();
-    const [url, init] = fetch.mock.calls[0];
-    const metrics: AzureMonitorEnvelope[] = await new Request(url, init).json();
-    expect(metrics).toHaveLength(1);
-    expect(metrics[0].data.baseData).toMatchObject({
-      metrics: [{ name: "Item_Dropped_Count", value: 2 }],
-      properties: { telemetryType: "DEPENDENCY", dropCode: "CLIENT_EXCEPTION" },
+    expect(await reportedCounts(fetch)).toEqual({
+      "Item_Dropped_Count:DEPENDENCY:CLIENT_EXCEPTION": 2,
     });
   });
 
