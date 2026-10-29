@@ -613,32 +613,79 @@ it("flushes both stats reporters before propagating an export callback failure",
   expect(totals()["Item_Success_Count:DEPENDENCY"]).toBe(1);
 });
 
-it("bounds a hung flush without cancelling exports started after it", async () => {
+it("bounds a hung flush without cancelling application delivery", async () => {
   const clock = installFakeClock();
   const client = createClient();
   const finishFirst = holdNextFetch();
-  client.export(request().envelopes, () => {});
-  const flushing = expect(client.forceFlush()).rejects.toThrow("flush timed out");
+  const first = exportAsync(client, request().envelopes);
+  const flushing = expect(client.forceFlush()).rejects.toThrow("Operation timed out");
   const finishSecond = holdNextFetch();
   const sending = exportAsync(client, request([SpanKind.SERVER]).envelopes);
-  await clock.advance(MAX_SHUTDOWN_WAIT_MS / 2);
-  const laterFlushing = client.forceFlush();
-  await clock.advance(MAX_SHUTDOWN_WAIT_MS / 2);
+  await clock.advance(MAX_LIFECYCLE_WAIT_MS);
   await flushing;
-  expect(fetch.mock.calls[0][1]?.signal?.aborted).toBe(true);
+  expect(fetch.mock.calls[0][1]?.signal?.aborted).toBe(false);
   expect(fetch.mock.calls[1][1]?.signal?.aborted).toBe(false);
+  finishFirst(new Response(null));
   finishSecond(new Response(null));
-  await expect(sending).resolves.toEqual({ code: ExportResultCode.SUCCESS });
-  await laterFlushing;
+  expect(await Promise.all([first, sending])).toEqual([
+    { code: ExportResultCode.SUCCESS },
+    { code: ExportResultCode.SUCCESS },
+  ]);
   await client.shutdown();
   expect(totals()).toEqual({
     "Item_Success_Count:REQUEST": 1,
-    "Item_Dropped_Count:DEPENDENCY:CLIENT_EXCEPTION": 1,
+    "Item_Success_Count:DEPENDENCY": 1,
   });
-  const calls = fetch.mock.calls.length;
-  finishFirst(new Response(null));
+  expect(vi.getTimerCount()).toBe(0);
+});
+
+it.each([20, 30])(
+  "preserves Retry-After: %ss while flushing with stats disabled",
+  async (seconds) => {
+    const clock = installFakeClock();
+    const client = createClient({ connectionString, sdkStats: { enabled: false } });
+    for (const status of [503, 200]) {
+      const response = new Response(null, { status, headers: { "retry-after": String(seconds) } });
+      vi.spyOn(response, "text").mockResolvedValue("");
+      fetch.mockResolvedValueOnce(response);
+    }
+    const sending = exportAsync(client, request().envelopes);
+    const flushed = Promise.allSettled([client.forceFlush()]);
+    await clock.advance(seconds * 1000);
+    expect(await sending).toEqual({ code: ExportResultCode.SUCCESS });
+    expect((await flushed)[0].status).toBe(seconds === 20 ? "fulfilled" : "rejected");
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(fetch.mock.calls.every(([, init]) => !init?.signal?.aborted)).toBe(true);
+    await client.shutdown();
+  },
+);
+
+it("reports owned stats while shutdown waits for an unrelated active flush", async () => {
+  const clock = installFakeClock();
+  const handle = await useMicrosoftOpenTelemetry({
+    azureMonitor: { connectionString, sdkStats: { enabled: true } },
+    spanProcessors: [],
+    logRecordProcessors: [
+      {
+        onEmit() {},
+        forceFlush: () => new Promise(() => {}),
+        shutdown: async () => {},
+      },
+    ],
+    pageView: { enabled: false },
+    session: { enabled: false },
+  });
+  owners.push(handle);
+  const response = new Response(null);
+  vi.spyOn(response, "text").mockResolvedValue("");
+  fetch.mockResolvedValueOnce(response);
+  logs.getLogger("mixed-processors").emit({ body: "retained count" });
+  const flushing = expect(handle.forceFlush()).rejects.toThrow("Operation timed out");
   await clock.advance(0);
-  expect(fetch).toHaveBeenCalledTimes(calls);
+  const shutdown = expect(handle.shutdown()).rejects.toThrow("Operation timed out");
+  await vi.waitFor(() => expect(totals()).toEqual({ "Item_Success_Count:TRACE": 1 }));
+  await clock.advance(30_000);
+  await Promise.all([flushing, shutdown]);
   expect(vi.getTimerCount()).toBe(0);
 });
 
@@ -717,7 +764,7 @@ it("lets shutdown own final reports when an earlier flush is still draining", as
   const client = createClient();
   fetch.mockImplementation(() => new Promise(() => {}));
   client.export(request().envelopes, () => {});
-  const flushing = expect(client.forceFlush()).rejects.toThrow("flush timed out");
+  const flushing = expect(client.forceFlush()).rejects.toThrow("shutdown timed out");
   const shutdown = client.shutdown();
   const settled = Promise.allSettled([shutdown]);
   expect(client.forceFlush()).toBe(shutdown);

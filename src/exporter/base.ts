@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 import type { ExportResult } from "@opentelemetry/core";
-import { ExportResultCode } from "@opentelemetry/core";
+import { callWithTimeout, ExportResultCode } from "@opentelemetry/core";
 import { isRetriable, isSamplingRejection } from "./breezeUtils.js";
 import { isUnloading } from "./common.js";
 import { isValidInstrumentationKey, parseConnectionString } from "./connectionStringParser.js";
@@ -67,7 +67,7 @@ export class AzureMonitorExportClient {
   #stopped = false;
   readonly #stats: InternalSdkStats;
   readonly #buffer: SessionBuffer | undefined;
-  #controller = new AbortController();
+  readonly #controller = new AbortController();
   #shutdown: Promise<void> | undefined;
   #shutdownStarted: number | undefined;
   #shutdownTimer: ReturnType<typeof setTimeout> | undefined;
@@ -307,27 +307,18 @@ export class AzureMonitorExportClient {
     return this.#shutdownStarted;
   }
 
-  async #drain(phase: "flush" | "shutdown"): Promise<unknown[]> {
-    const pending = [...this.#pending];
-    const controller = this.#controller;
-    // Later exports get a fresh signal; earlier drain generations have earlier deadlines.
-    this.#controller = new AbortController();
-    const timer = setTimeout(
-      () => controller.abort(),
-      Math.max(
-        0,
-        (this.#shutdownStarted ?? performance.now()) + MAX_SHUTDOWN_WAIT_MS - performance.now(),
-      ),
-    );
+  async #drain(shutdown = false): Promise<unknown[]> {
+    const pending = Promise.allSettled([...this.#pending]);
     try {
-      const results = await Promise.allSettled(pending);
+      // A flush timeout stops waiting, not delivery. Only shutdown cancels application exports.
+      const results = await (shutdown ? pending : callWithTimeout(pending, MAX_LIFECYCLE_WAIT_MS));
       const errors = results.flatMap((result) =>
         result.status === "rejected" ? [result.reason as unknown] : [],
       );
-      if (controller.signal.aborted) errors.push(new Error(`Exporter ${phase} timed out.`));
+      if (this.#controller.signal.aborted) errors.push(new Error("Exporter shutdown timed out."));
       return errors;
-    } finally {
-      clearTimeout(timer);
+    } catch (error) {
+      return [error];
     }
   }
 
@@ -335,23 +326,18 @@ export class AzureMonitorExportClient {
     if (this.#stopped) return this.#shutdown ?? Promise.resolve();
     const deadline = (this.#shutdownStarted ?? performance.now()) + MAX_LIFECYCLE_WAIT_MS;
     // Customer exports get keepalive capacity before stats.
-    const pending = this.#drain("flush");
-    return waitForAll(
-      [
-        pending.then((errors) => throwErrors(errors, "Pending exports failed")),
-        pending.then(() => {
-          if (this.#stopped) return this.#shutdown;
-          return waitForAll(
-            [
-              this.itemStats?.forceFlush(deadline) ?? Promise.resolve(),
-              this.#stats.forceFlush(deadline),
-            ],
-            "SDK stats flush failed",
-          );
-        }),
-      ],
-      "Exporter flush failed",
-    );
+    const pending = this.#drain();
+    return pending.then((errors) => {
+      if (this.#stopped && this.#shutdown) return this.#shutdown;
+      return waitForAll(
+        [
+          Promise.resolve().then(() => throwErrors(errors, "Pending exports failed")),
+          this.itemStats?.forceFlush(deadline) ?? Promise.resolve(),
+          this.#stats.forceFlush(deadline),
+        ],
+        "Exporter flush failed",
+      );
+    });
   }
 
   public shutdown(): Promise<void> {
@@ -359,7 +345,7 @@ export class AzureMonitorExportClient {
     if (this.#stopped) return Promise.resolve();
     const deadline = this.prepareShutdown() + MAX_LIFECYCLE_WAIT_MS;
     this.#stopped = true;
-    const pending = this.#drain("shutdown").finally(() => this.#buffer?.dispose());
+    const pending = this.#drain(true).finally(() => this.#buffer?.dispose());
     this.#shutdown = waitForAll(
       [
         pending.then((errors) => throwErrors(errors, "Pending exports failed")),

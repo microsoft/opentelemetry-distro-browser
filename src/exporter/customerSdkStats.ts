@@ -7,7 +7,12 @@ import type { SpanExporter } from "@opentelemetry/sdk-trace-base";
 import { isRetriable } from "./breezeUtils.js";
 import { getSdkVersion, isUnloading } from "./common.js";
 import { Sender } from "./sender.js";
-import { createSdkStatsEnvelope, reportFailure, sendSdkStats } from "./sdkStats.js";
+import {
+  createSdkStatsEnvelope,
+  reportFailure,
+  sendSdkStats,
+  withReportDeadline,
+} from "./sdkStats.js";
 import { isSdkIngestionUrl } from "../shared/globalOwnership.js";
 import type { AzureMonitorEnvelope, MetricData } from "./telemetryModels.js";
 
@@ -118,6 +123,7 @@ export function createCustomerSdkStats(
   const sender = new Sender({ endpoint: ingestionEndpoint, disableBeacon: true });
   let timer: ReturnType<typeof setTimeout> | undefined;
   let flushing: Promise<void> | undefined;
+  let sending: AbortController | undefined;
   let shutdownPromise: Promise<void> | undefined;
   let stopping = false;
   let stopped = false;
@@ -147,7 +153,9 @@ export function createCustomerSdkStats(
 
   function forceFlush(deadline?: number): Promise<void> {
     // Include counters collected behind an older report without retrying failures in a loop.
-    return flushing && counts.size ? flushing.then(() => flush(deadline)) : flush(deadline);
+    const operation =
+      flushing && counts.size ? flushing.then(() => flush(deadline)) : flush(deadline);
+    return withReportDeadline(operation, sending, deadline);
   }
 
   function flush(deadline?: number): Promise<void> {
@@ -171,7 +179,7 @@ export function createCustomerSdkStats(
       );
     }
     counts.clear();
-    const controller = new AbortController();
+    const controller = (sending = new AbortController());
     flushing = sendSdkStats(
       sender,
       [...pending.keys()],
@@ -197,6 +205,7 @@ export function createCustomerSdkStats(
         reportFailure(error, "Customer SDK stats export failed");
       })
       .finally(() => {
+        sending = undefined;
         flushing = undefined;
         schedule();
       });
@@ -212,7 +221,7 @@ export function createCustomerSdkStats(
         try {
           await pending;
         } finally {
-          await flushing;
+          await withReportDeadline(flushing, sending, deadline);
           await flush(deadline);
           stopped = true;
           counts.clear();

@@ -374,6 +374,16 @@ export async function useMicrosoftOpenTelemetry(
         (operation): operation is Promise<void> => operation !== undefined,
       );
       if (activeFlushes.length > 0) {
+        // Providers observe these cached shutdown results below. Do not hold owned reporting
+        // behind an unrelated caller processor's flush.
+        activeFlushes.push(
+          Promise.allSettled(ownedProcessors.map((processor) => processor.shutdown())).then(() =>
+            runLifecycleTasks(
+              azureMonitorExporters.map((exporter) => () => exporter.shutdown()),
+              "SDK stats shutdown failed",
+            ),
+          ),
+        );
         const flushResults = await Promise.allSettled(activeFlushes);
         for (const result of flushResults) {
           if (result.status === "rejected") errors.push(result.reason);

@@ -313,8 +313,10 @@ representation. Unreleased snapshots become terminal on shutdown because they ca
 released snapshots retain their handoff ownership.
 
 Flush and shutdown share a 29-second budget across draining and reporting, inside the processor's
-30-second cleanup deadline. Pending exports get up to 15 seconds; the distribution starts that grace
-before its processors wait for callbacks. Both attempt reports before surfacing errors; flush makes
+30-second cleanup deadline. An ordinary flush timeout stops waiting without cancelling application
+retries. Shutdown gives pending exports up to 15 seconds; the distribution starts that grace before
+its processors wait for callbacks and completes owned reporting alongside unrelated active flushes.
+Both attempt reports before surfacing errors; flush makes
 at most one follow-up for new counters, using only the remaining budget. Concurrent shutdown calls
 share work; later cleanup calls resolve even after failure. Callback return values are ignored,
 synchronous throws remain observable, and late

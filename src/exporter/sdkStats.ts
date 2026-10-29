@@ -122,7 +122,7 @@ export function createInternalSdkStats(
           if (counts.size || requests) schedule();
         });
     }
-    return flushing;
+    return withReportDeadline(flushing, sending, deadline);
   }
 
   async function shutdown(pending?: Promise<unknown>, deadline?: number): Promise<void> {
@@ -132,7 +132,7 @@ export function createInternalSdkStats(
       await pending;
     } finally {
       try {
-        await flushing;
+        await withReportDeadline(flushing, sending, deadline);
         await forceFlush(deadline);
       } finally {
         disabled = true;
@@ -232,6 +232,8 @@ export async function sendSdkStats(
   deadline = Infinity,
 ): Promise<void> {
   try {
+    const remaining = Math.min(10_000, deadline - performance.now());
+    if (remaining <= 0) throw new Error("SDK stats deadline exceeded.");
     const result = await callWithTimeout(
       sender.send({
         ...callbacks,
@@ -243,7 +245,7 @@ export async function sendSdkStats(
         sdkStats: true,
         retry: false,
       }),
-      Math.max(0, Math.min(10_000, deadline - performance.now())),
+      remaining,
     );
     if (
       result.transport === "fetch" &&
@@ -254,6 +256,18 @@ export async function sendSdkStats(
   } finally {
     controller.abort();
   }
+}
+
+/** A lifecycle join can shorten a report that started on its ordinary interval. */
+export function withReportDeadline(
+  operation: Promise<void> | undefined,
+  controller: AbortController | undefined,
+  deadline?: number,
+): Promise<void> {
+  if (!operation) return Promise.resolve();
+  if (!controller || deadline === undefined) return operation;
+  const timer = setTimeout(() => controller.abort(), Math.max(0, deadline - performance.now()));
+  return operation.finally(() => clearTimeout(timer));
 }
 
 function resolveRoute(
