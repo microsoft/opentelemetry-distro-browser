@@ -11,6 +11,14 @@ import { WebVitalsInstrumentation } from "@opentelemetry/browser-instrumentation
 import { resourceFromAttributes } from "@opentelemetry/resources";
 import { afterEach, expect, it, vi } from "vitest";
 import {
+  onCLS,
+  onFCP,
+  onINP,
+  onLCP,
+  onTTFB,
+  type FCPMetricWithAttribution,
+} from "web-vitals/attribution";
+import {
   useMicrosoftOpenTelemetry,
   type BrowserInstrumentation,
   type MicrosoftOpenTelemetryBrowser,
@@ -20,6 +28,13 @@ import { PageViewInstrumentation } from "../../../src/instrumentation/pageView/i
 import { startTelemetryInstance } from "../../../src/routing/telemetryInstance.js";
 
 vi.mock("../../../src/routing/telemetryInstance.js", () => ({ startTelemetryInstance: vi.fn() }));
+vi.mock("web-vitals/attribution", () => ({
+  onCLS: vi.fn(),
+  onFCP: vi.fn(),
+  onINP: vi.fn(),
+  onLCP: vi.fn(),
+  onTTFB: vi.fn(),
+}));
 
 function fakeInstance() {
   return {
@@ -39,6 +54,7 @@ afterEach(async () => {
   handles.clear();
   vi.restoreAllMocks();
   vi.mocked(startTelemetryInstance).mockReset();
+  for (const register of [onCLS, onFCP, onINP, onLCP, onTTFB]) vi.mocked(register).mockClear();
   for (const result of results) {
     if (result.status === "rejected") throw result.reason;
   }
@@ -171,6 +187,60 @@ it("registers runtime-supported optional upstream instrumentations by stable IDs
   await handle.instrumentations.setEnabled("web-vitals", true);
   expect(disable).toHaveBeenCalledOnce();
   expect(enable).toHaveBeenCalledOnce();
+});
+
+it("pauses Web Vitals emission and resumes the same object without registering callbacks again", async () => {
+  const firstInstrumentation = new WebVitalsInstrumentation({ enabled: false });
+  const secondInstrumentation = new WebVitalsInstrumentation({ enabled: false });
+  const first = await initialize([firstInstrumentation]);
+  const second = await initialize([secondInstrumentation]);
+  const firstEmit = first.sdk.loggerProvider.getLogger.mock.results[0].value.emit;
+  const secondEmit = second.sdk.loggerProvider.getLogger.mock.results[0].value.emit;
+  const metric: FCPMetricWithAttribution = {
+    name: "FCP",
+    value: 100,
+    delta: 100,
+    rating: "good",
+    id: "pause-resume-fcp",
+    navigationId: 1,
+    navigationType: "navigate",
+    entries: [],
+    attribution: { timeToFirstByte: 25, firstByteToFCP: 75, loadState: "complete" },
+  };
+  // Drive the callbacks registered by the real upstream instrumentation, not its private methods.
+  const report = () => {
+    for (const [callback] of vi.mocked(onFCP).mock.calls) callback(metric);
+  };
+  for (const register of [onCLS, onFCP, onINP, onLCP, onTTFB]) {
+    expect(register).toHaveBeenCalledTimes(2);
+  }
+
+  report();
+  expect(firstEmit).toHaveBeenCalledOnce();
+  expect(secondEmit).toHaveBeenCalledOnce();
+  expect(firstEmit).toHaveBeenLastCalledWith(
+    expect.objectContaining({
+      eventName: "browser.web_vital",
+      attributes: expect.objectContaining({
+        "browser.web_vital.name": "fcp",
+        "browser.web_vital.id": metric.id,
+      }),
+    }),
+  );
+
+  await first.handle.instrumentations.setEnabled("web-vitals", false);
+  report();
+  expect(firstEmit).toHaveBeenCalledOnce();
+  expect(secondEmit).toHaveBeenCalledTimes(2);
+
+  await first.handle.instrumentations.setEnabled("web-vitals", true);
+  expect(first.handle.instrumentations.get("web-vitals")).toBe(firstInstrumentation);
+  report();
+  expect(firstEmit).toHaveBeenCalledTimes(2);
+  expect(secondEmit).toHaveBeenCalledTimes(3);
+  for (const register of [onCLS, onFCP, onINP, onLCP, onTTFB]) {
+    expect(register).toHaveBeenCalledTimes(2);
+  }
 });
 
 it("rejects one Web Vitals object registered twice before it can enable twice", async () => {
