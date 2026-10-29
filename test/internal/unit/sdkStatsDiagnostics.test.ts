@@ -240,6 +240,68 @@ it.each(
   },
 );
 
+it.each(["normal", "throwing", "nested"] as const)(
+  "bypasses retired shared wrappers between standalone console pipelines for %s diagnostics",
+  async (mode) => {
+    context.disable();
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const first = createConsolePipeline();
+    owners.push(first.provider);
+    instrumentations.push(first.instrumentation);
+    const pipeline = createInMemoryPipeline();
+    const shared = new ConsoleInstrumentation({ enabled: false, logMethods: ["warn"] });
+    const handle = await useMicrosoftOpenTelemetry({
+      spanProcessors: [],
+      logRecordProcessors: pipeline.options.logRecordProcessors,
+      pageView: { enabled: false },
+      session: { enabled: false },
+      storage: { enabled: false },
+      instrumentations: [shared],
+    });
+    owners.push(handle, pipeline);
+    const second = createConsolePipeline();
+    owners.push(second.provider);
+    instrumentations.unshift(second.instrumentation);
+    const outerWarn = console.warn;
+    vi.spyOn(diag, "warn")
+      .mockImplementation((...args) => console.warn(...args))
+      .mockImplementationOnce(() => {
+        shared.disable();
+        shared.enable();
+        console.warn("stats failure during restart");
+        if (mode === "nested") reportFailure(new Error("nested stats failure"));
+        if (mode === "throwing") throw new Error("diagnostic logger failed");
+      });
+    console.warn("before diagnostic");
+    reportFailure(new Error("stats failure during restart"));
+    reportFailure(new Error("stats failure after restart"));
+    console.warn("after diagnostic");
+    await Promise.all([
+      first.provider.forceFlush(),
+      second.provider.forceFlush(),
+      handle.forceFlush(),
+    ]);
+    for (const exporter of [first.exporter, second.exporter, pipeline.logExporter]) {
+      expect(exporter.getFinishedLogRecords().map((record) => record.body)).toEqual([
+        "before diagnostic",
+        "after diagnostic",
+      ]);
+    }
+    await handle.shutdown();
+    expect(console.warn).toBe(outerWarn);
+    reportFailure(new Error("stats failure after shutdown"));
+    console.warn("standalone after shutdown");
+    await Promise.all([first.provider.forceFlush(), second.provider.forceFlush()]);
+    for (const exporter of [first.exporter, second.exporter]) {
+      expect(exporter.getFinishedLogRecords().map((record) => record.body)).toEqual([
+        "before diagnostic",
+        "after diagnostic",
+        "standalone after shutdown",
+      ]);
+    }
+  },
+);
+
 it("preserves an explicit console replacement installed during a diagnostic restart", () => {
   const { provider, instrumentation: standalone } = createConsolePipeline();
   owners.push(provider);

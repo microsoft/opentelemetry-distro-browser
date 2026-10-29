@@ -190,6 +190,10 @@ function subscribe(target: object, name: PropertyKey, subscriber: Subscription):
         return dispatch(created, target, name, this, args);
       },
     };
+    if (target === globalThis.console) {
+      // Standalone wrappers can retain this shared wrapper after its registration is removed.
+      Object.defineProperty(created.wrapper, "__original", { get: () => created.original });
+    }
     if (
       !Reflect.set(target, name, created.wrapper) ||
       Reflect.get(target, name) !== created.wrapper

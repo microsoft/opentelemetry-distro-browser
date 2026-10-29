@@ -404,6 +404,11 @@ export function logItemType(logRecord: ReadableLogRecord): ItemType {
   if (logRecord.eventName === "exception" || logRecord.attributes[EXCEPTION_TYPE])
     return "EXCEPTION";
   if (isPageView(logRecord.eventName)) return "PAGE_VIEW";
+  if (logRecord.eventName === "browser.page_visit") {
+    const duration = logRecord.attributes["browser.page_visit.duration"];
+    if (typeof duration === "number" && Number.isFinite(duration) && duration >= 0)
+      return "CUSTOM_METRIC";
+  }
   return logRecord.eventName && logRecord.eventName !== "browser.console"
     ? "CUSTOM_EVENT"
     : "TRACE";
@@ -502,12 +507,7 @@ export function logToEnvelope(
           ? customFields.properties
           : truncateCustomDimensions({ ...customFields.properties, refUri: referrerValue }),
     };
-  } else if (
-    logRecord.eventName === "browser.page_visit" &&
-    typeof visitDuration === "number" &&
-    Number.isFinite(visitDuration) &&
-    visitDuration >= 0
-  ) {
+  } else if (itemType === "CUSTOM_METRIC" && typeof visitDuration === "number") {
     const pageUrl = logRecord.attributes[URL_FULL];
     baseType = "MetricData";
     baseData = {

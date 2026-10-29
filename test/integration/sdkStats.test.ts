@@ -108,12 +108,15 @@ it.each(
 
 it.each(
   (["index.js", "index.min.js", "iife.min"] as const).flatMap((file) =>
-    [false, true].map((restartDuringReport) => ({ file, restartDuringReport })),
+    [false, true].flatMap((restartDuringReport) =>
+      [false, true].map((outerStandalone) => ({ file, restartDuringReport, outerStandalone })),
+    ),
   ),
 )(
-  "keeps stats diagnostics out of standalone-first console pipelines through $file with in-callback restart $restartDuringReport",
-  async ({ file, restartDuringReport }) => {
+  "keeps stats diagnostics out of console pipelines through $file with in-callback restart $restartDuringReport and outer standalone $outerStandalone",
+  async ({ file, restartDuringReport, outerStandalone }) => {
     context.disable();
+    vi.spyOn(console, "warn").mockImplementation(() => {});
     const transport = vi.fn<typeof fetch>(
       async (url) => new Response(null, { status: url === SDK_STATS_ENDPOINT ? 503 : 200 }),
     );
@@ -122,6 +125,7 @@ it.each(
     const standaloneWarn = console.warn;
     const scripts: HTMLScriptElement[] = [];
     let handle: MicrosoftOpenTelemetryBrowser | undefined;
+    let outer: ReturnType<typeof createConsolePipeline> | undefined;
     try {
       let initialize: typeof import("../../src/index.js").useMicrosoftOpenTelemetry;
       let diagnostics = diag;
@@ -161,6 +165,8 @@ it.each(
         instrumentations,
       });
       handles.push(handle);
+      if (outerStandalone) outer = createConsolePipeline();
+      const standaloneTop = outer ? console.warn : standaloneWarn;
       let sharedWarn = console.warn;
       expect(sharedWarn).not.toBe(standaloneWarn);
       vi.spyOn(diagnostics, "warn")
@@ -176,17 +182,23 @@ it.each(
         console.warn("application warning");
         await handle.forceFlush();
         await provider.forceFlush();
+        await outer?.provider.forceFlush();
         expect(transport).toHaveBeenCalledTimes(index * 2);
         expect(diagnostics.warn).toHaveBeenCalledTimes(index);
         expect(exporter.getFinishedLogRecords().map((record) => record.body)).toEqual(
           Array<string>(index).fill("application warning"),
         );
+        if (outer) {
+          expect(outer.exporter.getFinishedLogRecords().map((record) => record.body)).toEqual(
+            Array<string>(index).fill("application warning"),
+          );
+        }
         expect(pipeline.logExporter.getFinishedLogRecords().map((record) => record.body)).toEqual(
           Array<string>(index).fill("application warning"),
         );
         if (index === 1) {
           if (!restartDuringReport) {
-            expect(console.warn).toBe(standaloneWarn);
+            expect(console.warn).toBe(standaloneTop);
             for (const instrumentation of instrumentations) instrumentation.enable();
           }
           expect(console.warn).not.toBe(sharedWarn);
@@ -196,16 +208,26 @@ it.each(
         }
       }
       await handle.shutdown();
-      expect(console.warn).toBe(standaloneWarn);
+      expect(console.warn).toBe(standaloneTop);
       console.warn("standalone after shutdown");
       await provider.forceFlush();
+      await outer?.provider.forceFlush();
       expect(exporter.getFinishedLogRecords().map((record) => record.body)).toEqual([
         "application warning",
         "application warning",
         "standalone after shutdown",
       ]);
+      if (outer) {
+        expect(outer.exporter.getFinishedLogRecords().map((record) => record.body)).toEqual([
+          "application warning",
+          "application warning",
+          "standalone after shutdown",
+        ]);
+      }
     } finally {
       await handle?.shutdown();
+      outer?.instrumentation.disable();
+      await outer?.provider.shutdown();
       standalone.disable();
       await provider.shutdown();
       for (const script of scripts) script.remove();
