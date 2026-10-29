@@ -261,6 +261,7 @@ export class AzureMonitorExportClient {
           final = status !== 206 && !isRetriable(status);
           settle(!final, this.itemStats && !final ? String(status) : undefined);
         },
+        onNetworkError: () => settle(true, this.itemStats ? "CLIENT_EXCEPTION" : undefined),
         // Stop retrying a batch another document adopted and delivered.
         active: () => id === undefined || this.#buffer?.owns(id) !== false,
         account: (onFinal) => {

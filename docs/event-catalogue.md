@@ -307,9 +307,10 @@ still work. If neither operation succeeds, outcomes stay pending. Eviction of an
 copy is not request loss. Persisted drop codes follow the partial-response envelope order, allowing a
 later page to count expiry after invalidation; legacy codes default to `CLIENT_EXCEPTION`. The old
 page stops accounting after handoff. Disabled stats add no accounting-only storage writes.
-Known retry codes are saved before waiting. Metadata is best-effort: it cannot evict payloads, and
-quota failures retry the smaller payload-only representation. Unreleased snapshots become terminal
-on shutdown because they cannot be adopted; released snapshots retain their handoff ownership.
+Known retry codes, including replacement network-failure codes, are saved before waiting. Metadata
+cannot evict payloads or pause payload/release writes; quota failures retry the smaller payload-only
+representation. Unreleased snapshots become terminal on shutdown because they cannot be adopted;
+released snapshots retain their handoff ownership.
 
 Flush and shutdown give pending exports 15 seconds, then cancel only those captured by the call.
 Both attempt their stats reports before surfacing errors; reports remain bounded and flush makes

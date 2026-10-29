@@ -15,7 +15,7 @@ import {
   sessionBufferStorage,
 } from "../../../src/exporter/sessionBuffer.js";
 import { spanToEnvelope } from "../../../src/exporter/spanUtils.js";
-import type { AzureMonitorEnvelope } from "../../../src/exporter/telemetryModels.js";
+import type { AzureMonitorEnvelope, MetricData } from "../../../src/exporter/telemetryModels.js";
 import { TEST_INSTRUMENTATION_KEY } from "../../fixtures/azureMonitor.js";
 import {
   MemoryStorage,
@@ -315,9 +315,13 @@ describe("Azure Monitor sessionStorage buffer", () => {
     },
   );
 
-  it.each(["whole", "partial"] as const)(
-    "persists %s retry codes before waiting and uses them for cross-page expiry",
-    async (mode) => {
+  it.each(
+    (["whole", "partial"] as const).flatMap((mode) =>
+      [false, true].map((networkFailure) => ({ mode, networkFailure })),
+    ),
+  )(
+    "persists $mode retry codes before cross-page expiry (network failure: $networkFailure)",
+    async ({ mode, networkFailure }) => {
       const firstFetch = stubFetch(() =>
         mode === "whole"
           ? new Response(null, { status: 503, headers: { "retry-after": "1" } })
@@ -339,18 +343,34 @@ describe("Azure Monitor sessionStorage buffer", () => {
         expect((record[1] as unknown[])?.[2]).toEqual(mode === "whole" ? "503" : ["429", "503"]);
       });
       expect(firstFetch).toHaveBeenCalledOnce();
+      if (networkFailure) {
+        firstFetch.mockRejectedValueOnce(new TypeError("Network unavailable"));
+        await vi.waitFor(
+          () => {
+            const record: unknown[] = JSON.parse(
+              testSessionStorage.getItem(bufferKeys()[0]) ?? "[]",
+            );
+            expect((record[1] as unknown[])?.[2]).toBe("CLIENT_EXCEPTION");
+          },
+          { timeout: 3000 },
+        );
+        expect(firstFetch).toHaveBeenCalledTimes(2);
+      }
       hidePage();
       vi.spyOn(Date, "now").mockReturnValue(Date.now() + MAX_SESSION_BUFFER_AGE_MS + 1);
       loadPage();
       const fetch = stubFetch();
       await createClient({ sdkStats: { enabled: true } }).forceFlush();
       const [url, init] = fetch.mock.calls[0];
-      const metrics: AzureMonitorEnvelope[] = await new Request(url, init).json();
+      const metrics: AzureMonitorEnvelope<MetricData>[] = await new Request(url, init).json();
       expect(metrics.map((item) => item.data.baseData.properties?.dropCode)).toEqual(
-        mode === "whole" ? ["503"] : ["429", "503"],
+        networkFailure ? ["CLIENT_EXCEPTION"] : mode === "whole" ? ["503"] : ["429", "503"],
+      );
+      expect(metrics.reduce((sum, item) => sum + item.data.baseData.metrics[0].value, 0)).toBe(
+        items.length,
       );
       await pending;
-      expect(firstFetch).toHaveBeenCalledOnce();
+      expect(firstFetch).toHaveBeenCalledTimes(networkFailure ? 2 : 1);
     },
   );
 
@@ -404,23 +424,35 @@ describe("Azure Monitor sessionStorage buffer", () => {
     expect(onDrop).toHaveBeenCalledOnce();
   });
 
-  it("keeps a valid batch if a metadata-only retry write fails", () => {
-    vi.spyOn(diag, "warn").mockImplementation(() => {});
-    const buffer = new SessionBuffer("metadata-only");
-    const body = '[{"name":"kept"}]';
-    const id = buffer.add(body);
-    buffer.begin(id);
-    const before = testSessionStorage.getItem(bufferKeys()[0]);
-    const restoreStorage = blockStorage("setItem");
-    buffer.settle(id, body, true, "503");
-    const onDrop = vi.fn();
-    expect(buffer.retain(id, onDrop, "503")).toBe(true);
-    expect(testSessionStorage.getItem(bufferKeys()[0])).toBe(before);
-    expect(onDrop).not.toHaveBeenCalled();
-    restoreStorage();
-    buffer.dispose();
-    expect(onDrop).toHaveBeenCalledOnce();
-  });
+  it.each([false, true])(
+    "keeps a batch after a metadata-only write failure (release after recovery: %s)",
+    (release) => {
+      vi.spyOn(diag, "warn").mockImplementation(() => {});
+      const buffer = new SessionBuffer("metadata-only");
+      const body = '[{"name":"kept"}]';
+      const id = buffer.add(body);
+      buffer.begin(id);
+      const before = testSessionStorage.getItem(bufferKeys()[0]);
+      const restoreStorage = blockStorage("setItem");
+      buffer.settle(id, body, true, "503");
+      const onDrop = vi.fn();
+      expect(buffer.retain(id, onDrop, "503")).toBe(true);
+      expect(testSessionStorage.getItem(bufferKeys()[0])).toBe(before);
+      expect(onDrop).not.toHaveBeenCalled();
+      restoreStorage();
+      if (release) {
+        hidePage();
+        expect(testSessionStorage.getItem(bufferKeys()[0])).toMatch(/^\[1,/);
+        loadPage();
+        const next = new SessionBuffer("metadata-only");
+        expect(next.adopt().map(([, retained]) => retained)).toEqual([body]);
+        expect(next.adopt()).toEqual([]);
+        next.dispose();
+      }
+      buffer.dispose();
+      expect(onDrop).toHaveBeenCalledTimes(release ? 0 : 1);
+    },
+  );
 
   it("retries the smaller payload when native quota rejects only the optional metadata", async () => {
     const originalWrite = testSessionStorage.setItem.bind(testSessionStorage);

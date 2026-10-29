@@ -15,8 +15,8 @@ export const WRITE_BACKOFF_MS = 60_000;
  */
 export interface KeyValueStorage {
   getItem(key: string): StorageReadResult;
-  /** Optional smaller representation, attempted before write backoff if the full value fails. */
-  setItem(key: string, value: string, fallbackValue?: string): boolean;
+  /** Tries a smaller fallback if supplied. Optional writes do not start failure backoff. */
+  setItem(key: string, value: string, fallbackValue?: string, optional?: boolean): boolean;
   removeItem(key: string): boolean;
 }
 
@@ -44,6 +44,7 @@ export function createKeyValueStorage(
     operation: (storage: Storage) => T,
     fallback: T,
     operationType: "read" | "write" | "remove",
+    backoff = true,
   ): T {
     const now = Date.now();
     // A backwards clock adjustment must not extend the pause beyond one backoff window.
@@ -62,7 +63,7 @@ export function createKeyValueStorage(
         return result;
       }
     } catch {
-      if (operationType === "write") writesPausedUntil = Date.now() + WRITE_BACKOFF_MS;
+      if (operationType === "write" && backoff) writesPausedUntil = Date.now() + WRITE_BACKOFF_MS;
     }
     if (!warned) {
       warned = true;
@@ -78,7 +79,7 @@ export function createKeyValueStorage(
         { success: false as const },
         "read",
       ),
-    setItem: (key, value, fallbackValue) =>
+    setItem: (key, value, fallbackValue, optional) =>
       useStorage(
         (storage) => {
           try {
@@ -91,6 +92,7 @@ export function createKeyValueStorage(
         },
         false,
         "write",
+        !optional,
       ),
     removeItem: (key) =>
       useStorage(

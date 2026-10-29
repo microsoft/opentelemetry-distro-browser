@@ -74,6 +74,8 @@ export interface SendRequest {
   ) => void;
   /** Called with each response status before its body is read. */
   readonly onResponse?: (statusCode: number) => void;
+  /** Called when a transport attempt fails without an HTTP response, before any retry wait. */
+  readonly onNetworkError?: () => void;
   /** Checked before each attempt; when it returns `false` the request stops with an error. */
   readonly active?: () => boolean;
   /** Commits final counters only when an older persisted snapshot cannot replay them. */
@@ -185,6 +187,7 @@ export class Sender {
           }
           retryCodes =
             error.statusCode === undefined ? "CLIENT_EXCEPTION" : String(error.statusCode);
+          if (error.statusCode === undefined) currentRequest.onNetworkError?.();
           if (error.statusCode !== undefined && !isRetriable(error.statusCode)) {
             throw error.cause;
           }

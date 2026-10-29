@@ -341,6 +341,7 @@ export class SessionBuffer {
         hasMetadata
           ? `[${pageHidden ? 1 : 0},${parts.map(([part]) => part).join(",")}]`
           : undefined,
+        metadataOnly,
       );
     if (!stored && metadataOnly) return;
     // A failed write is not terminal while an older record may still be adopted.
