@@ -6,7 +6,9 @@ import { logs } from "@opentelemetry/api-logs";
 import { FetchInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/fetch";
 import { XhrInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/xhr";
 import { ConsoleInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/console";
+import { ErrorsInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/errors";
 import { NavigationInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/navigation";
+import { UserActionInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/user-action";
 import { resourceFromAttributes } from "@opentelemetry/resources";
 import { afterEach, expect, inject, it, vi } from "vitest";
 import { useMicrosoftOpenTelemetry } from "../../src/index.js";
@@ -69,6 +71,14 @@ async function request(kind: "fetch" | "xhr", headers?: Record<string, string>) 
     const xhr = new XMLHttpRequest();
     xhr.open("GET", endpoint);
     for (const [key, value] of Object.entries(headers ?? {})) xhr.setRequestHeader(key, value);
+    xhr.onload = () => resolve(JSON.parse(xhr.responseText) as { traceparent?: string });
+    xhr.onerror = () => reject(new Error("XHR failed"));
+    xhr.send();
+  });
+}
+
+function sendOpenedXhr(xhr: XMLHttpRequest) {
+  return new Promise<{ traceparent?: string }>((resolve, reject) => {
     xhr.onload = () => resolve(JSON.parse(xhr.responseText) as { traceparent?: string });
     xhr.onerror = () => reject(new Error("XHR failed"));
     xhr.send();
@@ -209,6 +219,260 @@ it.each(["fetch", "xhr"] as const)("supports explicit %s disable and re-enable",
   await request(kind);
   await spans(first, 1);
   await spans(second, 2);
+});
+
+it.each([
+  ["fetch", "disableFetchTracking"],
+  ["xhr", "disableAjaxTracking"],
+] as const)("keeps the %s gate and manual pause local to an instance", async (kind, gate) => {
+  const instrumentation = network(kind);
+  const bindProvider = vi.spyOn(instrumentation, "setTracerProvider");
+  const first = await start("first", [instrumentation]);
+  const second = await start("second", [network(kind)]);
+  expect(first.handle.instrumentations.get(kind)).toBe(instrumentation);
+
+  await request(kind);
+  await spans(first, 1);
+  await spans(second, 1);
+
+  await first.handle.updateCfg({ [gate]: true });
+  await request(kind);
+  await spans(first, 1);
+  await spans(second, 2);
+
+  await first.handle.instrumentations.setEnabled(kind, false);
+  await first.handle.instrumentations.setEnabled(kind, true);
+  await request(kind);
+  await spans(first, 1);
+  await spans(second, 3);
+
+  await first.handle.instrumentations.setEnabled(kind, false);
+  await first.handle.updateCfg({ [gate]: undefined });
+  await request(kind);
+  await spans(first, 1);
+  await spans(second, 4);
+
+  await first.handle.instrumentations.setEnabled(kind, true);
+  await request(kind);
+  const firstSpans = await spans(first, 2);
+  await spans(second, 5);
+  expect(bindProvider).toHaveBeenCalledOnce();
+  expect(firstSpans.every((span) => span.resource.attributes["service.name"] === "first")).toBe(
+    true,
+  );
+});
+
+it.each([
+  ["fetch", "disableFetchTracking"],
+  ["xhr", "disableAjaxTracking"],
+] as const)("applies the %s gate to every registered object independently", async (kind, gate) => {
+  const firstInstrumentation = network(kind);
+  const secondInstrumentation = network(kind);
+  const pipeline = await start("multiple", [firstInstrumentation, secondInstrumentation]);
+  expect(pipeline.handle.instrumentations.get(kind)).toBe(firstInstrumentation);
+  expect(pipeline.handle.instrumentations.get(`${kind}#2`)).toBe(secondInstrumentation);
+
+  await request(kind);
+  await spans(pipeline, 2);
+  await pipeline.handle.instrumentations.setEnabled(`${kind}#2`, false);
+  await pipeline.handle.updateCfg({ [gate]: true });
+  await request(kind);
+  await spans(pipeline, 2);
+  await pipeline.handle.updateCfg({ [gate]: false });
+  await request(kind);
+  await spans(pipeline, 3);
+  await pipeline.handle.instrumentations.setEnabled(`${kind}#2`, true);
+  await request(kind);
+  await spans(pipeline, 5);
+});
+
+it.each([
+  ["fetch", "disableFetchTracking"],
+  ["xhr", "disableAjaxTracking"],
+] as const)("serializes concurrent %s gate and manual controls", async (kind, gate) => {
+  const pipeline = await start("queued", [network(kind)]);
+  await Promise.all([
+    pipeline.handle.updateCfg({ [gate]: true }),
+    pipeline.handle.instrumentations.setEnabled(kind, false),
+    pipeline.handle.updateCfg({ [gate]: false }),
+  ]);
+  await request(kind);
+  await spans(pipeline, 0);
+  await pipeline.handle.instrumentations.setEnabled(kind, true);
+  await request(kind);
+  await spans(pipeline, 1);
+});
+
+it.each([
+  ["fetch", "disableFetchTracking"],
+  ["xhr", "disableAjaxTracking"],
+] as const)("never enables %s without a trace pipeline", async (kind, gate) => {
+  const instrumentation = network(kind);
+  const enable = vi.spyOn(instrumentation, "enable");
+  const logsOnly = await start("logs-only", [instrumentation], { spanProcessors: [] });
+  const tracing = await start("tracing", [network(kind)]);
+  await logsOnly.handle.instrumentations.setEnabled(kind, false);
+  await logsOnly.handle.instrumentations.setEnabled(kind, true);
+  await logsOnly.handle.updateCfg({ [gate]: true });
+  await logsOnly.handle.updateCfg({ [gate]: false });
+  const response = await request(kind);
+  const [owner] = await spans(tracing, 1);
+  expect(enable).not.toHaveBeenCalled();
+  expect(response.traceparent?.split("-")[2]).toBe(owner.spanContext().spanId);
+});
+
+it.each([
+  ["fetch", "disableFetchTracking"],
+  ["xhr", "disableAjaxTracking"],
+] as const)("finishes an in-flight %s once after its gate closes", async (kind, gate) => {
+  const native =
+    kind === "fetch" ? vi.spyOn(globalThis, "fetch") : vi.spyOn(XMLHttpRequest.prototype, "send");
+  const first = await start("first", [network(kind)]);
+  const second = await start("second", [network(kind)]);
+  let completed = false;
+  const pending = request(kind).then((response) => {
+    completed = true;
+    return response;
+  });
+  await first.handle.updateCfg({ [gate]: true });
+  expect(completed).toBe(false);
+  await pending;
+  await spans(first, 1);
+  await spans(second, 1);
+  expect(native).toHaveBeenCalledOnce();
+
+  await request(kind);
+  await spans(first, 1);
+  await spans(second, 2);
+  expect(native).toHaveBeenCalledTimes(2);
+});
+
+it("does not collect an XHR opened before a subscriber's pause, even after it resumes", async () => {
+  const first = await start("first", [network("xhr")]);
+  const second = await start("second", [network("xhr")]);
+  const xhr = new XMLHttpRequest();
+  xhr.open("GET", endpoint);
+  await first.handle.instrumentations.setEnabled("xhr", false);
+  await first.handle.instrumentations.setEnabled("xhr", true);
+  const response = await sendOpenedXhr(xhr);
+  await spans(first, 0);
+  const [other] = await spans(second, 1);
+  expect(response.traceparent?.split("-")[2]).toBe(other.spanContext().spanId);
+  await request("xhr");
+  await spans(first, 1);
+  await spans(second, 2);
+});
+
+it.each([false, true])(
+  "does not reuse a stale XHR record for an ignored URL (pause=%s)",
+  async (pause) => {
+    const ignored = `${endpoint}#ignored`;
+    const first = await start("first", [network("xhr", { ignoreUrls: [ignored] })]);
+    const second = await start("second", [network("xhr")]);
+    const xhr = new XMLHttpRequest();
+    xhr.open("GET", endpoint);
+    if (pause) {
+      await first.handle.instrumentations.setEnabled("xhr", false);
+      await first.handle.instrumentations.setEnabled("xhr", true);
+    }
+    xhr.open("GET", ignored);
+    await sendOpenedXhr(xhr);
+    await spans(first, 0);
+    const [other] = await spans(second, 1);
+    expect(other.attributes["url.full"]).toBe(ignored);
+  },
+);
+
+it("preserves an earlier XHR open when a later ignored open fails native validation", async () => {
+  const ignored = `${endpoint}#ignored`;
+  const pipeline = await start("xhr", [network("xhr", { ignoreUrls: [ignored] })]);
+  const xhr = new XMLHttpRequest();
+  xhr.open("GET", endpoint);
+  expect(() => xhr.open("invalid method", ignored)).toThrow();
+  await sendOpenedXhr(xhr);
+  const [span] = await spans(pipeline, 1);
+  expect(span.attributes["url.full"]).toBe(endpoint);
+});
+
+it.each(["console", "errors", "user-action"] as const)(
+  "pauses and resumes real %s collection without affecting another instance",
+  async (kind) => {
+    const makeInstrumentation = () => {
+      switch (kind) {
+        case "console":
+          return new ConsoleInstrumentation({ enabled: false, logMethods: ["info"] });
+        case "errors":
+          return new ErrorsInstrumentation({ enabled: false });
+        case "user-action":
+          return new UserActionInstrumentation({ enabled: false });
+      }
+    };
+    const instrumentation = makeInstrumentation();
+    const first = await start("first", [instrumentation]);
+    const second = await start("second", [makeInstrumentation()]);
+    expect(first.handle.instrumentations.get(kind)).toBe(instrumentation);
+    const button = document.createElement("button");
+    document.body.append(button);
+    const emit = () => {
+      if (kind === "console") console.info("pause-resume event");
+      else if (kind === "errors")
+        window.dispatchEvent(new ErrorEvent("error", { message: "pause-resume event" }));
+      else button.click();
+    };
+    const check = async (firstCount: number, secondCount: number) => {
+      await first.handle.forceFlush();
+      await second.handle.forceFlush();
+      expect(first.logExporter.getFinishedLogRecords()).toHaveLength(firstCount);
+      expect(second.logExporter.getFinishedLogRecords()).toHaveLength(secondCount);
+    };
+    try {
+      emit();
+      await check(1, 1);
+      await first.handle.instrumentations.setEnabled(kind, false);
+      emit();
+      await check(1, 2);
+      await first.handle.instrumentations.setEnabled(kind, true);
+      emit();
+      await check(2, 3);
+      expect(
+        first.logExporter
+          .getFinishedLogRecords()
+          .every((record) => record.resource.attributes["service.name"] === "first"),
+      ).toBe(true);
+    } finally {
+      button.remove();
+    }
+  },
+);
+
+it("rejects runtime control of navigation, page views, custom and unknown instrumentations", async () => {
+  const navigation = new NavigationInstrumentation({ enabled: false });
+  const custom = {
+    instrumentationName: "custom-instrumentation",
+    setTracerProvider() {},
+    getConfig: () => ({ enabled: false }),
+    enable: vi.fn(),
+    disable: vi.fn(),
+  };
+  const pipeline = await start("unsupported", [navigation, custom], { pageView: {} });
+  expect(pipeline.handle.instrumentations.get("navigation")).toBe(navigation);
+  expect(pipeline.handle.instrumentations.get("custom-instrumentation")).toBe(custom);
+  expect(
+    pipeline.handle.instrumentations.get("@microsoft/opentelemetry-browser/page-view"),
+  ).toBeDefined();
+  for (const id of [
+    "navigation",
+    "custom-instrumentation",
+    "@microsoft/opentelemetry-browser/page-view",
+  ]) {
+    await expect(pipeline.handle.instrumentations.setEnabled(id, false)).rejects.toThrow(
+      "unsupported",
+    );
+  }
+  await expect(pipeline.handle.instrumentations.setEnabled("missing", false)).rejects.toThrow(
+    "Unknown instrumentation",
+  );
+  expect(custom.disable).not.toHaveBeenCalled();
 });
 
 it("fans out console calls once with independent method filters and serializers", async () => {

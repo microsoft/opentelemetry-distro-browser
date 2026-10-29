@@ -165,6 +165,7 @@ export async function useMicrosoftOpenTelemetry(
   options: MicrosoftOpenTelemetryBrowserOptions = {},
 ): Promise<MicrosoftOpenTelemetryBrowser> {
   let stopping = false;
+  let instrumentationRegistry: ReturnType<typeof createInstrumentationRegistry> | undefined;
   const sessionOptions = options.session;
   const inactivityTimeout = sessionOptions?.inactivityTimeout;
   const maxDuration = sessionOptions?.maxDuration;
@@ -192,7 +193,11 @@ export async function useMicrosoftOpenTelemetry(
       }),
       azureMonitor: { disableBeacon: azureMonitor?.disableBeacon },
     },
-    () => stopping,
+    () => {
+      instrumentationRegistry?.check();
+      return stopping;
+    },
+    (next) => instrumentationRegistry?.setNetworkGates(next),
   );
   const redactedQueryParams: readonly string[] = [
     ...DEFAULT_QUERY_STRINGS_TO_REDACT,
@@ -289,7 +294,6 @@ export async function useMicrosoftOpenTelemetry(
   let flushPromise: Promise<void> | undefined;
   let unloadFlushPromise: Promise<void> | undefined;
   let removeUnloadSubscription: (() => void) | undefined;
-  let instrumentationRegistry: ReturnType<typeof createInstrumentationRegistry> | undefined;
   const flushForUnload = (): void => {
     if (stopping || unloadFlushPromise) return;
     beginUnloading();
@@ -416,6 +420,14 @@ export async function useMicrosoftOpenTelemetry(
     shutdown,
     userContext: userContext.context,
     updateCfg: (patch, mergeExisting) => configuration.updateCfg(patch, mergeExisting),
+    instrumentations: {
+      get: (id) => instrumentationRegistry?.get(id),
+      setEnabled: (id, enabled) =>
+        configuration.enqueue(() => {
+          if (!instrumentationRegistry) throw new Error("Instrumentation registry is unavailable.");
+          instrumentationRegistry.setEnabled(id, enabled);
+        }),
+    },
   };
 
   try {
@@ -516,6 +528,7 @@ export async function useMicrosoftOpenTelemetry(
       instrumentations,
       instance,
       spanProcessors.length !== 0,
+      () => stopping,
     );
     removeUnloadSubscription = subscribeToUnload(flushForUnload);
     instrumentationRegistry.enable();
