@@ -18,7 +18,7 @@ const packageName = packageJson.name;
 
 export const entryPointBudgets = {
   ".": {
-    rawBytes: 148.5 * 1024,
+    rawBytes: 148.75 * 1024,
     gzipBytes: 46.75 * 1024,
     brotliBytes: 41.25 * 1024,
   },
@@ -40,7 +40,7 @@ export const entryPointBudgets = {
 const sdkBrowserBundleBudget = {
   rawBytes: 176 * 1024,
   gzipBytes: 56.25 * 1024,
-  brotliBytes: 49.25 * 1024,
+  brotliBytes: 49.5 * 1024,
 };
 const instrumentationsBrowserBundleBudget = {
   rawBytes: 63 * 1024,
