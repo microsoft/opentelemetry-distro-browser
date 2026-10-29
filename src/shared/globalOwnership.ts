@@ -15,6 +15,7 @@ const ingestionUrlsKey = /* @__PURE__ */ Symbol.for(
 const activeIngestionUrlsKey = /* @__PURE__ */ Symbol.for(
   "@microsoft/opentelemetry-browser/active-sdk-ingestion-urls/1",
 );
+const keepaliveKey = /* @__PURE__ */ Symbol.for("@microsoft/opentelemetry-browser/keepalive/1");
 const realm = globalThis as typeof globalThis & { [key: symbol]: unknown };
 
 interface SharedRegistry {
@@ -30,6 +31,14 @@ interface SharedRegistry {
   browserPatches?: BrowserPatchState;
   pageVisitSlots?: Map<string, Set<number>>;
   pending?: { signal: "trace" | "logs"; rollback: () => void }[];
+}
+
+/** Lazy shared reservations: application and diagnostic lanes, each [bytes, requests]. */
+export function getKeepaliveReservations(): [number, number][] {
+  return (realm[keepaliveKey] ??= [
+    [0, 0],
+    [0, 0],
+  ]) as [number, number][];
 }
 
 /** Keep the last 256 exact destinations for delayed resource timings, independently of distro state. */

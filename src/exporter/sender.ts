@@ -23,12 +23,12 @@ import {
 import type { AzureMonitorEnvelope } from "./telemetryModels.js";
 import type { InternalSdkStats } from "./sdkStats.js";
 import type { CustomerSdkStats } from "./customerSdkStats.js";
-import { registerSdkIngestionUrl, rememberSdkIngestionUrl } from "../shared/globalOwnership.js";
+import {
+  getKeepaliveReservations,
+  registerSdkIngestionUrl,
+  rememberSdkIngestionUrl,
+} from "../shared/globalOwnership.js";
 import { withAbort } from "../shared/lifecycle.js";
-
-// Application sends keep their 60 KiB budget; diagnostics use only the remaining 4 KiB.
-const pendingKeepaliveBodySize = [0, 0];
-const pendingKeepaliveRequestCount = [0, 0];
 
 const trustedIngestionHostSuffixGroups = [
   [
@@ -368,18 +368,18 @@ export class Sender {
     let releaseAttempt: (() => void) | undefined;
     const unloading = request.unloading === true;
     const lane = request.sdkStats ? 1 : 0;
+    const reservation = getKeepaliveReservations()[lane];
     const keepaliveAvailable =
-      pendingKeepaliveBodySize[lane] + request.body.byteLength <=
-        (lane ? 4096 : MAX_PENDING_KEEPALIVE_BODY_SIZE) &&
-      pendingKeepaliveRequestCount[lane] < (lane ? 1 : MAX_PENDING_KEEPALIVE_REQUESTS);
+      reservation[0] + request.body.byteLength <= (lane ? 4096 : MAX_PENDING_KEEPALIVE_BODY_SIZE) &&
+      reservation[1] < (lane ? 1 : MAX_PENDING_KEEPALIVE_REQUESTS);
     if (unloading && !keepaliveAvailable && !request.sdkStats) {
       return this.#sendWithBeacon(request);
     }
 
     const useKeepalive = unloading && keepaliveAvailable;
     if (useKeepalive) {
-      pendingKeepaliveBodySize[lane] += request.body.byteLength;
-      pendingKeepaliveRequestCount[lane]++;
+      reservation[0] += request.body.byteLength;
+      reservation[1]++;
     }
 
     try {
@@ -468,8 +468,8 @@ export class Sender {
     } finally {
       releaseAttempt?.();
       if (useKeepalive) {
-        pendingKeepaliveBodySize[lane] -= request.body.byteLength;
-        pendingKeepaliveRequestCount[lane]--;
+        reservation[0] -= request.body.byteLength;
+        reservation[1]--;
       }
     }
   }

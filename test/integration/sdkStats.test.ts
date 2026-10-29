@@ -16,6 +16,7 @@ import {
   createReadableLogRecord,
 } from "../fixtures/telemetry.js";
 import { AzureMonitorSpanExporter } from "../../src/exporter/trace.js";
+import { Sender } from "../../src/exporter/sender.js";
 import { rememberSdkIngestionUrl } from "../../src/shared/globalOwnership.js";
 import { SDK_STATS_ENDPOINT } from "../fixtures/sdkStats.js";
 import { loadBrowserScript } from "../fixtures/browserBundle.js";
@@ -23,6 +24,60 @@ import { loadBrowserScript } from "../fixtures/browserBundle.js";
 const SECOND_KEY = "22222222-2222-2222-2222-222222222222";
 const handles: MicrosoftOpenTelemetryBrowser[] = [];
 let referrerPolicy: HTMLMetaElement | undefined;
+
+it.each(["index.js", "index.min.js"])(
+  "shares unload reservations with the separately bundled %s",
+  async (file) => {
+    const modulePath = `../../dist/esm/${file}`;
+    const moduleUrl = new URL(modulePath, import.meta.url);
+    const distro: typeof import("../../src/index.js") = await import(
+      /* @vite-ignore */ moduleUrl.href
+    );
+    let release!: () => void;
+    const transport = vi.fn<typeof fetch>().mockResolvedValue(new Response(null));
+    transport.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = () => resolve(new Response(null));
+        }),
+    );
+    vi.stubGlobal("fetch", transport);
+    const sender = new Sender({
+      endpoint: "https://customer.example.test/v2/track",
+      disableBeacon: true,
+    });
+    const request = { contentType: "application/json", unloading: true };
+    const pending = sender.send({ ...request, sdkStats: true, body: new Uint8Array(4096) });
+    let handle: MicrosoftOpenTelemetryBrowser | undefined;
+    try {
+      handle = await distro.useMicrosoftOpenTelemetry({
+        azureMonitor: {
+          connectionString: `InstrumentationKey=${TEST_INSTRUMENTATION_KEY};IngestionEndpoint=https://customer.example.test`,
+          sdkStats: { enabled: true },
+          disableBeacon: true,
+        },
+        pageView: { enabled: false },
+        session: { enabled: false },
+        storage: { enabled: false },
+      });
+      trace.getTracer("cross-copy-quota").startSpan("application").end();
+      window.dispatchEvent(new PageTransitionEvent("pagehide", { persisted: true }));
+      await handle.forceFlush();
+      const reports = transport.mock.calls
+        .slice(1)
+        .filter(([, init]) => init?.credentials === "omit");
+      expect(reports.length).toBeGreaterThan(0);
+      expect(reports.every(([, init]) => init?.keepalive === false)).toBe(true);
+      await sender.send({ ...request, body: new Uint8Array(60 * 1024) });
+      expect(transport.mock.calls.at(-1)?.[1]?.keepalive).toBe(true);
+    } finally {
+      release();
+      await pending;
+      sender.dispose();
+      await handle?.shutdown();
+    }
+  },
+);
 
 afterEach(async () => {
   try {
