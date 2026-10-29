@@ -19,10 +19,7 @@ import { createAzureMonitorProcessors } from "./exporter/createAzureMonitorProce
 import { parseConnectionString } from "./exporter/connectionStringParser.js";
 import { generatePageViewId, PageViewInstrumentation } from "./instrumentation/pageView/index.js";
 import { PageViewCorrelation } from "./instrumentation/pageView/pageViewCorrelation.js";
-import {
-  claimInstrumentations,
-  isNetworkInstrumentation,
-} from "./instrumentation/sharedBrowserPatches.js";
+import { createInstrumentationRegistry } from "./instrumentation/instrumentationRegistry.js";
 import { createRuntimeConfiguration } from "./configuration/runtimeConfiguration.js";
 import {
   ATTR_TELEMETRY_DISTRO_NAME,
@@ -292,7 +289,7 @@ export async function useMicrosoftOpenTelemetry(
   let flushPromise: Promise<void> | undefined;
   let unloadFlushPromise: Promise<void> | undefined;
   let removeUnloadSubscription: (() => void) | undefined;
-  let releaseInstrumentations: (() => void) | undefined;
+  let instrumentationRegistry: ReturnType<typeof createInstrumentationRegistry> | undefined;
   const flushForUnload = (): void => {
     if (stopping || unloadFlushPromise) return;
     beginUnloading();
@@ -359,7 +356,7 @@ export async function useMicrosoftOpenTelemetry(
         }
       }
       try {
-        releaseInstrumentations?.();
+        instrumentationRegistry?.shutdown();
       } catch (error) {
         errors.push(error);
       }
@@ -515,17 +512,13 @@ export async function useMicrosoftOpenTelemetry(
         "No telemetry destination: set azureMonitor, spanProcessors or logRecordProcessors",
       );
     }
-    releaseInstrumentations = claimInstrumentations(instrumentations);
+    instrumentationRegistry = createInstrumentationRegistry(
+      instrumentations,
+      instance,
+      spanProcessors.length !== 0,
+    );
     removeUnloadSubscription = subscribeToUnload(flushForUnload);
-
-    // Bind to this instance's own providers, never the global router, so collection stays in
-    // this instance's pipelines whichever instance is the default route.
-    for (const instrumentation of instrumentations) {
-      instrumentation.setTracerProvider(instance.tracerProvider);
-      instrumentation.setLoggerProvider?.(instance.loggerProvider);
-      if (!spanProcessors.length && isNetworkInstrumentation(instrumentation)) continue;
-      if (!instrumentation.getConfig().enabled) instrumentation.enable();
-    }
+    instrumentationRegistry.enable();
     instance.commit();
     initialized = true;
     pageViewInstrumentation?.commitStartup();

@@ -6,6 +6,8 @@ All notable changes to this package are documented in this file.
 
 ### Added
 
+- Refactor startup instrumentation registration into an internal per-instance registry to prepare
+  for dynamic instrumentation configuration.
 - Support per-instance runtime Azure Monitor beacon fallback updates and the `onunloadDisableBeacon`
   alias through `updateCfg`.
 - Add internal customer SDK Stats reporting with isolated diagnostics and lifecycle handling.

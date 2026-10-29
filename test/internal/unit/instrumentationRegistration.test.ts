@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 import { diag } from "@opentelemetry/api";
+import { resourceFromAttributes } from "@opentelemetry/resources";
 import { afterEach, expect, it, vi } from "vitest";
 import {
   useMicrosoftOpenTelemetry,
@@ -138,6 +139,91 @@ it("snapshots the supplied list and cleans up once in reverse registration order
   expect(first.disable).toHaveBeenCalledOnce();
   expect(second.disable).toHaveBeenCalledOnce();
   expect(sdk.shutdown).toHaveBeenCalledOnce();
+});
+
+it("keeps the initial list when the caller mutates it during asynchronous resource startup", async () => {
+  let resolve!: (name: string) => void;
+  const resource = resourceFromAttributes({
+    "service.name": new Promise<string>((done) => {
+      resolve = done;
+    }),
+  });
+  const first = createInstrumentation();
+  const second = createInstrumentation();
+  const replacement = createInstrumentation();
+  const list = [first, second];
+  const pending = initialize(list, { resource });
+  list.splice(0, list.length, replacement);
+  expect(first.setTracerProvider).not.toHaveBeenCalled();
+  resolve("registry-snapshot-test");
+  const { handle } = await pending;
+
+  expect(first.setTracerProvider).toHaveBeenCalledOnce();
+  expect(second.enable).toHaveBeenCalledOnce();
+  expect(replacement.setTracerProvider).not.toHaveBeenCalled();
+  expect(replacement.enable).not.toHaveBeenCalled();
+  await handle.shutdown();
+  expect(second.disable).toHaveBeenCalledBefore(first.disable);
+  expect(replacement.disable).not.toHaveBeenCalled();
+});
+
+it("releases every claim if unload subscription fails before provider binding", async () => {
+  const first = createInstrumentation();
+  const last = createInstrumentation();
+  const failure = new Error("unload subscription failed");
+  const addEventListener = document.addEventListener.bind(document);
+  vi.spyOn(document, "addEventListener").mockImplementation((...args) => {
+    if (args[0] === "visibilitychange") throw failure;
+    addEventListener(...args);
+  });
+  const sdk = fakeInstance();
+  vi.mocked(startTelemetryInstance).mockResolvedValueOnce(sdk);
+  await expect(
+    useMicrosoftOpenTelemetry({
+      instrumentations: [first, last],
+      pageView: { enabled: false },
+      session: { enabled: false },
+      userContext: { enabled: false },
+    }),
+  ).rejects.toBe(failure);
+  expect(first.setTracerProvider).not.toHaveBeenCalled();
+  expect(last.setLoggerProvider).not.toHaveBeenCalled();
+  expect(first.enable).not.toHaveBeenCalled();
+  expect(last.disable).toHaveBeenCalledBefore(first.disable);
+  expect(first.disable).toHaveBeenCalledBefore(sdk.abort);
+  expect(sdk.shutdown).toHaveBeenCalledOnce();
+
+  vi.restoreAllMocks();
+  const { handle } = await initialize([first, last]);
+  await handle.shutdown();
+  expect(first.disable).toHaveBeenCalledTimes(2);
+  expect(last.disable).toHaveBeenCalledTimes(2);
+});
+
+it("does not rebind or disable another instance's instrumentation after a claim conflict", async () => {
+  const instrumentation = createInstrumentation();
+  const first = await initialize([instrumentation]);
+  const rejected = fakeInstance();
+  vi.mocked(startTelemetryInstance).mockResolvedValueOnce(rejected);
+  await expect(
+    useMicrosoftOpenTelemetry({
+      instrumentations: [instrumentation],
+      pageView: { enabled: false },
+      session: { enabled: false },
+      userContext: { enabled: false },
+    }),
+  ).rejects.toThrow("browser-instrumentation-owned");
+  expect(instrumentation.setTracerProvider).toHaveBeenCalledExactlyOnceWith(
+    first.sdk.tracerProvider,
+  );
+  expect(instrumentation.setLoggerProvider).toHaveBeenCalledExactlyOnceWith(
+    first.sdk.loggerProvider,
+  );
+  expect(instrumentation.disable).not.toHaveBeenCalled();
+  expect(rejected.abort).toHaveBeenCalledOnce();
+  expect(rejected.shutdown).toHaveBeenCalledOnce();
+  await first.handle.shutdown();
+  expect(instrumentation.disable).toHaveBeenCalledOnce();
 });
 
 it("continues cleanup and preserves a single instrumentation failure", async () => {
