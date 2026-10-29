@@ -36,8 +36,9 @@ import {
 } from "./routing/pageContext.js";
 import { startTelemetryInstance, type TelemetryInstance } from "./routing/telemetryInstance.js";
 import { isTraceSampled, RuntimeSampler } from "./sampling.js";
-import { DEFAULT_QUERY_STRINGS_TO_REDACT } from "./shared/urlRedaction.js";
+import { DEFAULT_QUERY_STRINGS_TO_REDACT, redactUrl } from "./shared/urlRedaction.js";
 import type {
+  BrowserInstrumentation,
   MicrosoftOpenTelemetryBrowser,
   MicrosoftOpenTelemetryBrowserOptions,
 } from "./types.js";
@@ -478,7 +479,10 @@ export async function useMicrosoftOpenTelemetry(
       : undefined;
     correlationState.current = correlation;
     // Publish the initial page operation before caller instrumentations can emit.
-    const instrumentations = [...owned, ...(options.instrumentations ?? [])];
+    const instrumentations: BrowserInstrumentation[] = [
+      ...owned,
+      ...(options.instrumentations ?? []),
+    ];
     if (azureMonitor) {
       const { span, log, stop, startDiagnostics } = createAzureMonitorProcessors(
         azureMonitor,
@@ -546,6 +550,11 @@ export async function useMicrosoftOpenTelemetry(
       instance,
       spanProcessors.length !== 0,
       () => stopping,
+      (url) => {
+        const redacted = redactUrl(url, pageView.redactedQueryParams);
+        const sanitized = pageView.sanitizeUrl ? pageView.sanitizeUrl(redacted) : redacted;
+        return typeof sanitized === "string" ? sanitized : "";
+      },
     );
     removeUnloadSubscription = subscribeToUnload(flushForUnload);
     instrumentationRegistry.enable();

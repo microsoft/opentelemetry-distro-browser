@@ -195,6 +195,22 @@ export interface PageViewInstrumentationConfig {
   readonly routeResolver?: () => string | undefined;
 
   /**
+   * Optional framework navigation source. When supplied, it replaces History/Navigation API
+   * observation, not document-load, pagehide or back/forward-cache observation. Register a source
+   * on every instance that should follow the same router. It must notify only committed routes;
+   * canceled navigations must not notify. URLs may be relative to the document.
+   * Subscriptions are removed when the owning telemetry instance shuts down.
+   */
+  readonly routeSource?: {
+    /** Current committed URL, including for routers that do not change the browser location. */
+    getCurrentUrl(): string;
+    /** Subscribe without replaying the initial route, which the document page view owns. */
+    subscribe(
+      listener: (navigation: { url: string; type?: "push" | "replace" | "traverse" }) => void,
+    ): () => void;
+  };
+
+  /**
    * Query-string and fragment parameter names whose values are replaced with `REDACTED`.
    *
    * @remarks

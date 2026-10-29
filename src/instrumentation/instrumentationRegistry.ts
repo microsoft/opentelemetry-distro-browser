@@ -48,6 +48,7 @@ export function createInstrumentationRegistry(
   providers: Pick<TelemetryInstance, "tracerProvider" | "loggerProvider">,
   tracesEnabled: boolean,
   isStopped: () => boolean = () => false,
+  sanitizeUrl?: (url: string) => string,
 ) {
   // Claim the whole list before any application callback can bind or enable an entry.
   const owned = new Map<BrowserInstrumentation, Entry>(
@@ -307,6 +308,7 @@ export function createInstrumentationRegistry(
         if (!entry) throw new Error("Instrumentation registry is unavailable.");
         instrumentation.setTracerProvider(providers.tracerProvider);
         instrumentation.setLoggerProvider?.(providers.loggerProvider);
+        if (sanitizeUrl) instrumentation.setUrlSanitizer?.(sanitizeUrl);
         const active = tracesEnabled || !isNetworkInstrumentation(instrumentation);
         if (active && !instrumentation.getConfig().enabled) instrumentation.enable();
         // Do not invoke new application getters merely to assign inspection IDs.

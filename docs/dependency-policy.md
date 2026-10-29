@@ -20,6 +20,29 @@ development SDK, and instrumentation packages on related but independently numbe
 lines. Compatibility is determined from package peer dependencies and verified by tests, not by
 forcing every package to use the same version number.
 
+## Optional framework peers
+
+The `/react` entry point uses a framework **peer range**, not the exact runtime pins
+required for OpenTelemetry dependencies above. The React peer is optional in package
+metadata and external to adapter builds. Install it when using the adapter; core-only
+consumers do not require it. React is not added to the core runtime dependency graph,
+core declarations, instrumentation loader or global browser bundles.
+
+| Entry point | Optional peer range  | Test dependency line |
+| ----------- | -------------------- | -------------------- |
+| `/react`    | `react >=18.0.0 <20` | React/React DOM 19.3 |
+
+Declared peer compatibility is not a claim that every version in the range was tested. The React
+adapter accepts structural history v4/v5 inputs but does not depend on `history` or `react-router`;
+the application must supply its actual router's history when applicable. React DOM is the
+application's renderer, not an adapter peer.
+
+Framework upgrades must retain framework-free core resolution and tree shaking, the supported
+React ESM/CommonJS package formats and cross-browser integration behavior. Review emitted adapter
+size with framework runtimes external, separately from application totals. See
+[packaging](packaging.md#optional-framework-entry-points)
+and [Application Insights extension compatibility](configuration-reference.md#application-insights-extension-compatibility).
+
 ## Upgrade policy
 
 1. Upgrade an OpenTelemetry release cohort atomically. Do not update only one package from the

@@ -16,24 +16,30 @@ All event names below are the log record's top-level `eventName`, not a span eve
 `event.name` attribute. HTTP operations are spans, not named log events. Unless noted otherwise,
 automatic log events use INFO severity (`9`) and have no required body.
 
-| Telemetry          | Signal/name                         | Default               | Source module                                                                                       |
-| ------------------ | ----------------------------------- | --------------------- | --------------------------------------------------------------------------------------------------- |
-| Page view          | Log `browser.page_view`             | On                    | [Distribution page-view implementation](../src/instrumentation/pageView/pageViewInstrumentation.ts) |
-| Page visit         | Log `browser.page_visit`            | Opt-in                | Distribution page-view tracking; `pageView.autoTrackPageVisitTime`                                  |
-| Fetch              | CLIENT span, normalized HTTP method | On when helper called | `@opentelemetry/browser-instrumentation/experimental/fetch`                                         |
-| XHR                | CLIENT span, normalized HTTP method | On when helper called | `@opentelemetry/browser-instrumentation/experimental/xhr`                                           |
-| Console            | Log `browser.console`               | Opt-in                | `@opentelemetry/browser-instrumentation/experimental/console`                                       |
-| Unhandled errors   | Log `exception`                     | Opt-in                | `@opentelemetry/browser-instrumentation/experimental/errors`                                        |
-| Navigation         | Log `browser.navigation`            | Opt-in                | `@opentelemetry/browser-instrumentation/experimental/navigation`                                    |
-| Document timing    | Log `browser.navigation_timing`     | Opt-in                | `@opentelemetry/browser-instrumentation/experimental/navigation-timing`                             |
-| Subresource timing | Log `browser.resource_timing`       | Opt-in                | `@opentelemetry/browser-instrumentation/experimental/resource-timing`                               |
-| Clicks             | Log `browser.user_action.click`     | Opt-in                | `@opentelemetry/browser-instrumentation/experimental/user-action`                                   |
-| Web Vitals         | Log `browser.web_vital`             | Opt-in                | `@opentelemetry/browser-instrumentation/experimental/web-vitals`                                    |
+| Telemetry          | Signal/name                                                     | Default               | Source module                                                                                       |
+| ------------------ | --------------------------------------------------------------- | --------------------- | --------------------------------------------------------------------------------------------------- |
+| Page view          | Log `browser.page_view`                                         | On                    | [Distribution page-view implementation](../src/instrumentation/pageView/pageViewInstrumentation.ts) |
+| Page visit         | Log `browser.page_visit`                                        | Opt-in                | Distribution page-view tracking; `pageView.autoTrackPageVisitTime`                                  |
+| Fetch              | CLIENT span, normalized HTTP method                             | On when helper called | `@opentelemetry/browser-instrumentation/experimental/fetch`                                         |
+| XHR                | CLIENT span, normalized HTTP method                             | On when helper called | `@opentelemetry/browser-instrumentation/experimental/xhr`                                           |
+| Console            | Log `browser.console`                                           | Opt-in                | `@opentelemetry/browser-instrumentation/experimental/console`                                       |
+| Unhandled errors   | Log `exception`                                                 | Opt-in                | `@opentelemetry/browser-instrumentation/experimental/errors`                                        |
+| Navigation         | Log `browser.navigation`                                        | Opt-in                | `@opentelemetry/browser-instrumentation/experimental/navigation`                                    |
+| Document timing    | Log `browser.navigation_timing`                                 | Opt-in                | `@opentelemetry/browser-instrumentation/experimental/navigation-timing`                             |
+| Subresource timing | Log `browser.resource_timing`                                   | Opt-in                | `@opentelemetry/browser-instrumentation/experimental/resource-timing`                               |
+| Clicks             | Log `browser.user_action.click`                                 | Opt-in                | `@opentelemetry/browser-instrumentation/experimental/user-action`                                   |
+| Web Vitals         | Log `browser.web_vital`                                         | Opt-in                | `@opentelemetry/browser-instrumentation/experimental/web-vitals`                                    |
+| Framework helpers  | Named event, metric, trace, exception or explicit page-view log | Opt-in                | Optional `/react` adapter; see [framework telemetry](#framework-telemetry)                          |
 
 The [instrumentation helper](../src/instrumentation/browserInstrumentation/getInstrumentations.ts)
 loads only selected modules in npm applications. The CDN SDK includes all modules but enables only
 fetch/XHR unless configured otherwise. Merely importing the distribution installs none of these;
 initialization must include an exporting pipeline for the relevant signal.
+
+Framework routers feed the existing `browser.page_view` instrumentation rather than a second
+page-view stream. Core owns the initial document view, page operation, redaction and bounded
+settle duration; a configured framework source replaces core History/Navigation API observation.
+See [routing ownership](configuration-reference.md#framework-routing-ownership).
 
 ## Common enrichment and correlation
 
@@ -270,6 +276,55 @@ immediately or in every browser.
 attribution content for sensitive data. Some underlying listeners cannot be removed; disabling
 instrumentation stops emission rather than promising removal of all Web Vitals listeners.
 
+## Framework telemetry
+
+The optional React adapter exposes `trackEvent`, `trackMetric`, `trackTrace`, `trackException` and
+`trackPageView` through the shared `FrameworkPlugin`. Register the plugin and configure an
+exporting **log** pipeline before calling them. These are instance-bound log helpers, not an
+Application Insights AnalyticsPlugin or an OpenTelemetry metrics provider. Disabled adapters drop
+records instead of selecting another instance. See [setup](configuration-reference.md#optional-framework-integrations).
+
+| Method                                                                                              | OTel record                                                             | Azure Monitor mapping                                                                     |
+| --------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| `trackEvent({ name, properties? }, customProperties?)`                                              | INFO named log, properties as attributes                                | `EventData` for ordinary custom names; reserved event names use their specialized mapping |
+| `trackMetric({ name, average, sampleCount?, min?, max?, stdDev?, properties? }, customProperties?)` | INFO `browser.custom_metric` log                                        | `MetricData` in `customMetrics` / `AppMetrics`                                            |
+| `trackTrace({ message, severityLevel?, properties? }, customProperties?)`                           | Unnamed log with message body                                           | `MessageData`                                                                             |
+| `trackException({ exception?, error?, severityLevel?, properties? }, customProperties?)`            | `exception` log with type, message and available stack                  | `ExceptionData`                                                                           |
+| `trackPageView({ name?, uri?, duration?, properties? })`                                            | Explicit `browser.page_view` log; duration in milliseconds, default `0` | `PageViewData`; independent of automatic route tracking                                   |
+
+Application Insights-style severity levels `0` through `4` map to OTel severity numbers `1`, `9`,
+`13`, `17` and `21`. Traces default to level `1`, exceptions to level `3`. Primitive custom
+properties remain attributes; other values are JSON-serialized when possible. Undefined or
+unserializable values are omitted. The second custom-properties argument overrides matching
+properties on the telemetry object. Review event data, error stacks and component properties for
+sensitive content; automatic page URL redaction does not sanitize arbitrary properties.
+
+### Component/custom metric: `browser.custom_metric`
+
+| Attribute                  | Type             | Meaning                                                    |
+| -------------------------- | ---------------- | ---------------------------------------------------------- |
+| `metric.name`              | string           | Metric name from `name`                                    |
+| `metric.value`             | number           | Finite `average`; nonfinite input is dropped by the helper |
+| `metric.count`             | number           | `sampleCount`, default `1`                                 |
+| `metric.min`, `metric.max` | number, optional | Supplied minimum and maximum                               |
+| `metric.stddev`            | number, optional | Supplied `stdDev`                                          |
+
+Azure Monitor maps these fields to the metric's `name`, `value`, `count`, `min`, `max` and `stdDev`,
+omitting nonfinite optional numeric fields. The metric fields are not duplicated as custom
+properties/measurements; additional application attributes retain normal custom-field mapping.
+OTLP/custom exporters receive the portable log and its attributes. No `MeterProvider` or metrics
+export pipeline is created.
+
+React engagement helpers emit `React Component Engaged Time (seconds)` with count `1` and a
+`Component Name` property on real unmount after interaction. Whole idle gaps of at least five
+seconds are excluded; untouched components emit nothing, and a microtask suppresses StrictMode
+cleanup replay. This engagement value is seconds, unlike page-view duration and `PageVisitTime`,
+which are milliseconds. The React error boundary emits `exception` and supplies `componentStack`.
+See the [helper contracts](configuration-reference.md#react-setup-and-helpers) for hook state semantics.
+
+Explicit `trackPageView` does not replace core routing, mint a new shared page operation or measure
+load/settle duration. Do not call it for the same navigation already tracked automatically.
+
 ## Manual telemetry and loader failures
 
 Applications choose their own span names and named log events using standard OpenTelemetry APIs.
@@ -298,6 +353,7 @@ Table names follow the [Azure Monitor telemetry data model](https://learn.micros
 | `browser.page_view`                                             | `PageViewData`                                | `pageViews` / `AppPageViews`                 |
 | Page view with all five valid performance fields                | Additional `PageviewPerformanceData` envelope | `browserTimings` / `AppBrowserTimings`       |
 | `browser.page_visit`                                            | `MetricData`, `PageVisitTime` custom metric   | `customMetrics` / `AppMetrics`               |
+| Valid `browser.custom_metric`                                   | `MetricData`, supplied metric name            | `customMetrics` / `AppMetrics`               |
 | `browser.navigation`                                            | `PageViewData`                                | `pageViews` / `AppPageViews`                 |
 | Fetch/XHR CLIENT span                                           | `RemoteDependencyData`, HTTP dependency       | `dependencies` / `AppDependencies`           |
 | `exception`, or a log with `exception.type`                     | `ExceptionData`                               | `exceptions` / `AppExceptions`               |

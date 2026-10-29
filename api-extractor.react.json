@@ -1,0 +1,5 @@
+{
+  "extends": "./api-extractor.instrumentations.json",
+  "mainEntryPointFilePath": "<projectFolder>/dist/esm/react.d.ts",
+  "apiReport": { "reportFileName": "opentelemetry-browser.react.api.md" }
+}

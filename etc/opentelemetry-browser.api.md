@@ -74,6 +74,7 @@ export interface BrowserInstrumentation {
     };
     setLoggerProvider?(provider: LoggerProvider): void;
     setTracerProvider(provider: TracerProvider): void;
+    setUrlSanitizer?(sanitize: (url: string) => string): void;
 }
 
 // @public
@@ -173,6 +174,13 @@ export interface PageViewInstrumentationConfig {
     readonly enabled?: boolean;
     readonly redactedQueryParams?: readonly string[];
     readonly routeResolver?: () => string | undefined;
+    readonly routeSource?: {
+        getCurrentUrl(): string;
+        subscribe(listener: (navigation: {
+            url: string;
+            type?: "push" | "replace" | "traverse";
+        }) => void): () => void;
+    };
     readonly sanitizeUrl?: (url: string) => string;
     readonly softNavigationSettleTimeoutMs?: number;
     readonly useNavigationApiIfAvailable?: boolean;

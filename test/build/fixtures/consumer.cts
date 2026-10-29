@@ -11,6 +11,33 @@ import {
 } from "@microsoft/opentelemetry-browser";
 import { getInstrumentations } from "@microsoft/opentelemetry-browser/instrumentations";
 import type { AzureMonitorSdkStatsOptions } from "@microsoft/opentelemetry-browser";
+import {
+  AppInsightsContext,
+  ReactPlugin,
+  useAppInsightsContext,
+  useTrackEvent,
+  type AIReactCustomEvent,
+  type IReactExtensionConfig,
+} from "@microsoft/opentelemetry-browser/react";
+import { createElement, type ReactElement } from "react";
+
+const reactConfig: IReactExtensionConfig = { routeResolver: () => "/orders/:id" };
+export const reactPlugin: ReactPlugin = new ReactPlugin(reactConfig);
+export const reactTelemetry = useMicrosoftOpenTelemetry({
+  instrumentations: [reactPlugin],
+  pageView: reactPlugin.pageView,
+});
+
+function Consumer(): ReactElement {
+  const plugin = useAppInsightsContext();
+  const setEvent: AIReactCustomEvent<number> = useTrackEvent(plugin, "click", 0);
+  return createElement("button", { onClick: () => setEvent((count) => count + 1) });
+}
+
+export const reactTree = createElement(AppInsightsContext.Provider, {
+  value: reactPlugin,
+  children: createElement(Consumer),
+});
 
 void OPENTELEMETRY_BROWSER_VERSION;
 void useMicrosoftOpenTelemetry;

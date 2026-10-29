@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { once } from "node:events";
-import { readFile, readdir } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
+import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { context, diag, propagation, SpanKind, trace } from "@opentelemetry/api";
@@ -32,6 +34,33 @@ const pkg = JSON.parse(await readFile(new URL("package.json", root), "utf8"));
 const require = createRequire(import.meta.url);
 const esmBundle = "dist/esm/index";
 const sharedApiPackages = ["@opentelemetry/api", "@opentelemetry/api-logs"];
+
+function isFrameworkModule(id) {
+  return /^(?:@angular\/|(?:@types\/)?react(?:-dom)?(?:\/|$)|rxjs(?:\/|$))/.test(id);
+}
+
+function assertNoTypeErrors(program) {
+  const diagnostics = ts.getPreEmitDiagnostics(program);
+  assert.equal(
+    diagnostics.length,
+    0,
+    ts.formatDiagnosticsWithColorAndContext(diagnostics, {
+      getCanonicalFileName: (file) => file,
+      getCurrentDirectory: ts.sys.getCurrentDirectory,
+      getNewLine: () => "\n",
+    }),
+  );
+}
+
+function runNodeConsumer(source, format = "module") {
+  const result = spawnSync(process.execPath, [`--input-type=${format}`, "--eval", source], {
+    cwd: fileURLToPath(root),
+    encoding: "utf8",
+    timeout: 60_000,
+  });
+  assert.ifError(result.error);
+  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+}
 
 function findUndeclaredRequireCalls(code) {
   const source = ts.createSourceFile("bundle.js", code, ts.ScriptTarget.Latest, true);
@@ -89,38 +118,66 @@ test("the package is configured for a public beta release", () => {
   });
 });
 
+async function createInstalledConsumer() {
+  const consumer = await mkdtemp(fileURLToPath(new URL(".package-consumer-", root)));
+  try {
+    const installedPackage = join(consumer, "node_modules", "@microsoft", "opentelemetry-browser");
+    await writeFile(join(consumer, "package.json"), '{"private":true,"type":"module"}');
+    await mkdir(installedPackage, { recursive: true });
+    await cp(new URL("package.json", root), join(installedPackage, "package.json"));
+    await cp(new URL("dist/", root), join(installedPackage, "dist"), { recursive: true });
+    return consumer;
+  } catch (error) {
+    await rm(consumer, { recursive: true, force: true });
+    throw error;
+  }
+}
+
 async function bundleConsumer(source, external = []) {
   const input = "\0consumer";
-  const bundle = await rollup({
-    input,
-    external,
-    plugins: [
-      {
-        name: "package-consumer",
-        resolveId(id) {
-          if (id === input) return input;
-          if (id === "distro") return fileURLToPath(new URL(pkg.exports["."].import.default, root));
-        },
-        load(id) {
-          if (id === input) return source;
-        },
-      },
-      nodeResolve({ browser: true }),
-      commonjs(),
-    ],
-    onwarn(warning, defaultHandler) {
-      if (warning.code === "UNRESOLVED_IMPORT") throw new Error(warning.message);
-      if (warning.code !== "EMPTY_BUNDLE") defaultHandler(warning);
-    },
-  });
+  const consumer = await createInstalledConsumer();
+  let bundle;
   try {
+    bundle = await rollup({
+      input,
+      external,
+      plugins: [
+        {
+          name: "package-consumer",
+          resolveId(id) {
+            if (id === input) return input;
+            if (id === "distro")
+              return fileURLToPath(new URL(pkg.exports["."].import.default, root));
+            if (id === pkg.name || id.startsWith(`${pkg.name}/`)) {
+              return this.resolve(id, join(consumer, "consumer.mjs"), { skipSelf: true });
+            }
+          },
+          load(id) {
+            if (id === input) return source;
+          },
+        },
+        nodeResolve({
+          browser: true,
+          modulePaths: [fileURLToPath(new URL("node_modules/", root))],
+        }),
+        commonjs(),
+      ],
+      onwarn(warning, defaultHandler) {
+        if (warning.code === "UNRESOLVED_IMPORT") throw new Error(warning.message);
+        if (warning.code !== "EMPTY_BUNDLE") defaultHandler(warning);
+      },
+    });
     const { output } = await bundle.generate({ format: "es" });
     assert.equal(output.length, 1);
     assert.equal(output[0].type, "chunk");
     assert.deepEqual(output[0].imports.sort(), [...external].sort());
     return output[0];
   } finally {
-    await bundle.close();
+    try {
+      await bundle?.close();
+    } finally {
+      await rm(consumer, { recursive: true, force: true });
+    }
   }
 }
 
@@ -156,9 +213,257 @@ test("the package exposes ESM and CommonJS entry points", () => {
         default: "./dist/esm/snippet.js",
       },
     },
+    "./react": {
+      import: {
+        types: "./dist/esm/react.d.ts",
+        default: "./dist/esm/react.js",
+      },
+      require: {
+        types: "./dist/commonjs/react.d.cts",
+        default: "./dist/commonjs/react.cjs",
+      },
+    },
     "./package.json": "./package.json",
   });
   assert.equal(pkg.types, pkg.exports["."].import.types);
+});
+
+test("React is an optional peer, not a core dependency", () => {
+  assert.deepEqual(Object.keys(pkg.peerDependencies).filter(isFrameworkModule), ["react"]);
+  assert.equal(typeof pkg.peerDependencies.react, "string", "react must be a peer");
+  assert.equal(pkg.peerDependenciesMeta.react?.optional, true, "react must be optional");
+  for (const dependencies of [pkg.dependencies, pkg.optionalDependencies]) {
+    assert.deepEqual(Object.keys(dependencies ?? {}).filter(isFrameworkModule), []);
+  }
+  for (const name of Object.keys(pkg.peerDependencies).filter(isFrameworkModule)) {
+    assert.equal(pkg.peerDependenciesMeta[name]?.optional, true);
+  }
+});
+
+test("bare and unused React adapter imports tree-shake without retaining framework runtimes", async () => {
+  for (const source of [
+    `import "${pkg.name}/react";`,
+    `import { ReactPlugin } from "${pkg.name}/react"; export const retained = true;`,
+  ]) {
+    const chunk = await bundleConsumer(source);
+    assert.equal(
+      chunk.code.trim(),
+      source.startsWith("import {") ? "const retained = true;\n\nexport { retained };" : "",
+    );
+    assert.deepEqual(chunk.dynamicImports, []);
+    for (const [id, module] of Object.entries(chunk.modules)) {
+      if (module.renderedLength > 0) {
+        assert.equal(id, "\0consumer", `unused adapter retained ${id}`);
+      }
+    }
+  }
+});
+
+test("core runtime module graphs never resolve framework dependencies", async () => {
+  for (const entry of [
+    pkg.exports["."].import.default,
+    pkg.exports["."].require.default,
+    pkg.exports["./instrumentations"].import.default,
+    pkg.exports["./instrumentations"].require.default,
+    pkg.exports["./snippet"].import.default,
+    "dist/esm/index.min.js",
+  ]) {
+    const bundle = await rollup({
+      input: fileURLToPath(new URL(entry, root)),
+      plugins: [
+        {
+          name: "deny-framework-resolution",
+          resolveId(id, importer) {
+            assert.equal(isFrameworkModule(id), false, `${importer} imports ${id}`);
+          },
+        },
+        nodeResolve({ browser: true }),
+        commonjs(),
+      ],
+      onwarn(warning, defaultHandler) {
+        if (warning.code === "UNRESOLVED_IMPORT") throw new Error(warning.message);
+        defaultHandler(warning);
+      },
+    });
+    try {
+      const map = JSON.parse(await readFile(new URL(`${entry}.map`, root), "utf8"));
+      for (const source of map.sources) {
+        assert.doesNotMatch(
+          source.replaceAll("\\", "/"),
+          /(?:\/src\/frameworks\/|\/node_modules\/(?:@angular\/|react(?:-dom)?\/|rxjs\/))/,
+          `${entry} embeds framework code from ${source}`,
+        );
+      }
+      for (const { id } of bundle.cache.modules) {
+        const path = id.replaceAll("\\", "/");
+        assert.doesNotMatch(path, /\/src\/frameworks\//, `${entry}: ${path}`);
+        assert.doesNotMatch(
+          path,
+          /\/node_modules\/(?:@angular\/|(?:@types\/)?react(?:-dom)?\/|rxjs\/)/,
+          `${entry}: ${path}`,
+        );
+      }
+    } finally {
+      await bundle.close();
+    }
+  }
+});
+
+test("core declarations typecheck with framework resolution denied", () => {
+  for (const extension of ["mts", "cts"]) {
+    // Keep this consumer virtual so installing framework dev dependencies cannot hide a leak.
+    const file = fileURLToPath(
+      new URL(`fixtures/core-only.${extension}`, import.meta.url),
+    ).replaceAll("\\", "/");
+    const source = `
+      import { useMicrosoftOpenTelemetry, type MicrosoftOpenTelemetryBrowserOptions }
+        from "${pkg.name}";
+      import { getInstrumentations } from "${pkg.name}/instrumentations";
+      ${extension === "mts" ? `export { getSdkLoaderScript } from "${pkg.name}/snippet";` : ""}
+      const options: MicrosoftOpenTelemetryBrowserOptions = { pageView: { enabled: false } };
+      export { useMicrosoftOpenTelemetry, getInstrumentations, options };
+    `;
+    const options = {
+      target: ts.ScriptTarget.ES2022,
+      module: ts.ModuleKind.NodeNext,
+      moduleResolution: ts.ModuleResolutionKind.NodeNext,
+      strict: true,
+      exactOptionalPropertyTypes: true,
+      noEmit: true,
+      // The instrumentations subpath selects upstream Node types under NodeNext, even in ESM.
+      types: ["node"],
+    };
+    const host = ts.createCompilerHost(options);
+    const getSourceFile = host.getSourceFile.bind(host);
+    host.getSourceFile = (name, languageVersion, onError, shouldCreateNewSourceFile) =>
+      name.replaceAll("\\", "/") === file
+        ? ts.createSourceFile(name, source, languageVersion, true)
+        : getSourceFile(name, languageVersion, onError, shouldCreateNewSourceFile);
+    host.resolveModuleNameLiterals = (
+      literals,
+      containingFile,
+      _redirect,
+      compilerOptions,
+      containingSourceFile,
+    ) =>
+      literals.map((literal) => {
+        assert.equal(
+          isFrameworkModule(literal.text),
+          false,
+          `${containingFile} must not require ${literal.text}`,
+        );
+        return ts.resolveModuleName(
+          literal.text,
+          containingFile,
+          compilerOptions,
+          host,
+          undefined,
+          undefined,
+          ts.getModeForUsageLocation(containingSourceFile, literal, compilerOptions),
+        );
+      });
+    const program = ts.createProgram([file], options, host);
+    assertNoTypeErrors(program);
+    const declarations = program
+      .getSourceFiles()
+      .map((entry) => entry.fileName.replaceAll("\\", "/"));
+    const declaration = fileURLToPath(
+      new URL(pkg.exports["."][extension === "cts" ? "require" : "import"].types, root),
+    ).replaceAll("\\", "/");
+    assert.ok(declarations.includes(declaration));
+    for (const name of declarations) {
+      assert.doesNotMatch(
+        name,
+        /\/node_modules\/(?:@angular\/|(?:@types\/)?react(?:-dom)?\/|rxjs\/)/,
+      );
+      assert.doesNotMatch(name, /\/dist\/(?:esm|commonjs)\/(?:react|angular)\.d\./);
+    }
+  }
+});
+
+for (const format of ["module", "commonjs"]) {
+  test(`React ${format} consumers resolve the adapter and render safely during Node SSR`, () => {
+    const imports =
+      format === "module"
+        ? `
+          import assert from "node:assert/strict";
+          import * as adapter from "${pkg.name}/react";
+          import { createElement } from "react";
+          import { renderToString } from "react-dom/server";
+          assert.equal(import.meta.resolve("${pkg.name}/react"), ${JSON.stringify(new URL(pkg.exports["./react"].import.default, root).href)});
+        `
+        : `
+          const assert = require("node:assert/strict");
+          const adapter = require("${pkg.name}/react");
+          const { createElement } = require("react");
+          const { renderToString } = require("react-dom/server");
+          assert.equal(require.resolve("${pkg.name}/react"), ${JSON.stringify(fileURLToPath(new URL(pkg.exports["./react"].require.default, root)))});
+        `;
+    runNodeConsumer(
+      `${imports}
+        assert.equal(typeof window, "undefined");
+        assert.equal(typeof document, "undefined");
+        assert.deepEqual(Object.keys(adapter).sort(), [
+          "AITrackedComponentBase", "AppInsightsContext", "AppInsightsErrorBoundary",
+          "FrameworkPlugin", "ReactPlugin", "useAppInsightsContext", "useTrackEvent",
+          "useTrackMetric", "withAITracking",
+        ].sort());
+        const plugin = new adapter.ReactPlugin();
+        assert.ok(plugin instanceof adapter.FrameworkPlugin);
+        const records = [];
+        plugin.setLoggerProvider({ getLogger: () => ({ emit: (record) => records.push(record) }) });
+        plugin.enable();
+        function App() {
+          assert.equal(adapter.useAppInsightsContext(), plugin);
+          assert.equal(typeof adapter.useTrackEvent(plugin, "ssr.render", { rendered: true }, false), "function");
+          return createElement("p", null, "server rendered");
+        }
+        assert.equal(renderToString(createElement(adapter.AppInsightsContext.Provider,
+          { value: plugin }, createElement(App))), "<p>server rendered</p>");
+        assert.deepEqual(records, []);
+        plugin.disable();
+      `,
+      format,
+    );
+  });
+}
+
+test("React runtime bundles share only telemetry and URL redaction, not the core SDK", async () => {
+  for (const file of ["dist/esm/react.js", "dist/commonjs/react.cjs"]) {
+    const map = JSON.parse(await readFile(new URL(`${file}.map`, root), "utf8"));
+    const sources = map.sources.map((source) =>
+      fileURLToPath(new URL(source, new URL(`${file}.map`, root))).replaceAll("\\", "/"),
+    );
+    const src = fileURLToPath(new URL("src/", root)).replaceAll("\\", "/");
+    assert.ok(sources.some((source) => source === `${src}frameworks/telemetry.ts`));
+    assert.ok(sources.some((source) => source === `${src}shared/urlRedaction.ts`));
+    for (const source of sources) {
+      assert.ok(
+        source.startsWith(`${src}frameworks/react/`) ||
+          source === `${src}frameworks/telemetry.ts` ||
+          source === `${src}shared/urlRedaction.ts`,
+        `${file} embeds unexpected core or dependency code: ${source}`,
+      );
+    }
+    const bundle = await rollup({
+      input: fileURLToPath(new URL(file, root)),
+      external: (id) =>
+        !id.startsWith("\0") &&
+        !id.startsWith(".") &&
+        !id.startsWith("/") &&
+        !/^[A-Z]:[\\/]/i.test(id),
+      plugins: [commonjs()],
+    });
+    try {
+      const { output } = await bundle.generate({ format: "es" });
+      assert.equal(output.length, 1);
+      for (const id of [...output[0].imports, ...output[0].dynamicImports]) {
+        assert.match(id, /^react(?:-dom)?(?:\/|$)/, `${file} imports unexpected dependency ${id}`);
+      }
+    } finally {
+      await bundle.close();
+    }
+  }
 });
 
 test("customer SDK stats expose configuration only, not internal reporting controls", async () => {
@@ -191,6 +496,9 @@ test("the build produces ESM, CommonJS, UMD, and IIFE artifacts", async () => {
     "instrumentations.d.ts",
     "instrumentations.js",
     "instrumentations.js.map",
+    "react.d.ts",
+    "react.js",
+    "react.js.map",
     "snippet.d.ts",
     "snippet.js",
     "snippet.js.map",
@@ -202,6 +510,9 @@ test("the build produces ESM, CommonJS, UMD, and IIFE artifacts", async () => {
     "instrumentations.cjs",
     "instrumentations.cjs.map",
     "instrumentations.d.cts",
+    "react.cjs",
+    "react.cjs.map",
+    "react.d.cts",
   ]);
   assert.deepEqual((await readdir(new URL("dist/browser/", root))).sort(), [
     "opentelemetry-browser-instrumentations.iife.js",
@@ -836,16 +1147,34 @@ test("browser bundlers resolve the CommonJS entry without Node runtime imports",
 });
 
 test("unused exports and side-effect-only imports remain tree-shakeable", async () => {
-  const bundle = await rollup({
-    input: fileURLToPath(new URL("fixtures/tree-shaking.mjs", import.meta.url)),
-    plugins: [nodeResolve({ browser: true }), commonjs()],
-  });
+  const consumer = await createInstalledConsumer();
+  let bundle;
   try {
+    const input = join(consumer, "tree-shaking.mjs");
+    await cp(new URL("fixtures/tree-shaking.mjs", import.meta.url), input);
+    bundle = await rollup({
+      input,
+      plugins: [
+        nodeResolve({
+          browser: true,
+          modulePaths: [fileURLToPath(new URL("node_modules/", root))],
+        }),
+        commonjs(),
+      ],
+      onwarn(warning, defaultHandler) {
+        if (warning.code === "UNRESOLVED_IMPORT") throw new Error(warning.message);
+        defaultHandler(warning);
+      },
+    });
     const { output } = await bundle.generate({ format: "es" });
     assert.equal(output.length, 1);
     assert.equal(output[0].code.trim(), "const retained = true;\n\nexport { retained };");
   } finally {
-    await bundle.close();
+    try {
+      await bundle?.close();
+    } finally {
+      await rm(consumer, { recursive: true, force: true });
+    }
   }
 });
 
@@ -860,6 +1189,15 @@ test("every JavaScript bundle ships a source map", async () => {
       assert.equal(sourceMap.version, 3);
       assert.ok(sourceMap.sources.length > 0);
       assert.ok(sourceMap.sourcesContent.some((source) => typeof source === "string" && source));
+      if (!/^react\./.test(file)) {
+        for (const source of sourceMap.sources) {
+          assert.doesNotMatch(
+            source.replaceAll("\\", "/"),
+            /(?:\/src\/frameworks\/|\/node_modules\/(?:@angular\/|react(?:-dom)?\/|rxjs\/))/,
+            `${directory}/${file} embeds framework code from ${source}`,
+          );
+        }
+      }
     }
   }
 });

@@ -10,6 +10,7 @@ import { MaxPropertyLengths, MAX_BEACON_BODY_SIZE } from "../../../src/exporter/
 import type { ExceptionData, PageViewData } from "../../../src/exporter/telemetryModels.js";
 import {
   createExceptionDetails,
+  logItemType,
   logToEnvelope,
   logToEnvelopes,
 } from "../../../src/exporter/logUtils.js";
@@ -356,6 +357,92 @@ describe("Azure Monitor log envelope mapping", () => {
     expect(new TextEncoder().encode(refUri).byteLength).toBeLessThanOrEqual(
       MaxPropertyLengths.THIRTEEN_BIT,
     );
+  });
+
+  it.each([1, 2])("maps a correlated framework metric with sample count %s", (count) => {
+    const record = makeLog({
+      eventName: "browser.custom_metric",
+      attributes: {
+        "metric.name": "React Component Engaged Time (seconds)",
+        "metric.value": 1.5,
+        "metric.count": count,
+        "metric.min": 1,
+        "metric.max": 2,
+        "metric.stddev": 0.5,
+        "Component Name": "Checkout",
+      },
+    });
+    const [envelope] = logToEnvelopes(record, instrumentationKey);
+    expect(logItemType(record)).toBe("CUSTOM_METRIC");
+    expect(envelope.name).toBe("Microsoft.ApplicationInsights.Metric");
+    expect(envelope.tags["ai.operation.id"]).toBe(spanContext.traceId);
+    expect(envelope.data).toEqual({
+      baseType: "MetricData",
+      baseData: {
+        ver: 2,
+        metrics: [
+          {
+            name: "React Component Engaged Time (seconds)",
+            kind: 0,
+            value: 1.5,
+            count,
+            min: 1,
+            max: 2,
+            stdDev: 0.5,
+          },
+        ],
+        properties: { "Component Name": "Checkout" },
+        measurements: undefined,
+      },
+    });
+    expect(record.attributes["metric.value"]).toBe(1.5);
+  });
+
+  it.each([NaN, Infinity, undefined, "1"])(
+    "does not export an invalid custom metric value %j",
+    (value) => {
+      const record = makeLog({
+        eventName: "browser.custom_metric",
+        attributes: { "metric.name": "invalid", "metric.value": value },
+      });
+      const envelope = logToEnvelope(record, instrumentationKey);
+      expect(logItemType(record)).toBe("CUSTOM_EVENT");
+      expect(envelope.data.baseType).toBe("EventData");
+    },
+  );
+
+  it.each([
+    { "metric.name": "" },
+    { "metric.name": " \t" },
+    { "metric.count": 0 },
+    { "metric.count": -1 },
+    { "metric.count": 0.5 },
+    { "metric.count": NaN },
+    { "metric.count": Infinity },
+    { "metric.count": Number.MAX_SAFE_INTEGER + 1 },
+  ])("classifies invalid framework metric attributes as custom events: %j", (attributes) => {
+    const record = makeLog({
+      eventName: "browser.custom_metric",
+      attributes: { "metric.name": "Engagement", "metric.value": 1.5, ...attributes },
+    });
+    expect(logItemType(record)).toBe("CUSTOM_EVENT");
+    expect(logToEnvelope(record, instrumentationKey).data.baseType).toBe("EventData");
+  });
+
+  it("keeps framework metric classification independent of page-visit attributes", () => {
+    const record = makeLog({
+      eventName: "browser.custom_metric",
+      attributes: {
+        "metric.name": "Engagement",
+        "metric.value": 1.5,
+        "browser.page_visit.duration": 100,
+      },
+    });
+    expect(logItemType(record)).toBe("CUSTOM_METRIC");
+    expect(logToEnvelope(record, instrumentationKey).data).toMatchObject({
+      baseType: "MetricData",
+      baseData: { metrics: [{ name: "Engagement", value: 1.5 }] },
+    });
   });
 
   it.each([0, 12_345.5])(
