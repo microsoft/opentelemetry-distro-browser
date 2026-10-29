@@ -2,22 +2,44 @@
 // Licensed under the MIT License.
 
 import { diag } from "@opentelemetry/api";
+import { ConsoleInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/console";
+import { ErrorsInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/errors";
+import { FetchInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/fetch";
+import { NavigationInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/navigation";
+import { UserActionInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/user-action";
+import { WebVitalsInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/web-vitals";
 import { resourceFromAttributes } from "@opentelemetry/resources";
 import { afterEach, expect, it, vi } from "vitest";
+import {
+  onCLS,
+  onFCP,
+  onINP,
+  onLCP,
+  onTTFB,
+  type FCPMetricWithAttribution,
+} from "web-vitals/attribution";
 import {
   useMicrosoftOpenTelemetry,
   type BrowserInstrumentation,
   type MicrosoftOpenTelemetryBrowser,
   type MicrosoftOpenTelemetryBrowserOptions,
 } from "../../../src/index.js";
+import { PageViewInstrumentation } from "../../../src/instrumentation/pageView/index.js";
 import { startTelemetryInstance } from "../../../src/routing/telemetryInstance.js";
 
 vi.mock("../../../src/routing/telemetryInstance.js", () => ({ startTelemetryInstance: vi.fn() }));
+vi.mock("web-vitals/attribution", () => ({
+  onCLS: vi.fn(),
+  onFCP: vi.fn(),
+  onINP: vi.fn(),
+  onLCP: vi.fn(),
+  onTTFB: vi.fn(),
+}));
 
 function fakeInstance() {
   return {
     tracerProvider: { getTracer: vi.fn() },
-    loggerProvider: { getLogger: vi.fn() },
+    loggerProvider: { getLogger: vi.fn(() => ({ emit: vi.fn(), enabled: () => true })) },
     commit: vi.fn(),
     abort: vi.fn(),
     detach: vi.fn(),
@@ -32,6 +54,7 @@ afterEach(async () => {
   handles.clear();
   vi.restoreAllMocks();
   vi.mocked(startTelemetryInstance).mockReset();
+  for (const register of [onCLS, onFCP, onINP, onLCP, onTTFB]) vi.mocked(register).mockClear();
   for (const result of results) {
     if (result.status === "rejected") throw result.reason;
   }
@@ -106,6 +129,28 @@ it("does not register instances omitted by the caller", async () => {
   expect(omitted.disable).not.toHaveBeenCalled();
 });
 
+it("uses inherited data names without invoking optional metadata accessors", async () => {
+  const instrumentation = createInstrumentation();
+  Object.setPrototypeOf(instrumentation, { instrumentationName: "custom-name" });
+  const getter = vi.fn(() => "0.8.1");
+  const accessor = createInstrumentation();
+  Object.defineProperty(accessor, "instrumentationVersion", { get: getter });
+  const { handle } = await initialize([instrumentation, accessor]);
+  expect(handle.instrumentations.get("custom-name")).toBe(instrumentation);
+  expect(handle.instrumentations.get("instrumentation")).toBe(accessor);
+  expect(getter).not.toHaveBeenCalled();
+});
+
+it("does not require introspection of optional metadata for startup", async () => {
+  const instrumentation = new Proxy(createInstrumentation(), {
+    getOwnPropertyDescriptor() {
+      throw new Error("metadata unavailable");
+    },
+  });
+  const { handle } = await initialize([instrumentation]);
+  expect(handle.instrumentations.get("instrumentation")).toBe(instrumentation);
+});
+
 it("owns shutdown even when no instrumentation is selected", async () => {
   const { handle, sdk } = await initialize([]);
   await handle.shutdown();
@@ -123,6 +168,101 @@ it("wraps the upstream handle for the instrumentation the distribution owns", as
   const { handle, sdk } = await initialize([], { pageView: undefined });
   expect(handle).not.toBe(sdk);
 });
+
+it("registers runtime-supported optional upstream instrumentations by stable IDs", async () => {
+  const console = new ConsoleInstrumentation({ enabled: false });
+  const errors = new ErrorsInstrumentation({ enabled: false });
+  const userAction = new UserActionInstrumentation({ enabled: false });
+  const webVitals = new WebVitalsInstrumentation({ enabled: false });
+  const { handle } = await initialize([console, errors, userAction, webVitals]);
+
+  expect(handle.instrumentations.get("console")).toBe(console);
+  expect(handle.instrumentations.get("errors")).toBe(errors);
+  expect(handle.instrumentations.get("user-action")).toBe(userAction);
+  expect(handle.instrumentations.get("web-vitals")).toBe(webVitals);
+
+  const disable = vi.spyOn(webVitals, "disable");
+  const enable = vi.spyOn(webVitals, "enable");
+  await handle.instrumentations.setEnabled("web-vitals", false);
+  await handle.instrumentations.setEnabled("web-vitals", true);
+  expect(disable).toHaveBeenCalledOnce();
+  expect(enable).toHaveBeenCalledOnce();
+});
+
+it("pauses Web Vitals emission and resumes the same object without registering callbacks again", async () => {
+  const firstInstrumentation = new WebVitalsInstrumentation({ enabled: false });
+  const secondInstrumentation = new WebVitalsInstrumentation({ enabled: false });
+  const first = await initialize([firstInstrumentation]);
+  const second = await initialize([secondInstrumentation]);
+  const firstEmit = first.sdk.loggerProvider.getLogger.mock.results[0].value.emit;
+  const secondEmit = second.sdk.loggerProvider.getLogger.mock.results[0].value.emit;
+  const metric: FCPMetricWithAttribution = {
+    name: "FCP",
+    value: 100,
+    delta: 100,
+    rating: "good",
+    id: "pause-resume-fcp",
+    navigationId: 1,
+    navigationType: "navigate",
+    entries: [],
+    attribution: { timeToFirstByte: 25, firstByteToFCP: 75, loadState: "complete" },
+  };
+  // Drive the callbacks registered by the real upstream instrumentation, not its private methods.
+  const report = () => {
+    for (const [callback] of vi.mocked(onFCP).mock.calls) callback(metric);
+  };
+  for (const register of [onCLS, onFCP, onINP, onLCP, onTTFB]) {
+    expect(register).toHaveBeenCalledTimes(2);
+  }
+
+  report();
+  expect(firstEmit).toHaveBeenCalledOnce();
+  expect(secondEmit).toHaveBeenCalledOnce();
+  expect(firstEmit).toHaveBeenLastCalledWith(
+    expect.objectContaining({
+      eventName: "browser.web_vital",
+      attributes: expect.objectContaining({
+        "browser.web_vital.name": "fcp",
+        "browser.web_vital.id": metric.id,
+      }),
+    }),
+  );
+
+  await first.handle.instrumentations.setEnabled("web-vitals", false);
+  report();
+  expect(firstEmit).toHaveBeenCalledOnce();
+  expect(secondEmit).toHaveBeenCalledTimes(2);
+
+  await first.handle.instrumentations.setEnabled("web-vitals", true);
+  expect(first.handle.instrumentations.get("web-vitals")).toBe(firstInstrumentation);
+  report();
+  expect(firstEmit).toHaveBeenCalledTimes(2);
+  expect(secondEmit).toHaveBeenCalledTimes(3);
+  for (const register of [onCLS, onFCP, onINP, onLCP, onTTFB]) {
+    expect(register).toHaveBeenCalledTimes(2);
+  }
+});
+
+it("rejects one Web Vitals object registered twice before it can enable twice", async () => {
+  const webVitals = new WebVitalsInstrumentation({ enabled: false });
+  const enable = vi.spyOn(webVitals, "enable");
+  await expect(initialize([webVitals, webVitals])).rejects.toThrow("browser-instrumentation-owned");
+  expect(enable).not.toHaveBeenCalled();
+});
+
+it.each([
+  ["instrumentation", createInstrumentation()],
+  ["navigation", new NavigationInstrumentation({ enabled: false })],
+  ["@microsoft/opentelemetry-browser/page-view", new PageViewInstrumentation({ enabled: false })],
+] as const)(
+  "rejects runtime lifecycle for unsupported %s instrumentation",
+  async (id, instrumentation) => {
+    const { handle } = await initialize([instrumentation]);
+    await expect(handle.instrumentations.setEnabled(id, false)).rejects.toThrow(
+      `Runtime lifecycle is unsupported for instrumentation: ${id}`,
+    );
+  },
+);
 
 it("snapshots the supplied list and cleans up once in reverse registration order", async () => {
   const first = createInstrumentation();
@@ -240,6 +380,138 @@ it("continues cleanup and preserves a single instrumentation failure", async () 
   expect(first.disable).toHaveBeenCalledOnce();
   expect(second.disable).toHaveBeenCalledOnce();
   expect(sdk.shutdown).toHaveBeenCalledOnce();
+});
+
+it("retains and explicitly removes errors handlers after a partial upstream removal failure", async () => {
+  const errors = new ErrorsInstrumentation({ enabled: false });
+  const { handle } = await initialize([errors]);
+  const handler = (errors as unknown as { _onErrorHandler?: EventListener })._onErrorHandler;
+  expect(handler).toBeTypeOf("function");
+  const remove = vi.spyOn(window, "removeEventListener");
+  remove.mockImplementationOnce(() => {
+    throw new Error("partial errors removal failed");
+  });
+
+  await expect(handle.instrumentations.setEnabled("errors", false)).rejects.toThrow(
+    "partial errors removal failed",
+  );
+  expect(remove).toHaveBeenCalledWith("unhandledrejection", handler);
+  await expect(handle.instrumentations.setEnabled("errors", true)).rejects.toThrow(
+    "Instrumentation rollback failed; shutdown is required.",
+  );
+
+  await handle.shutdown();
+  expect(remove).toHaveBeenCalledWith("error", handler);
+  expect(remove).toHaveBeenCalledWith("unhandledrejection", handler);
+});
+
+it("does not re-enable errors when shutdown reenters through listener registration", async () => {
+  const errors = new ErrorsInstrumentation({ enabled: false });
+  const { handle } = await initialize([errors]);
+  await handle.instrumentations.setEnabled("errors", false);
+  const enable = vi.spyOn(errors, "enable");
+  let shutdown: Promise<void> | undefined;
+  const nativeAdd = window.addEventListener.bind(window);
+  const nativeRemove = window.removeEventListener.bind(window);
+  const removed: { name: string; listener: EventListenerOrEventListenerObject | null }[] = [];
+  vi.spyOn(window, "removeEventListener").mockImplementation((...args) => {
+    nativeRemove(...args);
+    removed.push({ name: args[0], listener: args[1] });
+  });
+  const add = vi.spyOn(window, "addEventListener").mockImplementation((...args) => {
+    if (args[0] === "error") shutdown ??= handle.shutdown();
+    nativeAdd(...args);
+  });
+
+  await expect(handle.instrumentations.setEnabled("errors", true)).rejects.toThrow(
+    "Telemetry instance is stopped.",
+  );
+  await shutdown;
+  expect(add).toHaveBeenCalledWith("error", expect.any(Function));
+  for (const [name, listener] of add.mock.calls) {
+    // Reentrant disable clears upstream's handler before its second add; undefined is a no-op.
+    if (listener && (name === "error" || name === "unhandledrejection")) {
+      expect(removed).toContainEqual({ name, listener });
+    }
+  }
+  expect(enable).toHaveBeenCalledOnce();
+  await expect(handle.instrumentations.setEnabled("errors", true)).rejects.toThrow(
+    "Telemetry instance is stopped.",
+  );
+});
+
+it("rolls back successful peers in reverse order and blocks queued operations after a lifecycle failure", async () => {
+  const first = new FetchInstrumentation({ enabled: false });
+  const failing = new FetchInstrumentation({ enabled: false });
+  const last = new FetchInstrumentation({ enabled: false });
+  const { handle } = await initialize([first, failing, last], {
+    spanProcessors: [{} as never],
+  });
+  const firstDisable = vi.spyOn(first, "disable");
+  const firstEnable = vi.spyOn(first, "enable");
+  const failingEnable = vi.spyOn(failing, "enable");
+  const lastDisable = vi.spyOn(last, "disable");
+  const failure = new Error("fetch removal failed");
+  const failingDisable = vi.spyOn(failing, "disable").mockImplementationOnce(() => {
+    throw failure;
+  });
+
+  const rejected = handle.updateCfg({ disableFetchTracking: true });
+  const queued = handle.updateCfg({ samplingPercentage: 50 });
+  await expect(rejected).rejects.toThrow(failure);
+  await expect(queued).rejects.toThrow("Instrumentation rollback failed; shutdown is required.");
+  expect(firstDisable).toHaveBeenCalledOnce();
+  expect(firstEnable).toHaveBeenCalledOnce();
+  expect(firstDisable).toHaveBeenCalledBefore(firstEnable);
+  expect(failingEnable).toHaveBeenCalledOnce();
+  expect(failingDisable).toHaveBeenCalledBefore(failingEnable);
+  expect(failingEnable).toHaveBeenCalledBefore(firstEnable);
+  expect(lastDisable).not.toHaveBeenCalled();
+  expect(failingDisable).toHaveBeenCalledOnce();
+  await expect(handle.instrumentations.setEnabled("fetch", false)).rejects.toThrow(
+    "Instrumentation rollback failed; shutdown is required.",
+  );
+});
+
+it("preserves lifecycle and rollback failures while attempting every inverse in reverse order", async () => {
+  const first = new FetchInstrumentation({ enabled: false });
+  const failing = new FetchInstrumentation({ enabled: false });
+  const { handle } = await initialize([first, failing], { spanProcessors: [{} as never] });
+  const failure = new Error("fetch removal failed");
+  const rollbackFailure = new Error("fetch rollback failed");
+  const firstEnable = vi.spyOn(first, "enable");
+  const failingEnable = vi.spyOn(failing, "enable").mockImplementationOnce(() => {
+    throw rollbackFailure;
+  });
+  vi.spyOn(failing, "disable").mockImplementationOnce(() => {
+    throw failure;
+  });
+
+  await expect(handle.updateCfg({ disableFetchTracking: true })).rejects.toMatchObject({
+    name: "AggregateError",
+    cause: failure,
+    errors: [failure, rollbackFailure],
+  });
+  expect(failingEnable).toHaveBeenCalledBefore(firstEnable);
+  expect(firstEnable).toHaveBeenCalledOnce();
+  await expect(handle.updateCfg({ samplingPercentage: 50 })).rejects.toThrow(
+    "Instrumentation rollback failed; shutdown is required.",
+  );
+});
+
+it("rejects runtime changes after shutdown without reviving an instrumentation", async () => {
+  const console = new ConsoleInstrumentation({ enabled: false });
+  const { handle } = await initialize([console]);
+  await handle.shutdown();
+  const enable = vi.spyOn(console, "enable");
+
+  await expect(handle.updateCfg({ samplingPercentage: 50 })).rejects.toThrow(
+    "Telemetry instance is stopped.",
+  );
+  await expect(handle.instrumentations.setEnabled("console", true)).rejects.toThrow(
+    "Telemetry instance is stopped.",
+  );
+  expect(enable).not.toHaveBeenCalled();
 });
 
 it("reports all instrumentation and SDK shutdown failures", async () => {

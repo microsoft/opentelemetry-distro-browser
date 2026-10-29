@@ -25,6 +25,10 @@ export interface MicrosoftOpenTelemetryBrowserConfigurationUpdate {
   azureMonitor?: { disableBeacon?: boolean | undefined } | undefined;
   /** Application Insights alias for azureMonitor.disableBeacon. Defaults to false. */
   onunloadDisableBeacon?: boolean | undefined;
+  /** Stops new calls collected by registered fetch instrumentations. Defaults to false. */
+  disableFetchTracking?: boolean | undefined;
+  /** Stops new requests collected by registered XHR instrumentations. Defaults to false. */
+  disableAjaxTracking?: boolean | undefined;
 }
 
 /**
@@ -41,7 +45,11 @@ type Lifetimes = typeof defaults;
 interface CapturedUpdate extends Partial<Lifetimes> {
   samplingPercentage?: number | undefined;
   disableBeacon?: boolean;
+  disableFetchTracking?: boolean;
+  disableAjaxTracking?: boolean;
 }
+
+const networkGates = ["disableFetchTracking", "disableAjaxTracking"] as const;
 
 /** Captures own data properties before queuing, without invoking application getters. */
 function fields(value: unknown, path: string, allowed: readonly string[]): Record<string, unknown> {
@@ -72,8 +80,17 @@ function capture(patch: MicrosoftOpenTelemetryBrowserConfigurationUpdate): Captu
     "sessionExpirationMs",
     "azureMonitor",
     "onunloadDisableBeacon",
+    ...networkGates,
   ]);
   const result: CapturedUpdate = {};
+  for (const key of networkGates) {
+    if (!Object.hasOwn(input, key)) continue;
+    const value = input[key];
+    if (value !== undefined && typeof value !== "boolean") {
+      throw new TypeError(`${key} must be a boolean.`);
+    }
+    result[key] = value ?? false;
+  }
   if (Object.hasOwn(input, "samplingPercentage")) {
     const value = input.samplingPercentage;
     if (value !== undefined && typeof value !== "number") {
@@ -140,9 +157,13 @@ function snapshot(
     readonly samplingPercentage: number | undefined;
     readonly session: Lifetimes;
     readonly azureMonitor: { readonly disableBeacon: boolean };
+    readonly disableFetchTracking: boolean;
+    readonly disableAjaxTracking: boolean;
   },
 ) {
   return Object.freeze({
+    disableFetchTracking: update.disableFetchTracking ?? previous?.disableFetchTracking ?? false,
+    disableAjaxTracking: update.disableAjaxTracking ?? previous?.disableAjaxTracking ?? false,
     samplingPercentage: Object.hasOwn(update, "samplingPercentage")
       ? update.samplingPercentage
       : previous?.samplingPercentage,
@@ -163,13 +184,27 @@ function snapshot(
 export function createRuntimeConfiguration(
   initial: MicrosoftOpenTelemetryBrowserConfigurationUpdate,
   isStopped: () => boolean,
+  applyNetworkGates?: (next: ReturnType<typeof snapshot>) => void,
 ) {
   let current = snapshot(capture(initial));
   let revision = 0;
   let queue = Promise.resolve();
 
+  function enqueue<T>(operation: () => T): Promise<T> {
+    const result = queue.then(() => {
+      if (isStopped()) throw new Error("Telemetry instance is stopped.");
+      return operation();
+    });
+    queue = result.then(
+      () => {},
+      () => {},
+    );
+    return result;
+  }
+
   return {
     snapshot: () => current,
+    enqueue,
     updateCfg(
       patch: MicrosoftOpenTelemetryBrowserConfigurationUpdate,
       mergeExisting = true,
@@ -187,8 +222,7 @@ export function createRuntimeConfiguration(
             : new TypeError("Invalid configuration.", { cause: error }),
         );
       }
-      const operation = queue.then(() => {
-        if (isStopped()) throw new Error("Telemetry instance is stopped.");
+      return enqueue(() => {
         const next = snapshot(update, mergeExisting ? current : undefined);
         const changedPaths: string[] = [];
         if (next.samplingPercentage !== current.samplingPercentage)
@@ -198,6 +232,10 @@ export function createRuntimeConfiguration(
         }
         if (next.azureMonitor.disableBeacon !== current.azureMonitor.disableBeacon)
           changedPaths.push("azureMonitor.disableBeacon");
+        const gatesChanged = networkGates.filter((key) => next[key] !== current[key]);
+        changedPaths.push(...gatesChanged);
+        if (gatesChanged.length) applyNetworkGates?.(next);
+        if (isStopped()) throw new Error("Telemetry instance is stopped.");
         if (changedPaths.length) {
           current = next;
           revision++;
@@ -207,12 +245,6 @@ export function createRuntimeConfiguration(
           changedPaths: Object.freeze(changedPaths),
         });
       });
-      // Invalid or stopped updates must not poison later queued work.
-      queue = operation.then(
-        () => {},
-        () => {},
-      );
-      return operation;
     },
   };
 }

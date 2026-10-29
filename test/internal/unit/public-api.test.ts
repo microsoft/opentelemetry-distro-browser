@@ -17,6 +17,7 @@ import {
   type MicrosoftOpenTelemetryBrowser,
   type MicrosoftOpenTelemetryBrowserConfigurationUpdate,
   type MicrosoftOpenTelemetryBrowserConfigurationUpdateResult,
+  type MicrosoftOpenTelemetryBrowserInstrumentations,
   type MicrosoftOpenTelemetryBrowserOptions,
   type MicrosoftOpenTelemetryBrowserSessionOptions,
   type MicrosoftOpenTelemetryBrowserTraceOptions,
@@ -129,13 +130,22 @@ it("exposes distro-owned configuration and lifecycle contracts", () => {
   expectTypeOf<Instrumentation>().toExtend<BrowserInstrumentation>();
   expectTypeOf<MicrosoftOpenTelemetryBrowser["forceFlush"]>().toEqualTypeOf<() => Promise<void>>();
   expectTypeOf<
+    MicrosoftOpenTelemetryBrowser["instrumentations"]
+  >().toEqualTypeOf<MicrosoftOpenTelemetryBrowserInstrumentations>();
+  expectTypeOf<MicrosoftOpenTelemetryBrowserInstrumentations["get"]>().toEqualTypeOf<
+    (id: string) => BrowserInstrumentation | undefined
+  >();
+  expectTypeOf<MicrosoftOpenTelemetryBrowserInstrumentations["setEnabled"]>().toEqualTypeOf<
+    (id: string, enabled: boolean) => Promise<void>
+  >();
+  expectTypeOf<
     MicrosoftOpenTelemetryBrowser["userContext"]
   >().toEqualTypeOf<MicrosoftOpenTelemetryBrowserUserContext>();
 });
 
 it("exposes sampling, session lifetime and unload beacon runtime updates", () => {
   expectTypeOf<keyof MicrosoftOpenTelemetryBrowser>().toEqualTypeOf<
-    "updateCfg" | "userContext" | "forceFlush" | "shutdown"
+    "updateCfg" | "instrumentations" | "userContext" | "forceFlush" | "shutdown"
   >();
   expectTypeOf<keyof MicrosoftOpenTelemetryBrowserConfigurationUpdate>().toEqualTypeOf<
     | "samplingPercentage"
@@ -144,6 +154,8 @@ it("exposes sampling, session lifetime and unload beacon runtime updates", () =>
     | "sessionExpirationMs"
     | "azureMonitor"
     | "onunloadDisableBeacon"
+    | "disableFetchTracking"
+    | "disableAjaxTracking"
   >();
   expectTypeOf<MicrosoftOpenTelemetryBrowserConfigurationUpdate>().toEqualTypeOf<{
     samplingPercentage?: number | undefined;
@@ -157,6 +169,8 @@ it("exposes sampling, session lifetime and unload beacon runtime updates", () =>
     sessionExpirationMs?: number | undefined;
     azureMonitor?: { disableBeacon?: boolean | undefined } | undefined;
     onunloadDisableBeacon?: boolean | undefined;
+    disableFetchTracking?: boolean | undefined;
+    disableAjaxTracking?: boolean | undefined;
   }>();
   expectTypeOf<
     keyof NonNullable<MicrosoftOpenTelemetryBrowserConfigurationUpdate["session"]>

@@ -6,6 +6,9 @@ All notable changes to this package are documented in this file.
 
 ### Added
 
+- Add instance-local `instrumentations.get(id)` and supported pause/resume via
+  `instrumentations.setEnabled(id, enabled)`, serialized with `updateCfg`. Add runtime-only
+  `disableFetchTracking` and `disableAjaxTracking` collection gates that preserve manual pauses.
 - Refactor startup instrumentation registration into an internal per-instance registry to prepare
   for dynamic instrumentation configuration.
 - Support per-instance runtime Azure Monitor beacon fallback updates and the `onunloadDisableBeacon`

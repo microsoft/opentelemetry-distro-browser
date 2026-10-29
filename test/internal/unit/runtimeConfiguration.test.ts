@@ -8,10 +8,14 @@ import {
 } from "../../../src/configuration/runtimeConfiguration.js";
 
 const invalid = (value: unknown) => value as MicrosoftOpenTelemetryBrowserConfigurationUpdate;
+type RuntimeSnapshot = ReturnType<ReturnType<typeof createRuntimeConfiguration>["snapshot"]>;
 
-function create(initial: MicrosoftOpenTelemetryBrowserConfigurationUpdate = {}) {
+function create(
+  initial: MicrosoftOpenTelemetryBrowserConfigurationUpdate = {},
+  applyNetworkGates?: (next: RuntimeSnapshot) => void,
+) {
   let stopped = false;
-  const controller = createRuntimeConfiguration(initial, () => stopped);
+  const controller = createRuntimeConfiguration(initial, () => stopped, applyNetworkGates);
   return {
     controller,
     stop: () => {
@@ -154,13 +158,123 @@ describe("sampling configuration", () => {
   });
 });
 
+describe("network gate configuration", () => {
+  it("defaults, updates and resets fetch and XHR tracking gates", async () => {
+    const calls: unknown[] = [];
+    const { controller } = create({}, (next) => calls.push(next));
+    const original = controller.snapshot();
+    expect(original).toMatchObject({ disableFetchTracking: false, disableAjaxTracking: false });
+
+    expect(await controller.updateCfg({ disableFetchTracking: true })).toEqual({
+      revision: 1,
+      changedPaths: ["disableFetchTracking"],
+    });
+    expect(controller.snapshot()).toMatchObject({
+      disableFetchTracking: true,
+      disableAjaxTracking: false,
+    });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toBe(controller.snapshot());
+
+    expect(
+      await controller.updateCfg({ disableFetchTracking: undefined, disableAjaxTracking: true }),
+    ).toEqual({
+      revision: 2,
+      changedPaths: ["disableFetchTracking", "disableAjaxTracking"],
+    });
+    expect(controller.snapshot()).toMatchObject({
+      disableFetchTracking: false,
+      disableAjaxTracking: true,
+    });
+    expect(calls).toHaveLength(2);
+    expect(await controller.updateCfg({}, false)).toEqual({
+      revision: 3,
+      changedPaths: ["disableAjaxTracking"],
+    });
+    expect(controller.snapshot()).toMatchObject({
+      disableFetchTracking: false,
+      disableAjaxTracking: false,
+    });
+    expect(calls).toHaveLength(3);
+  });
+
+  it("serializes custom operations with gate callbacks before publication", async () => {
+    const events: string[] = [];
+    const controller = createRuntimeConfiguration(
+      {},
+      () => false,
+      (next) => {
+        events.push(
+          `callback:${next.disableFetchTracking}:${controller.snapshot().disableFetchTracking}`,
+        );
+      },
+    );
+    const custom = controller.enqueue(() => events.push("custom"));
+    const update = controller.updateCfg({ disableFetchTracking: true });
+    await expect(custom).resolves.toBe(1);
+    await expect(update).resolves.toEqual({
+      revision: 1,
+      changedPaths: ["disableFetchTracking"],
+    });
+    expect(events).toEqual(["custom", "callback:true:false"]);
+  });
+
+  it("rejects callback failures atomically without consuming a revision", async () => {
+    const applyNetworkGates = vi.fn(() => {
+      throw new Error("network gates failed");
+    });
+    const { controller } = create({ samplingPercentage: 50 }, applyNetworkGates);
+    const original = controller.snapshot();
+    await expect(
+      controller.updateCfg({
+        disableFetchTracking: true,
+        samplingPercentage: 25,
+        session: { inactivityTimeout: 60 },
+        azureMonitor: { disableBeacon: true },
+      }),
+    ).rejects.toThrow("network gates failed");
+    expect(controller.snapshot()).toBe(original);
+    expect(await controller.updateCfg({ samplingPercentage: 25 })).toEqual({
+      revision: 1,
+      changedPaths: ["samplingPercentage"],
+    });
+  });
+
+  it.each([null, 0, "false", Symbol("gate")])(
+    "rejects invalid network gate values: %s",
+    async (value) => {
+      const { controller } = create();
+      const original = controller.snapshot();
+      await expect(controller.updateCfg(invalid({ disableFetchTracking: value }))).rejects.toThrow(
+        "disableFetchTracking must be a boolean",
+      );
+      expect(controller.snapshot()).toBe(original);
+    },
+  );
+
+  it("rejects gate accessors and symbol keys without invoking application code", async () => {
+    const getter = vi.fn(() => true);
+    const accessor = Object.defineProperty({}, "disableFetchTracking", { get: getter });
+    const { controller } = create();
+    await expect(controller.updateCfg(accessor)).rejects.toThrow("data property");
+    await expect(
+      controller.updateCfg(invalid({ [Symbol("disableAjaxTracking")]: true })),
+    ).rejects.toThrow("Unsupported configuration path");
+    expect(getter).not.toHaveBeenCalled();
+  });
+});
+
 describe("unload beacon configuration", () => {
   const defaults = {
+    disableFetchTracking: false,
+    disableAjaxTracking: false,
     samplingPercentage: undefined,
     session: { inactivityTimeout: 1800, maxDuration: 86400 },
     azureMonitor: { disableBeacon: false },
   };
   const initial = {
+    disableFetchTracking: false,
+    disableAjaxTracking: false,
     samplingPercentage: 50,
     session: { inactivityTimeout: 60, maxDuration: 120 },
     azureMonitor: { disableBeacon: true },
@@ -555,6 +669,8 @@ describe("unload beacon configuration", () => {
     expect(await noOp).toEqual({ revision: 1, changedPaths: [] });
     expect(await second).toEqual({ revision: 2, changedPaths });
     expect(firstSnapshot).toEqual({
+      disableFetchTracking: false,
+      disableAjaxTracking: false,
       samplingPercentage: 25,
       session: { inactivityTimeout: 1, maxDuration: 2 },
       azureMonitor: { disableBeacon: true },
@@ -563,6 +679,8 @@ describe("unload beacon configuration", () => {
     expect(Object.isFrozen(firstResult.changedPaths)).toBe(true);
     expect(original).toEqual(defaults);
     expect(controller.snapshot()).toEqual({
+      disableFetchTracking: false,
+      disableAjaxTracking: false,
       samplingPercentage: 0,
       session: { inactivityTimeout: 0, maxDuration: 0 },
       azureMonitor: { disableBeacon: false },
@@ -591,6 +709,8 @@ describe("session lifetime configuration", () => {
   const defaults = { inactivityTimeout: 1800, maxDuration: 86400 };
   const changedPaths = ["samplingPercentage", "session.inactivityTimeout", "session.maxDuration"];
   const initial = {
+    disableFetchTracking: false,
+    disableAjaxTracking: false,
     samplingPercentage: 50,
     session: { inactivityTimeout: 60, maxDuration: 120 },
   };
@@ -632,6 +752,8 @@ describe("session lifetime configuration", () => {
   ])("normalizes initial lifetimes: $patch", ({ patch, session }) => {
     const { controller } = create(patch);
     expect(controller.snapshot()).toEqual({
+      disableFetchTracking: false,
+      disableAjaxTracking: false,
       samplingPercentage: undefined,
       session,
       azureMonitor: { disableBeacon: false },
@@ -685,6 +807,8 @@ describe("session lifetime configuration", () => {
       const { controller } = create(initial);
       expect(await controller.updateCfg(patch)).toEqual({ revision: 1, changedPaths: paths });
       expect(controller.snapshot()).toEqual({
+        disableFetchTracking: false,
+        disableAjaxTracking: false,
         samplingPercentage: 50,
         session,
         azureMonitor: { disableBeacon: false },
@@ -762,6 +886,8 @@ describe("session lifetime configuration", () => {
         changedPaths: paths,
       });
       expect(controller.snapshot()).toEqual({
+        disableFetchTracking: false,
+        disableAjaxTracking: false,
         samplingPercentage,
         session,
         azureMonitor: { disableBeacon: false },
@@ -978,6 +1104,8 @@ describe("session lifetime configuration", () => {
     expect(controller.snapshot()).toBe(original);
     expect(await queued).toEqual({ revision: 1, changedPaths });
     expect(controller.snapshot()).toEqual({
+      disableFetchTracking: false,
+      disableAjaxTracking: false,
       samplingPercentage: 25,
       session: { inactivityTimeout: 90, maxDuration: 180 },
       azureMonitor: { disableBeacon: false },
@@ -1017,16 +1145,22 @@ describe("session lifetime configuration", () => {
     await invalidUpdate;
     expect(await second).toEqual({ revision: 2, changedPaths });
     expect(firstSnapshot).toEqual({
+      disableFetchTracking: false,
+      disableAjaxTracking: false,
       samplingPercentage: 25,
       session: { inactivityTimeout: 1, maxDuration: 2 },
       azureMonitor: { disableBeacon: false },
     });
     expect(original).toEqual({
+      disableFetchTracking: false,
+      disableAjaxTracking: false,
       samplingPercentage: undefined,
       session: defaults,
       azureMonitor: { disableBeacon: false },
     });
     expect(controller.snapshot()).toEqual({
+      disableFetchTracking: false,
+      disableAjaxTracking: false,
       samplingPercentage: 0,
       session: { inactivityTimeout: 0, maxDuration: 0 },
       azureMonitor: { disableBeacon: false },
