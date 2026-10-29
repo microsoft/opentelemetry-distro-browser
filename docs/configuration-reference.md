@@ -9,10 +9,11 @@ and [loader options](../src/snippet.ts).
 ## Initialization options
 
 Pass these options to `await useMicrosoftOpenTelemetry(options)`. Options are captured at startup;
-the [runtime update API](#runtime-configuration-updates) can change sampling, session lifetimes and
-Azure Monitor beacon fallback policy. Other options remain startup-only. Importing the package has
-no initialization side effects. Initialize only in client-side code, before importing application
-code to instrument.
+the [runtime update API](#runtime-configuration-updates) can change sampling, session lifetimes,
+Azure Monitor beacon fallback policy and registered fetch/XHR collection gates. The handle also
+supports [pause/resume for supported instrumentations](#runtime-instrumentation-controls). Other
+options remain startup-only. Importing the package has no initialization side effects. Initialize
+only in client-side code, before importing application code to instrument.
 
 | Option                | Type                                          | Default and behavior                                                                                                                                                                                                      |
 | --------------------- | --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -140,7 +141,8 @@ The returned handle exposes `updateCfg(patch, mergeExisting = true)`, accepting
 `Promise<MicrosoftOpenTelemetryBrowserConfigurationUpdateResult>`. Supported paths are
 `samplingPercentage`, `session.inactivityTimeout`, `session.maxDuration` and
 `azureMonitor.disableBeacon`, plus the exact root aliases `sessionRenewalMs`, `sessionExpirationMs`
-and `onunloadDisableBeacon`. Only the session aliases also work at npm initialization; see
+and `onunloadDisableBeacon`, followed by the root collection gates `disableFetchTracking` and
+`disableAjaxTracking`. Only the session aliases also work at npm initialization; see
 [session options](#session-options) and [destination](#azure-monitor-destination) for defaults and
 conflict handling. The runtime Azure Monitor patch is limited to
 `azureMonitor?: { disableBeacon?: boolean | undefined } | undefined`.
@@ -155,14 +157,18 @@ conflict handling. The runtime Azure Monitor patch is limited to
 - Explicit `azureMonitor.disableBeacon: undefined`, `azureMonitor: undefined` or
   `onunloadDisableBeacon: undefined` resets beacon policy to `false`, not to the startup value.
   These resets participate in native/alias conflict checks; they do not disable the destination.
+- `disableFetchTracking` and `disableAjaxTracking` accept only booleans or explicit `undefined`.
+  Both default to `false`; explicit `undefined` resets the corresponding gate to `false`.
+  They are runtime-only root options, not initialization or CDN loader flags.
 - Passing `false` as the second argument replaces **only the supported runtime subset**. All
-  omitted sampling, lifetime and beacon fields reset to their defaults, including omitted nested
-  fields; destinations and other startup-only options are unchanged.
+  omitted sampling, lifetime, beacon and collection-gate fields reset to their defaults, including
+  omitted nested fields; destinations and other startup-only options are unchanged.
 
 The frozen result contains readonly `revision` and `changedPaths`. A commit changing any supported
 value increments the per-instance revision once. Changed paths use canonical names in this order:
 `samplingPercentage`, `session.inactivityTimeout`, `session.maxDuration`, `azureMonitor.disableBeacon`,
-even when aliases are used. No-op updates retain the revision and return `[]` for `changedPaths`.
+`disableFetchTracking`, `disableAjaxTracking`, even when aliases are used. No-op updates retain the
+revision and return `[]` for `changedPaths`.
 
 Sampling changes affect subsequent span starts, default Azure Monitor log emissions and new page
 operations. Existing span/page decisions and queued logs are not resampled. A later correlated log
@@ -184,10 +190,24 @@ stats behavior are unchanged. A policy update sends no network request, recreate
 or provider, and cannot create an Azure Monitor destination if none was configured. Custom
 exporters and standalone exporter options are unaffected.
 
+Setting `disableFetchTracking: true` or `disableAjaxTracking: true` pauses collection for **all**
+registered matching fetch or XHR entries in this instance, including repeated entries. Setting a
+gate to `false` permits collection only for entries whose requested enabled state is still `true`;
+it does not undo a manual `instrumentations.setEnabled(id, false)` pause. These gates do not import,
+construct or register missing modules, enable a disabled trace pipeline, or change another
+instance's collection. They do not cancel requests or undo injected headers. Already-sent fetch/XHR
+requests can still finish; an XHR opened before a pause must be opened again after resume before
+its send can be collected. See [runtime instrumentation controls](#runtime-instrumentation-controls).
+
 Providers and acquired tracers/loggers remain bound to the same instance. Updates serialize per
-instance, and input is validated and captured before queueing. Invalid values, accessors, non-plain
-objects, unsupported paths and conflicting native/alias values reject atomically without changing
-configuration or revision. Queued and new updates reject once shutdown starts.
+instance with `instrumentations.setEnabled()`, and configuration input is validated and captured
+before queueing. Invalid values, accessors, non-plain objects, unsupported paths and conflicting
+native/alias values reject without changing configuration or revision. Gate transitions apply
+before the new configuration and revision are published. Lifecycle failures reject the operation
+and attempt best-effort rollback; if cleanup or rollback leaves instrumentation state uncertain,
+further runtime mutations reject until shutdown. This is not universal atomicity for browser events
+or in-flight work: observed events and injected headers cannot be undone. Queued and new mutations
+reject once shutdown starts.
 
 ```typescript
 const result = await telemetry.updateCfg({ sessionRenewalMs: 60000 });
@@ -199,16 +219,19 @@ await telemetry.updateCfg({ azureMonitor: { disableBeacon: true } }); // Disable
 await telemetry.updateCfg({ onunloadDisableBeacon: false }); // Re-enable fallback.
 await telemetry.updateCfg({ azureMonitor: { disableBeacon: undefined } }); // Reset beacon to false.
 await telemetry.updateCfg({ azureMonitor: undefined }); // Reset beacon, not the destination.
-await telemetry.updateCfg({}, false); // Reset sampling, lifetimes and beacon; keep destinations.
+await telemetry.updateCfg({ disableFetchTracking: true, disableAjaxTracking: true });
+await telemetry.updateCfg({ disableFetchTracking: undefined }); // Reset only the fetch gate to false.
+await telemetry.updateCfg({}, false); // Reset runtime policies, including both gates; keep destinations.
 ```
 
 `session.enabled`, `session.persist` and browser storage flags are not runtime-updateable. Lifetime
 updates cannot enable a disabled session or change persistence; `storage.enabled` and
 `storage.namePrefix` remain unchanged. Only sampling, session lifetimes and Azure Monitor beacon
-fallback policy are supported by `updateCfg`. Network tracking policy, instrumentation registry
-operations and configuration synchronization remain future work. The runtime `azureMonitor` subset
-does not accept `connectionString`, `initTimeOut` or `initInMemoMaxSize`, and cannot replace or disable
-a destination. There is no root `connectionString` alias.
+fallback policy, plus the two fetch/XHR collection gates, are supported by `updateCfg`.
+Instrumentation pause/resume uses the separate handle controls below; runtime addition, removal,
+replacement and configuration synchronization are not supported. The runtime `azureMonitor` subset
+does not accept `connectionString`, `initTimeOut` or `initInMemoMaxSize`, and cannot replace or
+disable a destination. There is no root `connectionString` alias.
 
 ## Session and identity
 
@@ -417,17 +440,58 @@ object or loader configuration.
 - Web Vitals `includeRawAttribution` defaults to `false`; enabling it includes attribution JSON in
   the log body. Availability depends on browser performance APIs and user activity.
 
+### Runtime instrumentation controls
+
+Normal automatic startup is unchanged: the distribution binds providers and enables eligible
+registered instrumentations without an extra handle call. The returned handle exposes
+`instrumentations` for instance-local lookup and supported pause/resume:
+
+- `instrumentations.get(id: string): BrowserInstrumentation | undefined` returns the registered
+  object, or `undefined` for an unknown ID. Inspection only: do not call its lifecycle methods or
+  `setConfig` directly.
+- `instrumentations.setEnabled(id: string, enabled: boolean): Promise<void>` sets the entry's
+  requested enabled state. It rejects unknown IDs, unsupported runtime lifecycle operations and
+  invalid arguments. Calls serialize with this handle's `updateCfg` and are subject to the
+  collection-gate, rollback and shutdown rules above.
+
+IDs use the upstream module suffix: `fetch`, `xhr`, `console`, `errors`, `user-action` and
+`web-vitals` for supported modules. Other upstream modules also use their suffix. Custom modules
+use their full instrumentation name, or `instrumentation` if unnamed. Repeated IDs receive `#2`,
+`#3`, and so on in registration order, for example `fetch#2`. The built-in page-view entry uses
+`@microsoft/opentelemetry-browser/page-view`, not `page-view`.
+
+Runtime pause/resume supports only the pinned `@opentelemetry/browser-instrumentation` **0.8.1**
+fetch, XHR, console, errors and user-action modules, plus the **same Web Vitals object** registered
+at startup. Web Vitals pause gates emission while its underlying observers remain registered;
+resume does not replace the object or register a new set of observers. Page views, navigation,
+navigation timing, resource timing, other versions and custom modules remain startup/shutdown-only:
+`get()` can return them, but `setEnabled()` rejects their runtime lifecycle changes.
+
+Requested enablement is separate from effective collection. `setEnabled(id, true)` neither opens a
+closed fetch/XHR gate nor revives a disabled trace pipeline. Reopening a gate preserves manual
+pauses, including when a replacement `updateCfg` resets the gates. The object's `getConfig().enabled`
+is not a runtime collection-status API. Controls affect only this handle, even when browser patches
+are shared with other instances; they operate only on objects registered at startup.
+
+```typescript
+const fetchInstrumentation = telemetry.instrumentations.get("fetch"); // Inspect only.
+await telemetry.instrumentations.setEnabled("fetch", false);
+await telemetry.updateCfg({ disableFetchTracking: true });
+await telemetry.updateCfg({ disableFetchTracking: false }); // Manual pause remains.
+await telemetry.instrumentations.setEnabled("fetch", true); // Resume the registered entry.
+```
+
 ## Enrichment and filtering
 
 There is no `addTelemetryInitializer` or `getPlugin`, the same as in the other Microsoft
 OpenTelemetry distributions. Use OpenTelemetry concepts instead:
 
-| Application Insights JavaScript              | OpenTelemetry replacement                                                                                                                                       |
-| -------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Telemetry initializer that adds properties   | `resource` for values fixed for the page; a span processor (`onStart` or `onEnding`) or log record processor (`onEmit`) for per-record attributes.              |
-| Telemetry initializer that drops telemetry   | Filter at the source: instrumentation `ignoreUrls`, `samplingPercentage`, or not emitting the record. A processor cannot remove a record from other processors. |
-| Per-request or per-page-view customization   | Instrumentation hooks such as `applyCustomAttributesOnSpan` and `pageView.applyCustomLogRecordData`.                                                            |
-| `getPlugin` to configure or replace a plugin | Keep references to the instrumentation instances passed in `instrumentations`; configure page views through `pageView`.                                         |
+| Application Insights JavaScript              | OpenTelemetry replacement                                                                                                                                                                  |
+| -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Telemetry initializer that adds properties   | `resource` for values fixed for the page; a span processor (`onStart` or `onEnding`) or log record processor (`onEmit`) for per-record attributes.                                         |
+| Telemetry initializer that drops telemetry   | Filter at the source: instrumentation `ignoreUrls`, `samplingPercentage`, or not emitting the record. A processor cannot remove a record from other processors.                            |
+| Per-request or per-page-view customization   | Instrumentation hooks such as `applyCustomAttributesOnSpan` and `pageView.applyCustomLogRecordData`.                                                                                       |
+| `getPlugin` to configure or replace a plugin | Inspect registered objects with `instrumentations.get(id)`; use `instrumentations.setEnabled(id, enabled)` for supported pause/resume. Configure page views through `pageView` at startup. |
 
 Supplied processors run before the Azure Monitor exporter, so their attributes are exported,
 including when `samplingPercentage` is set. Processors are registered at startup and cannot be added
@@ -513,7 +577,8 @@ It generates a script; it does not itself initialize telemetry in the current pa
 The generator accepts JSON-serializable settings, not functions or regular expressions. Processors,
 exporters, context managers, propagators and resource detectors require npm-based initialization.
 Loader options are unchanged: use `azureMonitor.disableBeacon`, not the root `onunloadDisableBeacon`
-alias supported only by runtime updates.
+alias supported only by runtime updates. `disableFetchTracking` and `disableAjaxTracking` are also
+runtime-only and are not accepted by the loader or its generated initialization `cfg`.
 The generated configuration's `cfg` holds initialization options; `instrumentationOptions` and
 `resourceAttributes` are siblings of `cfg`. See [Packaging](packaging.md#cdn-and-loader-snippet) for
 the snippet, CSP, fallback hosts, integrity manifests and failure handling.

@@ -315,10 +315,34 @@ export interface MicrosoftOpenTelemetryBrowserUserContext {
 }
 
 /**
+ * Controls registered instrumentations without replacing providers or constructing new modules.
+ * @remarks
+ * IDs use upstream module suffixes (fetch, xhr, console, errors, user-action, web-vitals),
+ * full custom names or "instrumentation". Repeated IDs receive #2, #3, and so on.
+ * Runtime pause/resume supports upstream 0.8.1 fetch, XHR, console, errors, user-action and
+ * the same Web Vitals object only. Page views, navigation, timing and custom modules are
+ * startup/shutdown-only. Web Vitals callbacks remain registered while emission is paused.
+ * @public
+ */
+export interface MicrosoftOpenTelemetryBrowserInstrumentations {
+  /** Returns an owned object, or undefined. Do not call its lifecycle or setConfig directly. */
+  get(id: string): BrowserInstrumentation | undefined;
+  /**
+   * Pauses/resumes collection for this instance. Serialized with updateCfg. Rejects unknown IDs,
+   * unsupported modules and operations after shutdown. Resuming never opens a closed network
+   * gate or enables a disabled trace pipeline. In-flight requests can still finish.
+   * Lifecycle failures attempt rollback; failed rollback requires shutdown before further changes.
+   */
+  setEnabled(id: string, enabled: boolean): Promise<void>;
+}
+
+/**
  * Browser telemetry lifecycle handle.
  * @public
  */
 export interface MicrosoftOpenTelemetryBrowser {
+  /** Instance-local controls for already registered instrumentations. Startup remains automatic. */
+  readonly instrumentations: MicrosoftOpenTelemetryBrowserInstrumentations;
   /**
    * Updates sampling, session lifetimes and unload-beacon policy without replacing providers.
    * The percentage must be finite and between 0 and 100. Explicit undefined restores the
@@ -338,6 +362,9 @@ export interface MicrosoftOpenTelemetryBrowser {
    * Calls are serialized and return a Promise with the committed revision and changed paths.
    * No-op updates retain the revision. Invalid or unsupported fields reject without changes.
    * New and queued updates reject once shutdown begins.
+   * disableFetchTracking and disableAjaxTracking gate registered fetch/XHR collection only.
+   * Both default to false; undefined restores false. They never register missing modules or
+   * override an explicit instrumentation pause. Requests already sent are not cancelled.
    */
   updateCfg(
     patch: MicrosoftOpenTelemetryBrowserConfigurationUpdate,

@@ -72,6 +72,7 @@ export interface BrowserInstrumentation {
 // @public
 export interface MicrosoftOpenTelemetryBrowser {
     forceFlush(): Promise<void>;
+    readonly instrumentations: MicrosoftOpenTelemetryBrowserInstrumentations;
     shutdown(): Promise<void>;
     updateCfg(patch: MicrosoftOpenTelemetryBrowserConfigurationUpdate, mergeExisting?: boolean): Promise<MicrosoftOpenTelemetryBrowserConfigurationUpdateResult>;
     readonly userContext: MicrosoftOpenTelemetryBrowserUserContext;
@@ -82,6 +83,8 @@ export interface MicrosoftOpenTelemetryBrowserConfigurationUpdate {
     azureMonitor?: {
         disableBeacon?: boolean | undefined;
     } | undefined;
+    disableAjaxTracking?: boolean | undefined;
+    disableFetchTracking?: boolean | undefined;
     onunloadDisableBeacon?: boolean | undefined;
     samplingPercentage?: number | undefined;
     session?: {
@@ -98,6 +101,12 @@ export interface MicrosoftOpenTelemetryBrowserConfigurationUpdateResult {
     readonly changedPaths: readonly string[];
     // (undocumented)
     readonly revision: number;
+}
+
+// @public
+export interface MicrosoftOpenTelemetryBrowserInstrumentations {
+    get(id: string): BrowserInstrumentation | undefined;
+    setEnabled(id: string, enabled: boolean): Promise<void>;
 }
 
 // @public

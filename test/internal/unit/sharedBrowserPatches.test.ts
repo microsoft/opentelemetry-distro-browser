@@ -666,6 +666,6 @@ it("keeps XHR header tracking while another subscriber remains enabled", async (
   xhr.send();
   await Promise.all([first.handle.forceFlush(), second.handle.forceFlush()]);
   expect(header.mock.calls).toEqual([["traceparent", "application"]]);
-  expect(first.spanExporter.getFinishedSpans()).toHaveLength(1);
+  expect(first.spanExporter.getFinishedSpans()).toHaveLength(0);
   expect(second.spanExporter.getFinishedSpans()).toHaveLength(1);
 });
