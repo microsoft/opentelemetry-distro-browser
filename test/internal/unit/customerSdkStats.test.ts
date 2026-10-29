@@ -1306,8 +1306,9 @@ it.each([false, true])(
       .mockResolvedValueOnce(new Response(null, { status: 503 }));
     await handle.forceFlush();
     await handle.forceFlush();
-    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(fetch).toHaveBeenCalledTimes(3);
     expect(diag.warn).toHaveBeenCalledOnce();
+    expect(totals()).toEqual({ "Item_Success_Count:TRACE": 1 });
   },
 );
 

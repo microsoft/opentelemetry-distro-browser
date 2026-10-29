@@ -590,11 +590,14 @@ it.each(["index.js", "index.min.js"])(
       /* @vite-ignore */ moduleUrl.href
     );
     context.disable();
+    const application: AzureMonitorEnvelope[] = [];
+    const reports: AzureMonitorEnvelope[][] = [];
     const transport = vi.fn<typeof fetch>(async (url, init) => {
       const envelopes: AzureMonitorEnvelope[] = JSON.parse(await new Request(url, init).text());
-      return new Response(null, {
-        status: envelopes.some((envelope) => envelope.data.baseType === "MetricData") ? 503 : 200,
-      });
+      const stats = envelopes.every((envelope) => envelope.data.baseType === "MetricData");
+      if (stats) reports.push(envelopes);
+      else application.push(...envelopes);
+      return new Response(null, { status: stats ? 503 : 200 });
     });
     vi.stubGlobal("fetch", withoutSdkStats(transport));
     const exporter = new distro.AzureMonitorLogRecordExporter({
@@ -617,8 +620,25 @@ it.each(["index.js", "index.min.js"])(
         await exporter.forceFlush();
         await provider.forceFlush();
         await exporter.forceFlush();
-        expect(transport).toHaveBeenCalledTimes(index * 2);
-        expect(diag.warn).toHaveBeenCalledTimes(index);
+        expect(application).toHaveLength(index);
+        expect(
+          application.every(
+            (envelope) =>
+              envelope.data.baseType === "MessageData" &&
+              "message" in envelope.data.baseData &&
+              envelope.data.baseData.message === "application warning",
+          ),
+        ).toBe(true);
+        expect(reports.at(-1)).toEqual([
+          expect.objectContaining({
+            data: expect.objectContaining({
+              baseData: expect.objectContaining({
+                metrics: [{ name: "Item_Success_Count", kind: 0, value: index }],
+              }),
+            }),
+          }),
+        ]);
+        expect(diag.warn).toHaveBeenCalledTimes(reports.length);
         expect(console.warn).toBe(wrappedWarn);
       }
     } finally {
