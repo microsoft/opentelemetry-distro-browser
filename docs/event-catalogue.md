@@ -324,6 +324,11 @@ synchronous throws remain observable, and late
 transport results cannot restart delivery. Retryable report counts stay in memory until the next
 report, not across page loads; accepted and permanently rejected counts are not replayed.
 
+Application unload requests retain their 60 KiB keepalive budget. Diagnostics share a separate
+4 KiB, one-request allowance within the browser's 64 KiB limit; larger or concurrent reports use
+ordinary fetch instead of displacing application traffic. Both reporters follow up once for counts
+collected behind an in-flight report, within the same deadline.
+
 ## Azure Monitor mapping
 
 Source: [log mapping](../src/exporter/logUtils.ts) and [span mapping](../src/exporter/spanUtils.ts).

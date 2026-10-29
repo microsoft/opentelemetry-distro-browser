@@ -113,6 +113,14 @@ export function createInternalSdkStats(
   }
 
   function forceFlush(deadline?: number): Promise<void> {
+    const operation =
+      flushing && (counts.size || requests)
+        ? flushing.then(() => startReport(deadline))
+        : startReport(deadline);
+    return withReportDeadline(operation, sending, deadline);
+  }
+
+  function startReport(deadline?: number): Promise<void> {
     if (!flushing) {
       clearTimer();
       flushing = flush(isUnloading(), deadline)
@@ -122,7 +130,7 @@ export function createInternalSdkStats(
           if (counts.size || requests) schedule();
         });
     }
-    return withReportDeadline(flushing, sending, deadline);
+    return flushing;
   }
 
   async function shutdown(pending?: Promise<unknown>, deadline?: number): Promise<void> {

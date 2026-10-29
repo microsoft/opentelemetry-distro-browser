@@ -89,6 +89,27 @@ function metrics(envelopes = payloads.flat()) {
   );
 }
 
+it("flushes response counts collected behind an active internal report", async () => {
+  const stats = createStats();
+  const normal = transport.getMockImplementation()!;
+  let finish!: () => void;
+  transport.mockImplementationOnce(
+    (...args) =>
+      new Promise((resolve) => {
+        finish = () => resolve(normal(...args));
+      }),
+  );
+  stats.countResponse(200, 10);
+  const first = stats.forceFlush();
+  stats.countResponse(200, 20);
+  const followup = stats.forceFlush();
+  finish();
+  await Promise.all([first, followup]);
+  expect(payloads).toHaveLength(2);
+  expect(metrics(payloads[0])).toEqual({ Request_Duration: 10, Request_Success_Count: 1 });
+  expect(metrics(payloads[1])).toEqual({ Request_Duration: 20, Request_Success_Count: 1 });
+});
+
 it("sends the reference metric names, status buckets, average duration and separate destination key", async () => {
   const stats = createStats({}, `${CUSTOMER_ENDPOINT}/private-path?secret=value`);
   const statuses = [200, 201, 206, 400, 401, 403, 408, 429, 500, 502, 503, 504, 402, 439, 307, 308];

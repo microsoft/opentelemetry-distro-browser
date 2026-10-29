@@ -26,8 +26,9 @@ import type { CustomerSdkStats } from "./customerSdkStats.js";
 import { registerSdkIngestionUrl, rememberSdkIngestionUrl } from "../shared/globalOwnership.js";
 import { withAbort } from "../shared/lifecycle.js";
 
-let pendingKeepaliveBodySize = 0;
-let pendingKeepaliveRequestCount = 0;
+// Application sends keep their 60 KiB budget; diagnostics use only the remaining 4 KiB.
+const pendingKeepaliveBodySize = [0, 0];
+const pendingKeepaliveRequestCount = [0, 0];
 
 const trustedIngestionHostSuffixGroups = [
   [
@@ -366,17 +367,19 @@ export class Sender {
     const signal = request.signal;
     let releaseAttempt: (() => void) | undefined;
     const unloading = request.unloading === true;
+    const lane = request.sdkStats ? 1 : 0;
     const keepaliveAvailable =
-      pendingKeepaliveBodySize + request.body.byteLength <= MAX_PENDING_KEEPALIVE_BODY_SIZE &&
-      pendingKeepaliveRequestCount < MAX_PENDING_KEEPALIVE_REQUESTS;
-    if (unloading && !keepaliveAvailable) {
+      pendingKeepaliveBodySize[lane] + request.body.byteLength <=
+        (lane ? 4096 : MAX_PENDING_KEEPALIVE_BODY_SIZE) &&
+      pendingKeepaliveRequestCount[lane] < (lane ? 1 : MAX_PENDING_KEEPALIVE_REQUESTS);
+    if (unloading && !keepaliveAvailable && !request.sdkStats) {
       return this.#sendWithBeacon(request);
     }
 
-    const useKeepalive = unloading;
+    const useKeepalive = unloading && keepaliveAvailable;
     if (useKeepalive) {
-      pendingKeepaliveBodySize += request.body.byteLength;
-      pendingKeepaliveRequestCount++;
+      pendingKeepaliveBodySize[lane] += request.body.byteLength;
+      pendingKeepaliveRequestCount[lane]++;
     }
 
     try {
@@ -465,8 +468,8 @@ export class Sender {
     } finally {
       releaseAttempt?.();
       if (useKeepalive) {
-        pendingKeepaliveBodySize -= request.body.byteLength;
-        pendingKeepaliveRequestCount--;
+        pendingKeepaliveBodySize[lane] -= request.body.byteLength;
+        pendingKeepaliveRequestCount[lane]--;
       }
     }
   }

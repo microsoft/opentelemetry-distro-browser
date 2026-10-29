@@ -13,6 +13,40 @@ afterEach(() => {
 });
 
 describe("Sender", () => {
+  it.each([4096, 4097])(
+    "keeps the application unload allowance when a %i-byte stats report starts first",
+    async (size) => {
+      let release!: () => void;
+      const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response(null));
+      fetch.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            release = () => resolve(new Response(null));
+          }),
+      );
+      const sender = new Sender({
+        endpoint: "https://example.test/v2/track",
+        fetch,
+        disableBeacon: true,
+      });
+      const request = { contentType: "application/json", unloading: true };
+      const stats = sender.send({ ...request, sdkStats: true, body: new Uint8Array(size) });
+      try {
+        await sender.send({ ...request, body: new Uint8Array(60 * 1024) });
+        await sender.send({ ...request, sdkStats: true, body: new Uint8Array(size) });
+        expect(fetch.mock.calls.map(([, init]) => init?.keepalive)).toEqual([
+          size === 4096,
+          true,
+          false,
+        ]);
+      } finally {
+        release();
+        await stats;
+        sender.dispose();
+      }
+    },
+  );
+
   it.each([
     ["Wed, 01 Jan 2025 00:00:02 GMT", 2_000],
     ["Fri, 03 Jan 2025 00:00:00 GMT", 86_400_000],
