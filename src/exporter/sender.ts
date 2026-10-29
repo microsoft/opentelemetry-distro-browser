@@ -59,8 +59,8 @@ export interface SendRequest {
   readonly envelopes?: readonly AzureMonitorEnvelope[];
   readonly unloading?: boolean;
   readonly signal?: AbortSignal;
-  /** Application-export cancellation without the stats transport's credential/referrer policy. */
-  readonly shutdownSignal?: AbortSignal;
+  /** Applies the SDK Stats transport's credential and referrer policy. */
+  readonly sdkStats?: boolean;
   readonly retry?: boolean;
   /** Called once an unload request is handed to the browser by keepalive fetch or beacon. */
   readonly onDispatch?: () => void;
@@ -134,7 +134,7 @@ export class Sender {
   }
 
   public async send(request: SendRequest): Promise<SenderResultType> {
-    const signal = request.signal ?? request.shutdownSignal;
+    const signal = request.signal;
     let pending = request.envelopes;
     let currentRequest = request;
     let retryCodes: string | readonly string[] = "CLIENT_EXCEPTION";
@@ -357,7 +357,7 @@ export class Sender {
     retryCodes?: string | readonly string[],
   ): Promise<SenderResultType> {
     assertActive(request);
-    const signal = request.signal ?? request.shutdownSignal;
+    const signal = request.signal;
     let releaseAttempt: (() => void) | undefined;
     const unloading = request.unloading === true;
     const keepaliveAvailable =
@@ -399,7 +399,7 @@ export class Sender {
                 body: payload ?? request.body,
                 keepalive: useKeepalive,
                 ...(signal ? { signal } : {}),
-                ...(request.signal ? { credentials: "omit", referrerPolicy: "no-referrer" } : {}),
+                ...(request.sdkStats ? { credentials: "omit", referrerPolicy: "no-referrer" } : {}),
               });
               if (retryCodes) {
                 this.#itemStats?.countEnvelopes("Retry", request.envelopes, retryCodes);
@@ -624,8 +624,7 @@ function getRetryRequest(
 }
 
 function assertActive(request: SendRequest): void {
-  if ((request.signal ?? request.shutdownSignal)?.aborted)
-    throw new DOMException("Request aborted", "AbortError");
+  if (request.signal?.aborted) throw new DOMException("Request aborted", "AbortError");
   if (request.active?.() === false) throw new Error("Telemetry was handed off to another page.");
 }
 

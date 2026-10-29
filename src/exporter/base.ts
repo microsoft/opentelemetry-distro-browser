@@ -16,7 +16,7 @@ import { Sender, type SenderResultType } from "./sender.js";
 import { createInternalSdkStats, reportFailure, type InternalSdkStats } from "./sdkStats.js";
 import { getInternalSdkStatsConfiguration } from "./sdkStatsConfiguration.js";
 import { SessionBuffer, sessionBufferStorage } from "./sessionBuffer.js";
-import { waitForAll } from "../shared/lifecycle.js";
+import { throwErrors, waitForAll } from "../shared/lifecycle.js";
 import type { AzureMonitorBaseData, AzureMonitorEnvelope } from "./telemetryModels.js";
 import {
   createCustomerSdkStats,
@@ -254,7 +254,7 @@ export class AzureMonitorExportClient {
         contentType: CONTENT_TYPE,
         envelopes,
         unloading,
-        shutdownSignal: this.#controller.signal,
+        signal: this.#controller.signal,
         onDispatch: () => {
           if (id !== undefined) this.#buffer?.dispatch(id);
         },
@@ -308,33 +308,31 @@ export class AzureMonitorExportClient {
 
   public shutdown(): Promise<void> {
     if (this.#shutdown) return this.#shutdown;
+    if (this.#stopped) return Promise.resolve();
     this.#stopped = true;
-    const exports = waitForAll([...this.#pending], "Pending exports failed");
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const deadline = new Promise<void>((resolve, reject) => {
-      timer = setTimeout(() => {
-        this.#controller.abort();
-        reject(new Error("Exporter shutdown timed out."));
-      }, MAX_SHUTDOWN_WAIT_MS);
-      void exports.then(
-        () => resolve(),
-        () => resolve(),
-      );
-    });
-    const pending = waitForAll([exports, deadline], "Pending exports failed").finally(() => {
+    const timer = setTimeout(() => this.#controller.abort(), MAX_SHUTDOWN_WAIT_MS);
+    const pending = Promise.allSettled([...this.#pending]).finally(() => {
       clearTimeout(timer);
       this.#buffer?.dispose();
     });
-    // Report export failures once, after both reporters finish their final attempts.
-    const completed = pending.then(noop, noop);
     this.#shutdown = waitForAll(
       [
-        pending,
-        this.#stats.shutdown(completed),
-        this.itemStats?.shutdown(completed) ?? Promise.resolve(),
+        pending.then((results) => {
+          const errors = results.flatMap((result) =>
+            result.status === "rejected" ? [result.reason as unknown] : [],
+          );
+          if (this.#controller.signal.aborted)
+            errors.push(new Error("Exporter shutdown timed out."));
+          throwErrors(errors, "Pending exports failed");
+        }),
+        this.#stats.shutdown(pending),
+        this.itemStats?.shutdown(pending) ?? Promise.resolve(),
       ],
       "Exporter shutdown failed",
-    ).finally(() => this.#sender.dispose());
+    ).finally(() => {
+      this.#shutdown = undefined;
+      this.#sender.dispose();
+    });
     return this.#shutdown;
   }
 }

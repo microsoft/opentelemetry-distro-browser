@@ -239,6 +239,7 @@ export async function sendSdkStats(
         envelopes,
         unloading,
         signal: controller.signal,
+        sdkStats: true,
         retry: false,
       }),
       10_000,

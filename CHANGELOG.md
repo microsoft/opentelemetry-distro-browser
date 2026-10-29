@@ -15,18 +15,9 @@ All notable changes to this package are documented in this file.
   instrumentation teardown and synchronous restart inside diagnostic callbacks.
 - Add opt-in customer SDK Stats to standalone Azure Monitor span and log exporters through
   `sdkStats.enabled`, reporting item successes, drops, and dispatched retries to the configured
-  Application Insights resource. Preserve diagnostic isolation across nested console wrappers
-  and exclude SDK ingestion timings from conversion-failure counts.
-  Exclude retained and handed-off telemetry from terminal drops, preserve partial-response count
-  validation in export callbacks, and flush counters collected behind an in-flight stats report.
-  Preserve conversion-failure callbacks and secondary-envelope counts, count retries only after
-  dispatch, and bound shared ingestion URL history independently of the distribution registry.
-  Count deferred batches on terminal removal before shutdown's final stats report, prevent replay
-  after a terminal storage failure, and protect active ingestion destinations from history eviction.
-  Bound shutdown cancellation, protect each in-flight ingestion URL, persist deferred-expiry
-  accounting across page loads, and wait for confirmed invalidation before reporting storage loss.
-  Avoid accounting-only writes when stats are disabled, ignore export callback return values,
-  preserve partial-error ordering, and defer final outcomes until stale snapshots cannot replay.
+  Application Insights resource. Isolate diagnostic traffic, preserve conversion and partial-response
+  outcomes, and coordinate retained telemetry across page loads and storage failures. Shutdown is
+  bounded, shares concurrent work, and allows harmless repeated cleanup after completion or failure.
 - Support per-instance runtime session lifetime updates and Application Insights millisecond aliases
   `sessionRenewalMs` and `sessionExpirationMs` at initialization and through `updateCfg`.
 - Support per-instance runtime sampling updates through dynamic configuration

@@ -82,14 +82,6 @@ including alpha:
 | `opentelemetry-browser.{iife,umd}.min.js`                  | 174.5 kB | 55.75 kB |  49 kB |
 | `opentelemetry-browser-instrumentations.{iife,umd}.min.js` |    63 kB |    19 kB |  17 kB |
 
-The ceilings include runtime unload-beacon configuration, bounded shutdown cancellation, and
-transactional outcome accounting across page loads and storage failures. Against the preceding
-reviewed revision, the same production build measured root output changing from 146.20/45.92/40.42
-to 146.80/46.17/40.62 KiB (minified/gzip/Brotli), SDK UMD from 173.51/55.44/48.62 to
-174.10/55.65/48.77 KiB, and SDK IIFE from 173.34/55.39/48.54 to 173.94/55.60/48.69 KiB.
-Only the root and SDK browser minified ceilings and SDK browser Brotli ceiling were adjusted for
-these corrections; instrumentation and snippet sizes and ceilings are unchanged.
-
 SWC minifies the browser bundles and shortens `_`-prefixed properties, the TypeScript `private`
 convention used by OpenTelemetry, so source code keeps descriptive names. Members that
 `sharedBrowserPatches.ts` reads on instrumentations from another bundle keep their names; add any

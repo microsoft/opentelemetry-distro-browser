@@ -75,7 +75,6 @@ export class SessionBuffer {
   #nextId = 0;
   /** IDs with a request in progress that this document still owns. */
   readonly #live = new Set<number>();
-  #stored = false;
   /** The stored record is marked released for adoption. */
   #released = false;
   #persisted = new Map<number, string>();
@@ -238,7 +237,7 @@ export class SessionBuffer {
     this.#disposed = true;
     this.#unsubscribe();
     this.#reconcile();
-    const invalidated = !this.#stored || this.#invalidate(this.#key);
+    const invalidated = !this.#persisted.size || this.#invalidate(this.#key);
     if (invalidated) this.#persisted.clear();
     this.#commitOutcomes();
     this.#outcomes.clear();
@@ -261,10 +260,9 @@ export class SessionBuffer {
   }
 
   #hasStaleCopy(id: number): boolean {
+    const stored = this.#persisted.get(id);
     const entry = this.#entries.get(id);
-    return (
-      this.#persisted.has(id) && (entry?.[2] === true || this.#persisted.get(id) !== entry?.[1])
-    );
+    return stored !== undefined && (entry?.[2] === true || stored !== entry?.[1]);
   }
 
   #commitOutcomes(): void {
@@ -288,7 +286,7 @@ export class SessionBuffer {
       this.#live.delete(id);
       this.#outcomes.delete(id);
     }
-    this.#stored = this.#released = false;
+    this.#released = false;
     this.#persisted.clear();
   }
 
@@ -323,8 +321,7 @@ export class SessionBuffer {
       parts.length > 0 &&
       this.#storage.setItem(this.#key, `[${pageHidden ? 1 : 0},${parts.join(",")}]`);
     // A failed write is not terminal while an older record may still be adopted.
-    if (!stored && this.#stored && !this.#invalidate(this.#key)) return;
-    this.#stored = stored;
+    if (!stored && this.#persisted.size && !this.#invalidate(this.#key)) return;
     this.#released = stored && pageHidden;
     this.#persisted = stored ? persisted : new Map<number, string>();
     for (const id of dropped) this.#drop(id);

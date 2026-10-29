@@ -288,56 +288,31 @@ events or a public Metrics API. They are not included in the event schemas above
 [SDK Stats implementation](../src/exporter/sdkStats.ts).
 
 Standalone Azure Monitor exporters can opt into customer SDK Stats with `sdkStats.enabled`.
-They report item successes, retries and drops to the customer's destination; standalone exporters
-observe export outcomes only, not application sampling or processor queue drops.
-To prevent feedback, stats-enabled log exporters exclude resource-timing records for exact known
-SDK ingestion URLs shared across exporters, including remembered redirects. Other URLs and
-application log records remain eligible. Stats failure warnings bypass OpenTelemetry console
-wrappers while being logged, including standalone wrappers above and below shared patches after
-teardown or restart, without requiring a context manager. Filtered SDK resource-timing records
-also remain excluded from conversion-failure counts.
-Conversion failures count every envelope from already-converted records, including span events and
-page-view performance, then classify failed and unconverted records individually. A record whose
-classification also throws produces a diagnostic instead of a guessed item type; it does not block
-the export failure callback or accounting for the remaining records.
-Active sender destinations are reference-counted separately from the 256-entry exact-URL history,
-so redirect churn cannot evict a live exporter's destination. Both registries are independent of
-the distribution registry. Redirects and shutdown release active ownership while preserving recent
-URLs for delayed timings; re-registering a historical URL refreshes its position.
-Each in-flight fetch attempt also owns its original URL until completion or cancellation, including
-failure and response-body reads, so concurrent redirects cannot release it prematurely.
-Retry counts include only dispatched transport attempts. If a response body cannot be read,
-item counters preserve any known final HTTP success or permanent rejection, while the export
-callback still reports the body-read failure.
-Envelopes persisted for delivery by a later page are not terminal drops; failed storage writes,
-disabled storage and buffer size limits still count as drops when delivery cannot continue.
-The buffer owns deferred drop accounting until delivery or handoff. Eviction, expiry, failed
-persistence of deferred batches, and shutdown count their terminal removal exactly once, using
-their original drop codes. Shutdown waits for pending exports and removes remaining batches before
-the final stats report. A batch reported as a terminal storage failure cannot be replayed after
-storage recovers; evicting an in-flight batch's storage copy does not declare that request lost.
-Deferred drop codes are persisted with each batch so a later stats-enabled exporter can count
-expired telemetry even after the original page has gone. Adoption and expiry accounting require
-successful removal of the old record. Legacy records without valid drop codes use `CLIENT_EXCEPTION`.
-If both writing and removal fail, the outcome remains pending;
-the original page must not report a drop for a record that another page can still adopt.
-Shutdown gives outstanding application sends a 30-second grace period, then aborts them and waits
-for their callbacks and accounting before the final stats reports. Cancellation also settles
-wrappers that ignore abort signals and retry waits; late results cannot restart delivery.
-Export callbacks are notifications: returned promises are not adopted into flush or shutdown,
-while synchronous callback exceptions remain observable. Disabled SDK Stats do not trigger extra
-buffer writes solely to transfer accounting.
-Final successes and permanent rejections also wait for stale-snapshot invalidation. If deletion
-fails but writing works, an empty tombstone prevents replay; otherwise accounting stays with the
-persisted snapshot until recovery or handoff. Partial-response envelopes and their persisted drop
-codes use the same ingestion error-array order.
-The original page does not count outcomes after another page adopts its batch. Invalid partial
-responses, including mismatched item counts, fail the export callback and retain outstanding
-envelopes when storage permits.
-An explicit exporter flush waits for pending exports and makes at most one follow-up stats report
-when new counters were waiting behind an in-flight report. It does not loop on failed reports.
-Retryable customer stats counts remain in memory for the next report. Known accepted and
-permanently rejected items are not replayed, and counts are not persisted across page loads.
+They report item successes, dispatched retries and terminal drops to the customer's destination,
+not application sampling or processor queue drops. Conversion failures include completed secondary
+envelopes; unclassifiable records produce diagnostics without blocking the failure callback.
+Known final HTTP outcomes survive body-read failures, but the export callback still reports the
+read failure. Invalid partial responses fail the callback and retain outstanding envelopes.
+
+Stats-enabled log exporters exclude exact SDK resource-timing URLs, including redirects, but leave
+other URLs and application records eligible. Active senders and attempts hold their URLs through
+completion; a separate 256-entry history retains recent inactive URLs. These registries are shared
+across package copies and independent of distribution state. Stats warnings bypass nested console
+instrumentation even through teardown/restart, without requiring a context manager.
+
+Buffered telemetry is not dropped merely because delivery is deferred. Final counters wait until a
+stale snapshot is invalidated or handed off; an empty tombstone handles failed deletion when writes
+still work. If neither operation succeeds, outcomes stay pending. Eviction of an in-flight storage
+copy is not request loss. Persisted drop codes follow the partial-response envelope order, allowing a
+later page to count expiry after invalidation; legacy codes default to `CLIENT_EXCEPTION`. The old
+page stops accounting after handoff. Disabled stats add no accounting-only storage writes.
+
+Flush waits for pending exports and makes at most one follow-up report for newly queued counters.
+Shutdown allows 30 seconds for exports, cancels remaining sends, then completes buffer accounting
+and bounded final reports. Concurrent shutdown calls share work; later cleanup calls resolve even
+after failure. Callback return values are ignored, synchronous throws remain observable, and late
+transport results cannot restart delivery. Retryable report counts stay in memory until the next
+report, not across page loads; accepted and permanently rejected counts are not replayed.
 
 ## Azure Monitor mapping
 

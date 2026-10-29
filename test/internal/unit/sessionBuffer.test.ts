@@ -114,6 +114,17 @@ function bufferKeys(): string[] {
   ).filter((key): key is string => key?.startsWith(SESSION_BUFFER_KEY_PREFIX) === true);
 }
 
+function blockStorage(...methods: ("setItem" | "removeItem")[]): () => void {
+  const mocks = methods.map((method) =>
+    vi.spyOn(testSessionStorage, method).mockImplementation(() => {
+      throw new DOMException("Storage blocked", "SecurityError");
+    }),
+  );
+  return () => {
+    for (const mock of mocks) mock.mockRestore();
+  };
+}
+
 beforeEach(() => {
   loadPage();
 });
@@ -926,15 +937,10 @@ describe("Azure Monitor sessionStorage buffer", () => {
       const stored: unknown[] = JSON.parse(testSessionStorage.getItem(bufferKeys()[0])!);
       expect((stored[1] as unknown[])[2]).toEqual(mode === "whole" ? "503" : ["503", "429"]);
       firstFetch.mockResolvedValue(new Response(null));
-      const remove = vi.spyOn(testSessionStorage, "removeItem").mockImplementation(() => {
-        throw new DOMException("Storage blocked", "SecurityError");
-      });
-      const write = vi.spyOn(testSessionStorage, "setItem").mockImplementation(() => {
-        throw new DOMException("Storage blocked", "SecurityError");
-      });
+      const restoreStorage = blockStorage("removeItem", "setItem");
+
       await client.shutdown();
-      remove.mockRestore();
-      write.mockRestore();
+      restoreStorage();
       vi.spyOn(Date, "now").mockReturnValue(Date.now() + MAX_SESSION_BUFFER_AGE_MS + 1);
       loadPage();
       const fetch = stubFetch();
@@ -1015,12 +1021,8 @@ describe("Azure Monitor sessionStorage buffer", () => {
       await vi.waitFor(() => expect(hanging).toHaveLength(1));
       hidePage();
       const record = testSessionStorage.getItem(bufferKeys()[0]);
-      const write = vi.spyOn(testSessionStorage, "setItem").mockImplementation(() => {
-        throw new DOMException("Storage blocked", "SecurityError");
-      });
-      const remove = vi.spyOn(testSessionStorage, "removeItem").mockImplementation(() => {
-        throw new DOMException("Storage blocked", "SecurityError");
-      });
+      const restoreStorage = blockStorage("setItem", "removeItem");
+
       hanging.shift()!(
         status === 206
           ? breezeResponse(
@@ -1035,8 +1037,7 @@ describe("Azure Monitor sessionStorage buffer", () => {
       await original;
       expect(count).not.toHaveBeenCalled();
       expect(testSessionStorage.getItem(bufferKeys()[0])).toBe(record);
-      write.mockRestore();
-      remove.mockRestore();
+      restoreStorage();
       loadPage();
       const fetch = stubFetch();
       await createClient({ sdkStats: { enabled: true } }).forceFlush();
@@ -1096,12 +1097,8 @@ describe("Azure Monitor sessionStorage buffer", () => {
       const original = exportAsync(client, items);
       await vi.waitFor(() => expect(hanging).toHaveLength(1));
       hidePage();
-      const write = vi.spyOn(testSessionStorage, "setItem").mockImplementation(() => {
-        throw new DOMException("Storage blocked", "SecurityError");
-      });
-      const remove = vi.spyOn(testSessionStorage, "removeItem").mockImplementation(() => {
-        throw new DOMException("Storage blocked", "SecurityError");
-      });
+      const restoreStorage = blockStorage("setItem", "removeItem");
+
       hanging.shift()!(
         status === 206
           ? breezeResponse(
@@ -1115,8 +1112,7 @@ describe("Azure Monitor sessionStorage buffer", () => {
       );
       await original;
       expect(count).not.toHaveBeenCalled();
-      write.mockRestore();
-      remove.mockRestore();
+      restoreStorage();
       vi.spyOn(Date, "now").mockReturnValue(Date.now() + 61_000);
       restorePage();
       expect(count).toHaveBeenCalledWith("Success", [items[0]]);
@@ -1143,9 +1139,7 @@ describe("Azure Monitor sessionStorage buffer", () => {
         throw new DOMException("Storage blocked", "SecurityError");
       })
       .mockImplementationOnce(originalWrite);
-    const remove = vi.spyOn(testSessionStorage, "removeItem").mockImplementation(() => {
-      throw new DOMException("Storage blocked", "SecurityError");
-    });
+    const restoreStorage = blockStorage("removeItem");
     let original: Promise<ExportResult>;
     beginUnloading();
     try {
@@ -1155,7 +1149,7 @@ describe("Azure Monitor sessionStorage buffer", () => {
     }
     await vi.waitFor(() => expect(hanging).toHaveLength(1));
     write.mockRestore();
-    remove.mockRestore();
+    restoreStorage();
     loadPage();
     const fetch = stubFetch();
     await createClient({ sdkStats: { enabled: true } }).forceFlush();
@@ -1180,12 +1174,8 @@ describe("Azure Monitor sessionStorage buffer", () => {
       hidePage();
       const key = bufferKeys()[0];
       const record = testSessionStorage.getItem(key);
-      const write = vi.spyOn(testSessionStorage, "setItem").mockImplementation(() => {
-        throw new DOMException("Storage blocked", "SecurityError");
-      });
-      const remove = vi.spyOn(testSessionStorage, "removeItem").mockImplementation(() => {
-        throw new DOMException("Storage blocked", "SecurityError");
-      });
+      const restoreStorage = blockStorage("setItem", "removeItem");
+
       if (expired)
         vi.spyOn(Date, "now").mockReturnValue(Date.now() + MAX_SESSION_BUFFER_AGE_MS + 1);
       hidePage();
@@ -1195,8 +1185,7 @@ describe("Azure Monitor sessionStorage buffer", () => {
       const fetch = stubFetch();
       await createClient({ sdkStats: { enabled: true } }).forceFlush();
       expect(fetch).not.toHaveBeenCalled();
-      write.mockRestore();
-      remove.mockRestore();
+      restoreStorage();
       loadPage();
       await createClient({ sdkStats: { enabled: true } }).forceFlush();
       expect(fetch).toHaveBeenCalledTimes(expired ? 1 : 2);

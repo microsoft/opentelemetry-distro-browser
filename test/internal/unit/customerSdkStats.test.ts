@@ -22,7 +22,7 @@ import { Sender } from "../../../src/exporter/sender.js";
 import { spanToEnvelopes } from "../../../src/exporter/spanUtils.js";
 import { beginUnloading, endUnloading } from "../../../src/exporter/common.js";
 import { MAX_SEND_ATTEMPTS, MAX_SHUTDOWN_WAIT_MS } from "../../../src/exporter/constants.js";
-import { AzureMonitorExportClient } from "../../../src/exporter/base.js";
+import { AzureMonitorExportClient, type AzureMonitorOptions } from "../../../src/exporter/base.js";
 import type { AzureMonitorEnvelope, MetricData } from "../../../src/exporter/telemetryModels.js";
 import { createReadableLogRecord, createReadableSpan } from "../../fixtures/telemetry.js";
 import {
@@ -102,6 +102,90 @@ function request(kinds = [SpanKind.CLIENT]) {
     body: new TextEncoder().encode(JSON.stringify(envelopes)),
     contentType: "application/json",
   };
+}
+
+function createClient(
+  options: AzureMonitorOptions = { connectionString, sdkStats: { enabled: true } },
+) {
+  const client = new AzureMonitorExportClient(options);
+  owners.push(client);
+  return client;
+}
+
+function createExporter(signal: "spans", options?: AzureMonitorOptions): AzureMonitorSpanExporter;
+function createExporter(
+  signal: "logs",
+  options?: AzureMonitorOptions,
+): AzureMonitorLogRecordExporter;
+function createExporter(
+  signal: "spans" | "logs",
+  options?: AzureMonitorOptions,
+): AzureMonitorSpanExporter | AzureMonitorLogRecordExporter;
+function createExporter(
+  signal: "spans" | "logs",
+  options: AzureMonitorOptions = { connectionString, sdkStats: { enabled: true } },
+) {
+  const exporter =
+    signal === "spans"
+      ? new AzureMonitorSpanExporter(options)
+      : new AzureMonitorLogRecordExporter(options);
+  owners.push(exporter);
+  return exporter;
+}
+
+function exportAsync<T>(
+  exporter: { export(records: T[], callback: (result: ExportResult) => void): void },
+  records: T[],
+): Promise<ExportResult> {
+  return new Promise((resolve) => exporter.export(records, resolve));
+}
+
+function resourceTiming(url: string) {
+  return createReadableLogRecord({
+    eventName: "browser.resource_timing",
+    instrumentationScope: { name: "@opentelemetry/browser-instrumentation/resource-timing" },
+    attributes: { "url.full": url },
+  });
+}
+
+function throwOnRead(target: object, property: PropertyKey, error: Error): void {
+  Object.defineProperty(target, property, {
+    get: () => {
+      throw error;
+    },
+  });
+}
+
+function expectExportFailure(callback: ReturnType<typeof vi.fn>, error: Error): void {
+  expect(callback).toHaveBeenCalledExactlyOnceWith({ code: ExportResultCode.FAILED, error });
+}
+
+function holdNextFetch(): (response?: Response) => void {
+  const normal = fetch.getMockImplementation()!;
+  let args: Parameters<typeof globalThis.fetch> | undefined;
+  let finish!: (response: Response | PromiseLike<Response>) => void;
+  const pending = new Promise<Response>((resolve) => {
+    finish = resolve;
+  });
+  fetch.mockImplementationOnce((...request) => {
+    args = request;
+    return pending;
+  });
+  return (response) => {
+    if (!args) throw new Error("Expected the held fetch to have started.");
+    finish(response ?? normal(...args));
+  };
+}
+
+function partialResponse(
+  itemsReceived: number,
+  errors: { index: number; statusCode: number; message: string }[],
+  headers?: HeadersInit,
+): Response {
+  return Response.json(
+    { itemsReceived, itemsAccepted: itemsReceived - errors.length, errors },
+    { status: 206, headers },
+  );
 }
 
 it.each([undefined, {}, { enabled: false }])(
@@ -214,13 +298,7 @@ it.each([200, 400])(
 
 it("merges failed counts with counts collected during a shared in-flight flush", async () => {
   const stats = create();
-  let finish!: (response: Response) => void;
-  fetch.mockImplementationOnce(
-    () =>
-      new Promise((resolve) => {
-        finish = resolve;
-      }),
-  );
+  const finish = holdNextFetch();
   stats.count("Success", "TRACE", "", 4);
   const first = stats.forceFlush();
   expect(stats.forceFlush()).toBe(first);
@@ -242,21 +320,14 @@ it.each([200, 503])(
   "flushes new counts after an in-flight HTTP %i report with at most one follow-up",
   async (status) => {
     const stats = create();
-    const normal = fetch.getMockImplementation()!;
-    let finish!: () => void;
-    fetch.mockImplementationOnce(
-      (...args) =>
-        new Promise((resolve) => {
-          finish = () => resolve(status === 200 ? normal(...args) : new Response(null, { status }));
-        }),
-    );
+    const finish = holdNextFetch();
     stats.count("Success", "TRACE");
     const first = stats.forceFlush();
     stats.count("Success", "DEPENDENCY");
     const second = stats.forceFlush();
     const concurrent = stats.forceFlush();
     if (status === 503) fetch.mockResolvedValueOnce(new Response(null, { status }));
-    finish();
+    finish(status === 200 ? undefined : new Response(null, { status }));
     await Promise.all([first, second, concurrent]);
     expect(fetch).toHaveBeenCalledTimes(2);
     if (status === 200) {
@@ -278,12 +349,7 @@ it.each([200, 503])(
 it.each(["spans", "logs"] as const)(
   "includes completed %s exports when flushing behind an older stats report",
   async (signal) => {
-    const options = { connectionString, sdkStats: { enabled: true } };
-    const exporter =
-      signal === "spans"
-        ? new AzureMonitorSpanExporter(options)
-        : new AzureMonitorLogRecordExporter(options);
-    owners.push(exporter);
+    const exporter = createExporter(signal);
     const send = () =>
       new Promise<ExportResult>((resolve) => {
         if (exporter instanceof AzureMonitorSpanExporter)
@@ -291,14 +357,7 @@ it.each(["spans", "logs"] as const)(
         else exporter.export([createReadableLogRecord()], resolve);
       });
     await send();
-    const normal = fetch.getMockImplementation()!;
-    let finish!: () => void;
-    fetch.mockImplementationOnce(
-      (...args) =>
-        new Promise((resolve) => {
-          finish = () => resolve(normal(...args));
-        }),
-    );
+    const finish = holdNextFetch();
     const first = exporter.forceFlush();
     await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
     await send();
@@ -316,18 +375,11 @@ it.each(["spans", "logs"] as const)(
 it("only retries outstanding retriable items after partial acceptance", async () => {
   const stats = create();
   fetch.mockResolvedValueOnce(
-    Response.json(
-      {
-        itemsReceived: 4,
-        itemsAccepted: 1,
-        errors: [
-          { index: 1, statusCode: 503, message: "unavailable" },
-          { index: 2, statusCode: 400, message: "invalid" },
-          { index: 3, statusCode: 206, message: "Telemetry sampled out." },
-        ],
-      },
-      { status: 206 },
-    ),
+    partialResponse(4, [
+      { index: 1, statusCode: 503, message: "unavailable" },
+      { index: 2, statusCode: 400, message: "invalid" },
+      { index: 3, statusCode: 206, message: "Telemetry sampled out." },
+    ]),
   );
   stats.count("Success", "TRACE", "", 4);
   stats.count("Retry", "DEPENDENCY", "503", 3);
@@ -370,14 +422,7 @@ it("keeps failed counts isolated from another reporter", async () => {
 
 it("shares concurrent flushes, retains new counts and drains them after a pending export at shutdown", async () => {
   const stats = create();
-  const normal = fetch.getMockImplementation()!;
-  let complete!: () => void;
-  fetch.mockImplementationOnce(
-    (...args) =>
-      new Promise((resolve) => {
-        complete = () => resolve(normal(...args));
-      }),
-  );
+  const complete = holdNextFetch();
   stats.count("Success", "TRACE");
   const first = stats.forceFlush();
   expect(stats.forceFlush()).toBe(first);
@@ -460,14 +505,7 @@ it("makes one final attempt for failed counts before discarding them at shutdown
 it("re-arms pending counters when an interval expires during a slow report", async () => {
   const clock = installFakeClock();
   const stats = create({ enabled: true, collectionIntervalMillis: 10 });
-  const normal = fetch.getMockImplementation()!;
-  let finish!: () => void;
-  fetch.mockImplementationOnce(
-    (...args) =>
-      new Promise((resolve) => {
-        finish = () => resolve(normal(...args));
-      }),
-  );
+  const finish = holdNextFetch();
   stats.count("Success", "TRACE");
   await clock.advance(10);
   stats.count("Success", "DEPENDENCY");
@@ -481,12 +519,11 @@ it("re-arms pending counters when an interval expires during a slow report", asy
 it.each(["shutdown", "eviction", "storage"] as const)(
   "counts retained telemetry once when %s makes its loss terminal",
   async (removal) => {
-    const client = new AzureMonitorExportClient({ connectionString, sdkStats: { enabled: true } });
-    owners.push(client);
+    const client = createClient();
     fetch.mockResolvedValueOnce(
       new Response(null, { status: 503, headers: { "retry-after": "86400" } }),
     );
-    await new Promise<ExportResult>((resolve) => client.export(request().envelopes, resolve));
+    await exportAsync(client, request().envelopes);
     await client.forceFlush();
     expect(totals()).toEqual({});
     if (removal !== "shutdown") {
@@ -501,7 +538,7 @@ it.each(["shutdown", "eviction", "storage"] as const)(
       beginUnloading();
       try {
         for (let index = 0; index < (removal === "eviction" ? 2 : 1); index++)
-          await new Promise<ExportResult>((resolve) => client.export([large], resolve));
+          await exportAsync(client, [large]);
       } finally {
         endUnloading();
       }
@@ -523,29 +560,19 @@ it.each(["shutdown", "eviction", "storage"] as const)(
 );
 
 it("reports only a retained partial response's retriable items during shutdown", async () => {
-  const client = new AzureMonitorExportClient({ connectionString, sdkStats: { enabled: true } });
-  owners.push(client);
+  const client = createClient();
   fetch.mockResolvedValueOnce(
-    Response.json(
-      {
-        itemsReceived: 4,
-        itemsAccepted: 1,
-        errors: [
-          { index: 1, statusCode: 503, message: "retry" },
-          { index: 2, statusCode: 400, message: "invalid" },
-          { index: 3, statusCode: 206, message: "Telemetry sampled out." },
-        ],
-      },
-      { status: 206 },
-    ),
+    partialResponse(4, [
+      { index: 1, statusCode: 503, message: "retry" },
+      { index: 2, statusCode: 400, message: "invalid" },
+      { index: 3, statusCode: 206, message: "Telemetry sampled out." },
+    ]),
   );
   beginUnloading();
   try {
-    await new Promise<ExportResult>((resolve) =>
-      client.export(
-        request([SpanKind.CLIENT, SpanKind.SERVER, SpanKind.CLIENT, SpanKind.SERVER]).envelopes,
-        resolve,
-      ),
+    await exportAsync(
+      client,
+      request([SpanKind.CLIENT, SpanKind.SERVER, SpanKind.CLIENT, SpanKind.SERVER]).envelopes,
     );
   } finally {
     endUnloading();
@@ -560,18 +587,9 @@ it("reports only a retained partial response's retriable items during shutdown",
 });
 
 it("does not count an in-flight batch as dropped when its buffer copy is evicted", async () => {
-  const client = new AzureMonitorExportClient({ connectionString, sdkStats: { enabled: true } });
-  owners.push(client);
-  let finish!: (response: Response) => void;
-  fetch.mockImplementationOnce(
-    () =>
-      new Promise((resolve) => {
-        finish = resolve;
-      }),
-  );
-  const sending = new Promise<ExportResult>((resolve) =>
-    client.export(request().envelopes, resolve),
-  );
+  const client = createClient();
+  const finish = holdNextFetch();
+  const sending = exportAsync(client, request().envelopes);
   await vi.waitFor(() => expect(fetch).toHaveBeenCalledOnce());
   const large = {
     ...request().envelopes[0],
@@ -579,8 +597,7 @@ it("does not count an in-flight batch as dropped when its buffer copy is evicted
   };
   beginUnloading();
   try {
-    for (let index = 0; index < 2; index++)
-      await new Promise<ExportResult>((resolve) => client.export([large], resolve));
+    for (let index = 0; index < 2; index++) await exportAsync(client, [large]);
   } finally {
     endUnloading();
     finish(new Response(null));
@@ -596,8 +613,7 @@ it("does not count an in-flight batch as dropped when its buffer copy is evicted
 it.each([false, true])(
   "waits for all pending exports before reporting shutdown drops (callback throws: %s)",
   async (callbackThrows) => {
-    const client = new AzureMonitorExportClient({ connectionString, sdkStats: { enabled: true } });
-    owners.push(client);
+    const client = createClient();
     const completions: Array<(response: Response) => void> = [];
     for (let index = 0; index < 2; index++)
       fetch.mockImplementationOnce(() => new Promise((resolve) => completions.push(resolve)));
@@ -634,8 +650,7 @@ it.each(["available", "disabled", "unavailable", "quota", "oversized"] as const)
       vi.spyOn(testSessionStorage, "setItem").mockImplementation(() => {
         throw new DOMException("Quota exceeded", "QuotaExceededError");
       });
-    const client = new AzureMonitorExportClient(options);
-    owners.push(client);
+    const client = createClient(options);
     const envelopes = request().envelopes;
     const large = {
       ...envelopes[0],
@@ -649,9 +664,7 @@ it.each(["available", "disabled", "unavailable", "quota", "oversized"] as const)
     };
     beginUnloading();
     try {
-      const result = await new Promise<ExportResult>((resolve) =>
-        client.export([envelopes[0], large], resolve),
-      );
+      const result = await exportAsync(client, [envelopes[0], large]);
       expect(result.code).toBe(ExportResultCode.FAILED);
       await client.forceFlush();
     } finally {
@@ -666,8 +679,7 @@ it.each(["available", "disabled", "unavailable", "quota", "oversized"] as const)
 
 it("does not adopt an export callback's never-settling return value", async () => {
   const clock = installFakeClock();
-  const client = new AzureMonitorExportClient({ connectionString, sdkStats: { enabled: true } });
-  owners.push(client);
+  const client = createClient();
   const callback = vi.fn(() => new Promise<void>((resolve) => finishers.push(resolve)));
   client.export(request().envelopes, callback);
   const stopped = vi.fn();
@@ -684,15 +696,9 @@ it.each([false, true])(
   "cancels a hung export at the shutdown deadline and completes final accounting (callback throws: %s)",
   async (callbackThrows) => {
     const clock = installFakeClock();
-    const client = new AzureMonitorExportClient({ connectionString, sdkStats: { enabled: true } });
-    owners.push(client);
-    let finish!: (response: Response) => void;
-    fetch.mockResolvedValueOnce(new Response(null)).mockImplementationOnce(
-      () =>
-        new Promise((resolve) => {
-          finish = resolve;
-        }),
-    );
+    const client = createClient();
+    fetch.mockResolvedValueOnce(new Response(null));
+    const finish = holdNextFetch();
     const callbackFailure = new Error("callback failed");
     client.export(request().envelopes, () => {
       if (callbackThrows) throw callbackFailure;
@@ -744,33 +750,23 @@ it.each(["available", "disabled", "unavailable", "quota"] as const)(
     const options = { connectionString, sdkStats: { enabled: true } };
     if (storage === "disabled") sessionBufferStorage.set(options, null);
     if (storage === "unavailable") setSessionStorage(undefined);
-    const client = new AzureMonitorExportClient(options);
-    owners.push(client);
+    const client = createClient(options);
     fetch.mockImplementationOnce(async () => {
       if (storage === "quota")
         vi.spyOn(testSessionStorage, "setItem").mockImplementation(() => {
           throw new DOMException("Quota exceeded", "QuotaExceededError");
         });
-      return Response.json(
-        {
-          itemsReceived: 4,
-          itemsAccepted: 1,
-          errors: [
-            { index: 1, statusCode: 503, message: "retry" },
-            { index: 2, statusCode: 400, message: "invalid" },
-            { index: 3, statusCode: 206, message: "Telemetry sampled out." },
-          ],
-        },
-        { status: 206 },
-      );
+      return partialResponse(4, [
+        { index: 1, statusCode: 503, message: "retry" },
+        { index: 2, statusCode: 400, message: "invalid" },
+        { index: 3, statusCode: 206, message: "Telemetry sampled out." },
+      ]);
     });
     beginUnloading();
     try {
-      const result = await new Promise<ExportResult>((resolve) =>
-        client.export(
-          request([SpanKind.CLIENT, SpanKind.SERVER, SpanKind.CLIENT, SpanKind.SERVER]).envelopes,
-          resolve,
-        ),
+      const result = await exportAsync(
+        client,
+        request([SpanKind.CLIENT, SpanKind.SERVER, SpanKind.CLIENT, SpanKind.SERVER]).envelopes,
       );
       expect(result.code).toBe(ExportResultCode.FAILED);
     } finally {
@@ -790,8 +786,7 @@ it.each(["body", "retry"] as const)(
   "cancels a pending %s at the shutdown deadline without leaving timers or dispatching a retry",
   async (phase) => {
     const clock = installFakeClock();
-    const client = new AzureMonitorExportClient({ connectionString, sdkStats: { enabled: true } });
-    owners.push(client);
+    const client = createClient();
     const response = new Response(null, { status: 503, headers: { "retry-after": "30" } });
     vi.spyOn(response, "text").mockImplementation(() =>
       phase === "body" ? new Promise(() => {}) : Promise.resolve(""),
@@ -814,35 +809,19 @@ it.each(["body", "retry"] as const)(
 it.each(["spans", "logs"] as const)(
   "reports conversion failures for %s without losing the callback",
   async (signal) => {
-    const options = { connectionString, sdkStats: { enabled: true } };
-    const exporter =
-      signal === "spans"
-        ? new AzureMonitorSpanExporter(options)
-        : new AzureMonitorLogRecordExporter(options);
-    owners.push(exporter);
+    const exporter = createExporter(signal);
     const failure = new Error("conversion failed");
     const callback = vi.fn();
     if (exporter instanceof AzureMonitorSpanExporter) {
       const span = createReadableSpan();
-      Object.defineProperty(span, "startTime", {
-        get: () => {
-          throw failure;
-        },
-      });
+      throwOnRead(span, "startTime", failure);
       exporter.export([span], callback);
     } else {
       const log = createReadableLogRecord();
-      Object.defineProperty(log, "hrTime", {
-        get: () => {
-          throw failure;
-        },
-      });
+      throwOnRead(log, "hrTime", failure);
       exporter.export([log], callback);
     }
-    expect(callback).toHaveBeenCalledExactlyOnceWith({
-      code: ExportResultCode.FAILED,
-      error: failure,
-    });
+    expectExportFailure(callback, failure);
     await exporter.forceFlush();
     expect(totals()).toEqual({
       [`Item_Dropped_Count:${signal === "spans" ? "DEPENDENCY" : "TRACE"}:CLIENT_EXCEPTION`]: 1,
@@ -858,33 +837,21 @@ it.each(
   "preserves the callback and remaining $signal counts when classification throws (stats: $enabled)",
   async ({ signal, enabled }) => {
     const options = { connectionString, sdkStats: { enabled } };
-    const exporter =
-      signal === "spans"
-        ? new AzureMonitorSpanExporter(options)
-        : new AzureMonitorLogRecordExporter(options);
-    owners.push(exporter);
+    const exporter = createExporter(signal, options);
     const failure = new Error("classification failed");
-    const broken = {
-      get: () => {
-        throw failure;
-      },
-    };
     const callback = vi.fn();
     expect(() => {
       if (exporter instanceof AzureMonitorSpanExporter) {
         const span = createReadableSpan();
-        Object.defineProperty(span, "kind", broken);
+        throwOnRead(span, "kind", failure);
         exporter.export([span, span, createReadableSpan({ kind: SpanKind.SERVER })], callback);
       } else {
         const log = createReadableLogRecord();
-        Object.defineProperty(log.attributes, "exception.type", broken);
+        throwOnRead(log.attributes, "exception.type", failure);
         exporter.export([log, log, createReadableLogRecord()], callback);
       }
     }).not.toThrow();
-    expect(callback).toHaveBeenCalledExactlyOnceWith({
-      code: ExportResultCode.FAILED,
-      error: failure,
-    });
+    expectExportFailure(callback, failure);
     expect(fetch).not.toHaveBeenCalled();
     expect(diag.warn).toHaveBeenCalledTimes(enabled ? 2 : 0);
     await exporter.forceFlush();
@@ -899,11 +866,7 @@ it.each(
 it.each([false, true])(
   "counts every converted span envelope before a later conversion failure (unloading: %s)",
   async (unloading) => {
-    const exporter = new AzureMonitorSpanExporter({
-      connectionString,
-      sdkStats: { enabled: true },
-    });
-    owners.push(exporter);
+    const exporter = createExporter("spans");
     const converted = createReadableSpan({
       events: [
         {
@@ -917,11 +880,7 @@ it.each([false, true])(
     });
     const failed = createReadableSpan({ kind: SpanKind.SERVER });
     const failure = new Error("conversion failed");
-    Object.defineProperty(failed, "startTime", {
-      get: () => {
-        throw failure;
-      },
-    });
+    throwOnRead(failed, "startTime", failure);
     const callback = vi.fn();
     if (unloading) beginUnloading();
     try {
@@ -929,10 +888,7 @@ it.each([false, true])(
     } finally {
       if (unloading) endUnloading();
     }
-    expect(callback).toHaveBeenCalledExactlyOnceWith({
-      code: ExportResultCode.FAILED,
-      error: failure,
-    });
+    expectExportFailure(callback, failure);
     expect(fetch).not.toHaveBeenCalled();
     await exporter.forceFlush();
     expect(totals()).toEqual({
@@ -945,11 +901,7 @@ it.each([false, true])(
 );
 
 it("counts the discarded page-view performance envelope without counting filtered SDK timings", async () => {
-  const exporter = new AzureMonitorLogRecordExporter({
-    connectionString,
-    sdkStats: { enabled: true },
-  });
-  owners.push(exporter);
+  const exporter = createExporter("logs");
   const converted = createReadableLogRecord({
     eventName: "browser.page_view",
     attributes: {
@@ -962,22 +914,11 @@ it("counts the discarded page-view performance envelope without counting filtere
   });
   const failed = createReadableLogRecord({ eventName: "application.event" });
   const failure = new Error("conversion failed");
-  Object.defineProperty(failed, "hrTime", {
-    get: () => {
-      throw failure;
-    },
-  });
-  const timing = createReadableLogRecord({
-    eventName: "browser.resource_timing",
-    instrumentationScope: { name: "@opentelemetry/browser-instrumentation/resource-timing" },
-    attributes: { "url.full": `${endpoint}/v2/track` },
-  });
+  throwOnRead(failed, "hrTime", failure);
+  const timing = resourceTiming(`${endpoint}/v2/track`);
   const callback = vi.fn();
   exporter.export([timing, converted, failed, timing, createReadableLogRecord()], callback);
-  expect(callback).toHaveBeenCalledExactlyOnceWith({
-    code: ExportResultCode.FAILED,
-    error: failure,
-  });
+  expectExportFailure(callback, failure);
   expect(fetch).not.toHaveBeenCalled();
   await exporter.forceFlush();
   expect(totals()).toEqual({
@@ -988,32 +929,17 @@ it("counts the discarded page-view performance envelope without counting filtere
 });
 
 it("preserves filtering and the original failure when log eligibility and diagnostics throw", async () => {
-  const exporter = new AzureMonitorLogRecordExporter({
-    connectionString,
-    sdkStats: { enabled: true },
-  });
-  owners.push(exporter);
+  const exporter = createExporter("logs");
   const failure = new Error("event name unavailable");
   const broken = createReadableLogRecord();
-  Object.defineProperty(broken, "eventName", {
-    get: () => {
-      throw failure;
-    },
-  });
-  const timing = createReadableLogRecord({
-    eventName: "browser.resource_timing",
-    instrumentationScope: { name: "@opentelemetry/browser-instrumentation/resource-timing" },
-    attributes: { "url.full": `${endpoint}/v2/track` },
-  });
+  throwOnRead(broken, "eventName", failure);
+  const timing = resourceTiming(`${endpoint}/v2/track`);
   vi.spyOn(diag, "warn").mockImplementation(() => {
     throw new Error("diagnostic failed");
   });
   const callback = vi.fn();
   exporter.export([timing, broken, timing, createReadableLogRecord()], callback);
-  expect(callback).toHaveBeenCalledExactlyOnceWith({
-    code: ExportResultCode.FAILED,
-    error: failure,
-  });
+  expectExportFailure(callback, failure);
   await exporter.forceFlush();
   expect(totals()).toEqual({ "Item_Dropped_Count:TRACE:CLIENT_EXCEPTION": 1 });
 });
@@ -1021,31 +947,14 @@ it("preserves filtering and the original failure when log eligibility and diagno
 it.each([false, true])(
   "counts only eligible records when conversion fails with SDK timing first: %s",
   async (timingFirst) => {
-    const exporter = new AzureMonitorLogRecordExporter({
-      connectionString,
-      sdkStats: { enabled: true },
-    });
-    owners.push(exporter);
-    const timing = createReadableLogRecord({
-      eventName: "browser.resource_timing",
-      instrumentationScope: {
-        name: "@opentelemetry/browser-instrumentation/resource-timing",
-      },
-      attributes: { "url.full": `${endpoint}/v2/track` },
-    });
+    const exporter = createExporter("logs");
+    const timing = resourceTiming(`${endpoint}/v2/track`);
     const record = createReadableLogRecord();
     const failure = new Error("conversion failed");
-    Object.defineProperty(record, "hrTime", {
-      get: () => {
-        throw failure;
-      },
-    });
+    throwOnRead(record, "hrTime", failure);
     const callback = vi.fn();
     exporter.export(timingFirst ? [timing, record] : [record, timing], callback);
-    expect(callback).toHaveBeenCalledExactlyOnceWith({
-      code: ExportResultCode.FAILED,
-      error: failure,
-    });
+    expectExportFailure(callback, failure);
     expect(fetch).not.toHaveBeenCalled();
     await exporter.forceFlush();
     expect(totals()).toEqual({ "Item_Dropped_Count:TRACE:CLIENT_EXCEPTION": 1 });
@@ -1063,27 +972,16 @@ it.each([
 ])(
   "classifies page-visit conversion failures as $type for duration $duration",
   async ({ duration, type }) => {
-    const exporter = new AzureMonitorLogRecordExporter({
-      connectionString,
-      sdkStats: { enabled: true },
-    });
-    owners.push(exporter);
+    const exporter = createExporter("logs");
     const record = createReadableLogRecord({
       eventName: "browser.page_visit",
       attributes: { "browser.page_visit.duration": duration },
     });
     const failure = new Error("conversion failed");
-    Object.defineProperty(record, "hrTime", {
-      get: () => {
-        throw failure;
-      },
-    });
+    throwOnRead(record, "hrTime", failure);
     const callback = vi.fn();
     exporter.export([record], callback);
-    expect(callback).toHaveBeenCalledExactlyOnceWith({
-      code: ExportResultCode.FAILED,
-      error: failure,
-    });
+    expectExportFailure(callback, failure);
     await exporter.forceFlush();
     expect(totals()).toEqual({ [`Item_Dropped_Count:${type}:CLIENT_EXCEPTION`]: 1 });
   },
@@ -1092,12 +990,7 @@ it.each([
 it.each(["spans", "logs"] as const)(
   "counts %s exporter delivery once and stays silent without more telemetry",
   async (signal) => {
-    const options = { connectionString, sdkStats: { enabled: true } };
-    const exporter =
-      signal === "spans"
-        ? new AzureMonitorSpanExporter(options)
-        : new AzureMonitorLogRecordExporter(options);
-    owners.push(exporter);
+    const exporter = createExporter(signal);
     const result = await new Promise<ExportResult>((resolve) => {
       if (exporter instanceof AzureMonitorSpanExporter)
         exporter.export([createReadableSpan()], resolve);
@@ -1117,19 +1010,12 @@ it("counts actual retry subsets, permanent failures and server sampling without 
   const stats = create();
   const sender = new Sender({ endpoint, itemStats: stats, delay: async () => {} });
   fetch.mockResolvedValueOnce(
-    Response.json(
-      {
-        itemsReceived: 5,
-        itemsAccepted: 1,
-        errors: [
-          { index: 1, statusCode: 503, message: "retry" },
-          { index: 2, statusCode: 400, message: "invalid" },
-          { index: 3, statusCode: 206, message: "Telemetry sampled out." },
-          { index: 4, statusCode: 429, message: "retry" },
-        ],
-      },
-      { status: 206 },
-    ),
+    partialResponse(5, [
+      { index: 1, statusCode: 503, message: "retry" },
+      { index: 2, statusCode: 400, message: "invalid" },
+      { index: 3, statusCode: 206, message: "Telemetry sampled out." },
+      { index: 4, statusCode: 429, message: "retry" },
+    ]),
   );
   await sender.send(
     request([SpanKind.CLIENT, SpanKind.SERVER, SpanKind.CLIENT, SpanKind.SERVER, SpanKind.CLIENT]),
@@ -1150,17 +1036,10 @@ it("replaces per-item retry codes after a later transport failure", async () => 
   const sender = new Sender({ endpoint, itemStats: stats, delay: async () => {} });
   fetch
     .mockResolvedValueOnce(
-      Response.json(
-        {
-          itemsReceived: 3,
-          itemsAccepted: 1,
-          errors: [
-            { index: 1, statusCode: 503, message: "retry" },
-            { index: 2, statusCode: 429, message: "retry" },
-          ],
-        },
-        { status: 206 },
-      ),
+      partialResponse(3, [
+        { index: 1, statusCode: 503, message: "retry" },
+        { index: 2, statusCode: 429, message: "retry" },
+      ]),
     )
     .mockRejectedValueOnce(new TypeError("offline"));
   await sender.send(request([SpanKind.CLIENT, SpanKind.SERVER, SpanKind.CLIENT]));
@@ -1220,14 +1099,9 @@ it("does not count a retry that the wait budget prevents and retains prior parti
   const stats = create();
   const sender = new Sender({ endpoint, itemStats: stats, delay: async () => {} });
   fetch.mockResolvedValueOnce(
-    Response.json(
-      {
-        itemsReceived: 2,
-        itemsAccepted: 1,
-        errors: [{ index: 1, statusCode: 503, message: "retry" }],
-      },
-      { status: 206, headers: { "retry-after": "86400" } },
-    ),
+    partialResponse(2, [{ index: 1, statusCode: 503, message: "retry" }], {
+      "retry-after": "86400",
+    }),
   );
   await expect(sender.send(request([SpanKind.CLIENT, SpanKind.SERVER]))).rejects.toThrow(
     "retry-wait budget",
@@ -1314,16 +1188,7 @@ it("counts only the retry subset when its successful response body fails", async
   const response = new Response(null);
   vi.spyOn(response, "text").mockRejectedValue(new TypeError("body failed"));
   fetch
-    .mockResolvedValueOnce(
-      Response.json(
-        {
-          itemsReceived: 2,
-          itemsAccepted: 1,
-          errors: [{ index: 1, statusCode: 503, message: "retry" }],
-        },
-        { status: 206 },
-      ),
-    )
+    .mockResolvedValueOnce(partialResponse(2, [{ index: 1, statusCode: 503, message: "retry" }]))
     .mockResolvedValueOnce(response);
   const sender = new Sender({ endpoint, itemStats: stats, delay: async () => {} });
   await expect(sender.send(request([SpanKind.CLIENT, SpanKind.SERVER]))).rejects.toThrow(
@@ -1451,29 +1316,20 @@ it.each([false, true])(
       fetch: async () => response,
     });
     await peer.send(request());
-    const exporter = new AzureMonitorLogRecordExporter({
+    const exporter = createExporter("logs", {
       connectionString,
       sdkStats: { enabled },
     });
-    owners.push(exporter);
-    const timing = (url: string) =>
-      createReadableLogRecord({
-        eventName: "browser.resource_timing",
-        instrumentationScope: {
-          name: "@opentelemetry/browser-instrumentation/resource-timing",
-        },
-        attributes: { "url.full": url },
-      });
     const records = [
-      timing(configured),
-      timing(redirected),
-      timing(`${configured}?application=true`),
-      timing("https://standalone-filter.example.test/application"),
-      timing("https://unconfigured.services.visualstudio.com/v2/track"),
-      { ...timing(configured), instrumentationScope: { name: "application" } },
-      { ...timing(redirected), eventName: "application.event" },
+      resourceTiming(configured),
+      resourceTiming(redirected),
+      resourceTiming(`${configured}?application=true`),
+      resourceTiming("https://standalone-filter.example.test/application"),
+      resourceTiming("https://unconfigured.services.visualstudio.com/v2/track"),
+      { ...resourceTiming(configured), instrumentationScope: { name: "application" } },
+      { ...resourceTiming(redirected), eventName: "application.event" },
     ];
-    const result = await new Promise<ExportResult>((resolve) => exporter.export(records, resolve));
+    const result = await exportAsync(exporter, records);
     expect(result.code).toBe(ExportResultCode.SUCCESS);
     const [url, init] = fetch.mock.calls[0];
     const envelopes: AzureMonitorEnvelope[] = await new Request(url, init).json();
@@ -1496,29 +1352,16 @@ it.each([false, true])(
     realm[key] = incompatible;
     try {
       const options = { connectionString, sdkStats: { enabled } };
-      const spans = new AzureMonitorSpanExporter(options);
-      owners.push(spans);
-      const logExporter = new AzureMonitorLogRecordExporter(options);
-      owners.push(logExporter);
+      const spans = createExporter("spans", options);
+      const logExporter = createExporter("logs", options);
+      await expect(exportAsync(spans, [createReadableSpan()])).resolves.toEqual({
+        code: ExportResultCode.SUCCESS,
+      });
       await expect(
-        new Promise<ExportResult>((resolve) => spans.export([createReadableSpan()], resolve)),
-      ).resolves.toEqual({ code: ExportResultCode.SUCCESS });
-      await expect(
-        new Promise<ExportResult>((resolve) =>
-          logExporter.export(
-            [
-              createReadableLogRecord({
-                eventName: "browser.resource_timing",
-                instrumentationScope: {
-                  name: "@opentelemetry/browser-instrumentation/resource-timing",
-                },
-                attributes: { "url.full": `${endpoint}/v2/track` },
-              }),
-              createReadableLogRecord(),
-            ],
-            resolve,
-          ),
-        ),
+        exportAsync(logExporter, [
+          resourceTiming(`${endpoint}/v2/track`),
+          createReadableLogRecord(),
+        ]),
       ).resolves.toEqual({ code: ExportResultCode.SUCCESS });
       const [url, init] = fetch.mock.calls[1];
       const envelopes: AzureMonitorEnvelope[] = await new Request(url, init).json();
@@ -1570,14 +1413,9 @@ it.each([false, true])(
       connectionString: `InstrumentationKey=${TEST_INSTRUMENTATION_KEY};IngestionEndpoint=${protectedEndpoint}`,
       sdkStats: { enabled },
     };
-    const first = new AzureMonitorSpanExporter(options);
-    const second = new AzureMonitorLogRecordExporter(options);
-    owners.push(first, second);
-    const collector = new AzureMonitorLogRecordExporter({
-      connectionString,
-      sdkStats: { enabled: true },
-    });
-    owners.push(collector);
+    const first = createExporter("spans", options);
+    const second = createExporter("logs", options);
+    const collector = createExporter("logs");
     let index = 0;
     const peer = new Sender({
       endpoint: "https://churn.example.test/v2/track",
@@ -1598,20 +1436,7 @@ it.each([false, true])(
       await first.shutdown();
       for (let count = 0; count < 300; count++) await peer.send(request());
       expect(isSdkIngestionUrl(url)).toBe(true);
-      await new Promise<ExportResult>((resolve) =>
-        collector.export(
-          [
-            createReadableLogRecord({
-              eventName: "browser.resource_timing",
-              instrumentationScope: {
-                name: "@opentelemetry/browser-instrumentation/resource-timing",
-              },
-              attributes: { "url.full": url },
-            }),
-          ],
-          resolve,
-        ),
-      );
+      await exportAsync(collector, [resourceTiming(url)]);
       expect(fetch).not.toHaveBeenCalled();
       await second.shutdown();
       expect(isSdkIngestionUrl(url)).toBe(true);
@@ -1687,24 +1512,9 @@ it.each([false, true])(
     };
     churn();
     expect(isSdkIngestionUrl(original)).toBe(true);
-    const collector = new AzureMonitorLogRecordExporter({
-      connectionString,
-      sdkStats: { enabled: true },
-    });
-    owners.push(collector);
+    const collector = createExporter("logs");
     await new Promise<ExportResult>((callback) =>
-      collector.export(
-        [
-          createReadableLogRecord({
-            eventName: "browser.resource_timing",
-            instrumentationScope: {
-              name: "@opentelemetry/browser-instrumentation/resource-timing",
-            },
-            attributes: { "url.full": original },
-          }),
-        ],
-        callback,
-      ),
+      collector.export([resourceTiming(original)], callback),
     );
     expect(fetch).not.toHaveBeenCalled();
     if (failure) reject(new TypeError("offline"));
