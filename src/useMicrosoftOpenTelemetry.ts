@@ -16,7 +16,6 @@ import {
 } from "./exporter/customerSdkStats.js";
 import { createKeyValueStorage } from "./storage/keyValueStorage.js";
 import { createSessionBufferStorage, sessionBufferStorage } from "./exporter/sessionBuffer.js";
-import { validateSdkStatsOptions } from "./exporter/customerSdkStats.js";
 import type { LogRecordProcessor } from "@opentelemetry/sdk-logs";
 import type { SpanProcessor } from "@opentelemetry/sdk-trace-base";
 import { beginUnloading, endUnloading } from "./exporter/common.js";

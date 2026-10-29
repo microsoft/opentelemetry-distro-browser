@@ -1,7 +1,15 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-import { context, diag, propagation, ROOT_CONTEXT, SpanKind, trace } from "@opentelemetry/api";
+import {
+  context,
+  createNoopMeter,
+  diag,
+  propagation,
+  ROOT_CONTEXT,
+  SpanKind,
+  trace,
+} from "@opentelemetry/api";
 import { logs } from "@opentelemetry/api-logs";
 import { LoggerProvider } from "@opentelemetry/sdk-logs";
 import { ConsoleInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/console";
@@ -1054,6 +1062,8 @@ it("reports customer stats on unload without falling back to beacon", async () =
 it.each(["spans", "logs"] as const)(
   "observes real $signal queue overflow without changing queue ownership",
   async (signal) => {
+    const sharedMeter = createNoopMeter();
+    const counterDescriptor = Object.getOwnPropertyDescriptor(sharedMeter, "createCounter");
     const stats = create();
     let complete!: () => void;
     let calls = 0;
@@ -1076,6 +1086,9 @@ it.each(["spans", "logs"] as const)(
         stats,
       );
       owners.push(processor);
+      expect(Object.getOwnPropertyDescriptor(sharedMeter, "createCounter")).toEqual(
+        counterDescriptor,
+      );
       processor.onEnd(createReadableSpan());
       processor.onEnd(createReadableSpan());
       processor.onEnd(createReadableSpan({ kind: SpanKind.SERVER }));
@@ -1101,6 +1114,9 @@ it.each(["spans", "logs"] as const)(
       });
     } finally {
       complete();
+      expect(Object.getOwnPropertyDescriptor(sharedMeter, "createCounter")).toEqual(
+        counterDescriptor,
+      );
     }
   },
 );

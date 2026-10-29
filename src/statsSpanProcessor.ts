@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-import { createNoopMeter } from "@opentelemetry/api";
+import { createNoopMeter, type Meter } from "@opentelemetry/api";
 import {
   BatchSpanProcessor,
   type BatchSpanProcessorBrowserOptions,
@@ -15,7 +15,8 @@ export function createStatsSpanProcessor(
   stats: CustomerSdkStats,
 ): BatchSpanProcessor {
   let currentSpan: ReadableSpan | undefined;
-  const meter = createNoopMeter();
+  // The API's no-op meter is shared; keep our override on an instance-local facade.
+  const meter = Object.create(createNoopMeter()) as Meter;
   const createCounter = meter.createCounter.bind(meter);
   meter.createCounter = (name, options) =>
     name === "otel.sdk.processor.span.processed"
