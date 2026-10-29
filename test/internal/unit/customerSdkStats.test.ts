@@ -1,9 +1,10 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-import { context, diag, propagation, SpanKind, trace } from "@opentelemetry/api";
+import { context, diag, propagation, SpanKind, SpanStatusCode, trace } from "@opentelemetry/api";
 import { logs } from "@opentelemetry/api-logs";
 import { ExportResultCode, type ExportResult } from "@opentelemetry/core";
+import { resourceFromAttributes } from "@opentelemetry/resources";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import {
   createCustomerSdkStats,
@@ -235,6 +236,7 @@ it("reports customer metrics without identifiers, enrichment, application sampli
     expect(envelope.iKey).toBe(TEST_INSTRUMENTATION_KEY);
     expect(envelope.sampleRate).toBeUndefined();
     expect(Object.keys(envelope.tags)).toEqual(["ai.internal.sdkVersion"]);
+    expect(envelope.data.baseData.properties?.language).toBe("javascript");
   }
   expect(fetch.mock.calls[0]).toEqual([
     `${endpoint}/v2/track`,
@@ -249,6 +251,91 @@ it("reports customer metrics without identifiers, enrichment, application sampli
   expect(fetch).toHaveBeenCalledOnce();
   expect(vi.getTimerCount()).toBe(0);
 });
+
+it.each(
+  (["spans", "logs"] as const).flatMap((signal) =>
+    [false, true].map((conversionFailure) => ({ signal, conversionFailure })),
+  ),
+)(
+  "preserves $signal role groups after conversion failure: $conversionFailure",
+  async ({ signal, conversionFailure }) => {
+    const exporter = createExporter(signal);
+    const roles = [
+      ["checkout:west", "one"],
+      ["checkout", "west:one"],
+    ];
+    const resources = roles.map(([role, instance]) =>
+      resourceFromAttributes({ "service.name": role, "service.instance.id": instance }),
+    );
+    const failure = new Error("conversion failed");
+    if (exporter instanceof AzureMonitorSpanExporter) {
+      const records = resources.map((resource) => createReadableSpan({ resource }));
+      if (conversionFailure) throwOnRead(records[0], "startTime", failure);
+      await exportAsync(exporter, records);
+    } else {
+      const records = resources.map((resource) => createReadableLogRecord({ resource }));
+      if (conversionFailure) throwOnRead(records[0], "hrTime", failure);
+      await exportAsync(exporter, records);
+    }
+    await exporter.forceFlush();
+    expect(reports.flat()).toHaveLength(2);
+    for (const [index, envelope] of reports.flat().entries()) {
+      assertAzureMonitorEnvelope(envelope);
+      expect(envelope.tags).toEqual({
+        "ai.internal.sdkVersion": expect.any(String),
+        "ai.cloud.role": roles[index][0],
+        "ai.cloud.roleInstance": roles[index][1],
+      });
+      expect(envelope.data.baseData.metrics).toEqual([
+        {
+          name: conversionFailure ? "Item_Dropped_Count" : "Item_Success_Count",
+          kind: 0,
+          value: 1,
+        },
+      ]);
+      expect(envelope.data.baseData.properties?.telemetrySuccess).toBe(
+        conversionFailure && signal === "spans" ? true : undefined,
+      );
+    }
+  },
+);
+
+it.each(
+  [SpanKind.CLIENT, SpanKind.SERVER].flatMap((kind) =>
+    [false, true].map((conversionFailure) => ({ kind, conversionFailure })),
+  ),
+)(
+  "separates dropped kind $kind by application outcome after conversion failure: $conversionFailure",
+  async ({ kind, conversionFailure }) => {
+    const exporter = createExporter("spans");
+    const records = [
+      { status: { code: SpanStatusCode.OK } },
+      { attributes: { "http.response.status_code": 200 } },
+      { status: { code: SpanStatusCode.ERROR } },
+      { attributes: { "http.response.status_code": 500 } },
+    ].map((options) => createReadableSpan({ ...options, kind }));
+    if (conversionFailure) throwOnRead(records[0], "startTime", new Error("conversion failed"));
+    else fetch.mockResolvedValueOnce(new Response(null, { status: 400 }));
+    expect((await exportAsync(exporter, records)).code).toBe(ExportResultCode.FAILED);
+    await exporter.forceFlush();
+    expect(reports.flat()).toHaveLength(2);
+    for (const [index, envelope] of reports.flat().entries()) {
+      assertAzureMonitorEnvelope(envelope);
+      expect(envelope.data.baseData.metrics).toEqual([
+        {
+          name: "Item_Dropped_Count",
+          kind: 0,
+          value: 2,
+        },
+      ]);
+      expect(envelope.data.baseData.properties).toMatchObject({
+        telemetryType: kind === SpanKind.CLIENT ? "DEPENDENCY" : "REQUEST",
+        dropCode: conversionFailure ? "CLIENT_EXCEPTION" : "400",
+        telemetrySuccess: index === 0,
+      });
+    }
+  },
+);
 
 it.each([401, 403, 408, 429, 439, 500, 502, 503, 504, "network"] as const)(
   "retains a failed %s report until the next interval without counting its own failure",

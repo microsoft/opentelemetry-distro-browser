@@ -2,6 +2,8 @@
 // Licensed under the MIT License.
 
 import type { ExportResult } from "@opentelemetry/core";
+import type { ReadableLogRecord } from "@opentelemetry/sdk-logs";
+import type { ReadableSpan } from "@opentelemetry/sdk-trace-base";
 import { callWithTimeout, ExportResultCode } from "@opentelemetry/core";
 import { isRetriable, isSamplingRejection } from "./breezeUtils.js";
 import { isUnloading } from "./common.js";
@@ -107,7 +109,7 @@ export class AzureMonitorExportClient {
   public readonly instrumentationKey: string;
   public readonly itemStats: CustomerSdkStats | undefined;
 
-  public exportRecords<T>(
+  public exportRecords<T extends ReadableSpan | ReadableLogRecord>(
     records: readonly T[],
     convert: (record: T, envelopes: AzureMonitorEnvelope[]) => void,
     itemType: (record: T) => ItemType,
@@ -130,7 +132,7 @@ export class AzureMonitorExportClient {
         for (const record of records.slice(converted + (envelopes.length > recordStart ? 1 : 0))) {
           try {
             if (!shouldCollect || shouldCollect(record))
-              this.itemStats.count("Dropped", itemType(record), "CLIENT_EXCEPTION");
+              this.itemStats.countFailedRecord(record, itemType(record));
           } catch (classificationError) {
             reportFailure(classificationError, "SDK stats item classification failed");
           }

@@ -14,10 +14,11 @@ function assertObject(value: unknown, path: string): asserts value is Record<str
   );
 }
 
-function assertMap(value: unknown, type: "string" | "number", path: string) {
+function assertMap(value: unknown, type: "string" | "number", path: string, booleanKey?: string) {
   assertObject(value, path);
   for (const [key, entry] of Object.entries(value)) {
-    assert(typeof entry === type, `${path}.${key}: expected ${type}`);
+    const expected = key === booleanKey ? "boolean" : type;
+    assert(typeof entry === expected, `${path}.${key}: expected ${expected}`);
     if (type === "number")
       assert(Number.isFinite(entry), `${path}.${key}: expected a finite number`);
   }
@@ -66,7 +67,12 @@ export function assertAzureMonitorEnvelope(value: unknown): asserts value is Azu
   assertObject(baseData, "envelope.data.baseData");
   expect(baseData.ver, "baseData.ver").toBe(2);
   if (baseData.properties !== undefined)
-    assertMap(baseData.properties, "string", "baseData.properties");
+    assertMap(
+      baseData.properties,
+      "string",
+      "baseData.properties",
+      baseType === "MetricData" ? "telemetrySuccess" : undefined,
+    );
   if (baseData.measurements !== undefined)
     assertMap(baseData.measurements, "number", "baseData.measurements");
 

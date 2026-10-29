@@ -172,6 +172,8 @@ export function createTags(
     tags["ai.operation.parentId"] = parentContext.spanId;
   }
   if (serviceName) tags["ai.cloud.role"] = serializeAttribute(serviceName);
+  const serviceInstance = resourceAttributes["service.instance.id"];
+  if (serviceInstance) tags["ai.cloud.roleInstance"] = serializeAttribute(serviceInstance);
   const serviceVersion = resourceAttributes[ATTR_SERVICE_VERSION];
   if (serviceVersion) {
     tags["ai.application.ver"] = truncateToLength(

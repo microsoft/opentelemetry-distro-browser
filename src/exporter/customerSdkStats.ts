@@ -3,9 +3,10 @@
 
 import { SpanKind } from "@opentelemetry/api";
 import type { LogRecordExporter, ReadableLogRecord } from "@opentelemetry/sdk-logs";
-import type { SpanExporter } from "@opentelemetry/sdk-trace-base";
+import type { ReadableSpan, SpanExporter } from "@opentelemetry/sdk-trace-base";
 import { isRetriable } from "./breezeUtils.js";
-import { getSdkVersion, isUnloading } from "./common.js";
+import { createTags, getSdkVersion, isUnloading } from "./common.js";
+import { spanSucceeded } from "./spanUtils.js";
 import { Sender } from "./sender.js";
 import { createSdkStatsEnvelope, reportFailure, sendSdkStats } from "./sdkStats.js";
 import { isSdkIngestionUrl } from "../shared/globalOwnership.js";
@@ -16,6 +17,8 @@ import type { AzureMonitorEnvelope, MetricData } from "./telemetryModels.js";
  *
  * @remarks
  * Transport counters count envelopes. Queue and sampling drops count source records.
+ * Counts retain available application role and instance tags. Dropped requests and dependencies
+ * are separated by their application success value, independently of export success.
  * Standalone exporters count observed delivery, retry and terminal-drop outcomes, not a durable
  * delivery ledger. Telemetry retained in memory or storage is not a drop; later expiry or eviction is not counted.
  * Cross-page drop attribution and deduplicated accounting after storage failures are deferred.
@@ -60,6 +63,7 @@ export type ItemType =
 
 export interface CustomerSdkStats {
   count(outcome: ItemOutcome, type: ItemType, code?: string, count?: number): void;
+  countFailedRecord(record: ReadableSpan | ReadableLogRecord, type: ItemType): void;
   countEnvelopes(
     outcome: ItemOutcome,
     envelopes: readonly AzureMonitorEnvelope[] | undefined,
@@ -131,11 +135,39 @@ export function createCustomerSdkStats(
     timer = setTimeout(() => void flush(), interval);
   }
 
-  function count(outcome: ItemOutcome, type: ItemType, code = "", value = 1): void {
+  function count(
+    outcome: ItemOutcome,
+    type: ItemType,
+    code = "",
+    value = 1,
+    tags?: Readonly<Record<string, string>>,
+    success?: boolean,
+  ): void {
     if (stopped || value <= 0) return;
-    const key = `${outcome}:${type}:${code}`;
+    const key = JSON.stringify([
+      outcome,
+      type,
+      code,
+      tags?.["ai.cloud.role"] ?? "",
+      tags?.["ai.cloud.roleInstance"] ?? "",
+      outcome === "Dropped" && (type === "DEPENDENCY" || type === "REQUEST")
+        ? (success ?? null)
+        : null,
+    ]);
     counts.set(key, (counts.get(key) ?? 0) + value);
     schedule();
+  }
+
+  function countFailedRecord(record: ReadableSpan | ReadableLogRecord, type: ItemType): void {
+    const attributes = record.resource.attributes;
+    count(
+      "Dropped",
+      type,
+      "CLIENT_EXCEPTION",
+      1,
+      createTags(undefined, undefined, attributes["service.name"], {}, attributes),
+      "kind" in record ? spanSucceeded(record) : undefined,
+    );
   }
 
   function countEnvelopes(
@@ -145,7 +177,15 @@ export function createCustomerSdkStats(
   ): void {
     for (const [index, envelope] of (envelopes ?? []).entries()) {
       const type = envelopeItemType(envelope);
-      if (type) count(outcome, type, typeof code === "string" ? code : code?.[index]);
+      if (type)
+        count(
+          outcome,
+          type,
+          typeof code === "string" ? code : code?.[index],
+          1,
+          envelope.tags,
+          "success" in envelope.data.baseData ? envelope.data.baseData.success : undefined,
+        );
     }
   }
 
@@ -162,15 +202,34 @@ export function createCustomerSdkStats(
     const time = new Date().toISOString();
     const pending = new Map<AzureMonitorEnvelope<MetricData>, readonly [string, number]>();
     for (const [key, value] of counts) {
-      const [outcome, telemetryType, code] = key.split(":");
+      const [outcome, telemetryType, code, role, instance, success] = JSON.parse(key) as [
+        ItemOutcome,
+        ItemType,
+        string,
+        string,
+        string,
+        boolean | null,
+      ];
       pending.set(
-        createSdkStatsEnvelope(instrumentationKey, time, `Item_${outcome}_Count`, value, {
-          telemetryType,
-          language: "JavaScript",
-          version: getSdkVersion(),
-          computeType: "unknown",
-          ...(code ? { [outcome === "Retry" ? "retryCode" : "dropCode"]: code } : {}),
-        }),
+        createSdkStatsEnvelope(
+          instrumentationKey,
+          time,
+          `Item_${outcome}_Count`,
+          value,
+          {
+            telemetryType,
+            language: "javascript",
+            version: getSdkVersion(),
+            computeType: "unknown",
+            ...(code ? { [outcome === "Retry" ? "retryCode" : "dropCode"]: code } : {}),
+            ...(success === null ? {} : { telemetrySuccess: success }),
+          },
+          undefined,
+          {
+            ...(role ? { "ai.cloud.role": role } : {}),
+            ...(instance ? { "ai.cloud.roleInstance": instance } : {}),
+          },
+        ),
         [key, value],
       );
     }
@@ -222,6 +281,7 @@ export function createCustomerSdkStats(
 
   return {
     count,
+    countFailedRecord,
     countEnvelopes,
     shouldCollectLog: shouldCollectSdkStatsLog,
     forceFlush,
