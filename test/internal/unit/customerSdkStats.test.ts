@@ -736,8 +736,9 @@ it.each(["fetch", "body", "retry"] as const)(
     const finish = phase === "fetch" ? holdNextFetch() : () => {};
     if (phase !== "fetch") {
       const response = new Response(null, { status: 503, headers: { "retry-after": "30" } });
-      if (phase === "body")
-        vi.spyOn(response, "text").mockImplementation(() => new Promise(() => {}));
+      vi.spyOn(response, "text").mockImplementation(() =>
+        phase === "body" ? new Promise(() => {}) : Promise.resolve(""),
+      );
       fetch.mockResolvedValueOnce(response);
     }
     const callback = vi.fn();
