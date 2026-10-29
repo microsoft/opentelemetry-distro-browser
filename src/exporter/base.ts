@@ -307,11 +307,13 @@ export class AzureMonitorExportClient {
     return this.#shutdownStarted;
   }
 
-  async #drain(shutdown = false): Promise<unknown[]> {
+  async #drain(): Promise<unknown[]> {
     const pending = Promise.allSettled([...this.#pending]);
     try {
       // A flush timeout stops waiting, not delivery. Only shutdown cancels application exports.
-      const results = await (shutdown ? pending : callWithTimeout(pending, MAX_LIFECYCLE_WAIT_MS));
+      const results = await (this.#stopped
+        ? pending
+        : callWithTimeout(pending, MAX_LIFECYCLE_WAIT_MS));
       const errors = results.flatMap((result) =>
         result.status === "rejected" ? [result.reason as unknown] : [],
       );
@@ -325,19 +327,23 @@ export class AzureMonitorExportClient {
   public forceFlush(): Promise<void> {
     if (this.#stopped) return this.#shutdown ?? Promise.resolve();
     const deadline = (this.#shutdownStarted ?? performance.now()) + MAX_LIFECYCLE_WAIT_MS;
-    // Customer exports get keepalive capacity before stats.
-    const pending = this.#drain();
-    return pending.then((errors) => {
-      if (this.#stopped && this.#shutdown) return this.#shutdown;
-      return waitForAll(
-        [
-          Promise.resolve().then(() => throwErrors(errors, "Pending exports failed")),
-          this.itemStats?.forceFlush(deadline) ?? Promise.resolve(),
-          this.#stats.forceFlush(deadline),
-        ],
-        "Exporter flush failed",
+    const report = () =>
+      waitForAll(
+        [this.itemStats?.forceFlush(deadline), this.#stats.forceFlush(deadline)],
+        "SDK stats flush failed",
       );
-    });
+    // Already-collected counts must not wait behind a different hung export.
+    const pending = this.#drain();
+    return waitForAll(
+      [
+        report(),
+        pending.then((errors) => {
+          if (!this.#shutdown) throwErrors(errors, "Pending exports failed");
+        }),
+        pending.then(() => this.#shutdown ?? report()),
+      ],
+      "Exporter flush failed",
+    );
   }
 
   public shutdown(): Promise<void> {
@@ -345,12 +351,12 @@ export class AzureMonitorExportClient {
     if (this.#stopped) return Promise.resolve();
     const deadline = this.prepareShutdown() + MAX_LIFECYCLE_WAIT_MS;
     this.#stopped = true;
-    const pending = this.#drain(true).finally(() => this.#buffer?.dispose());
+    const pending = this.#drain().finally(() => this.#buffer?.dispose());
     this.#shutdown = waitForAll(
       [
         pending.then((errors) => throwErrors(errors, "Pending exports failed")),
         this.#stats.shutdown(pending, deadline),
-        this.itemStats?.shutdown(pending, deadline) ?? Promise.resolve(),
+        this.itemStats?.shutdown(pending, deadline),
       ],
       "Exporter shutdown failed",
     ).finally(() => {

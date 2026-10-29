@@ -613,18 +613,21 @@ it("flushes both stats reporters before propagating an export callback failure",
   expect(totals()["Item_Success_Count:DEPENDENCY"]).toBe(1);
 });
 
-it("bounds a hung flush without cancelling application delivery", async () => {
+it("reports collected counts despite a hung flush without cancelling application delivery", async () => {
   const clock = installFakeClock();
   const client = createClient();
+  await exportAsync(client, request().envelopes);
   const finishFirst = holdNextFetch();
   const first = exportAsync(client, request().envelopes);
+  await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
   const flushing = expect(client.forceFlush()).rejects.toThrow("Operation timed out");
   const finishSecond = holdNextFetch();
   const sending = exportAsync(client, request([SpanKind.SERVER]).envelopes);
+  await vi.waitFor(() => expect(totals()).toEqual({ "Item_Success_Count:DEPENDENCY": 1 }));
   await clock.advance(MAX_LIFECYCLE_WAIT_MS);
   await flushing;
-  expect(fetch.mock.calls[0][1]?.signal?.aborted).toBe(false);
   expect(fetch.mock.calls[1][1]?.signal?.aborted).toBe(false);
+  expect(fetch.mock.calls[3][1]?.signal?.aborted).toBe(false);
   finishFirst(new Response(null));
   finishSecond(new Response(null));
   expect(await Promise.all([first, sending])).toEqual([
@@ -634,7 +637,7 @@ it("bounds a hung flush without cancelling application delivery", async () => {
   await client.shutdown();
   expect(totals()).toEqual({
     "Item_Success_Count:REQUEST": 1,
-    "Item_Success_Count:DEPENDENCY": 1,
+    "Item_Success_Count:DEPENDENCY": 2,
   });
   expect(vi.getTimerCount()).toBe(0);
 });
@@ -712,10 +715,9 @@ it("shares the drain deadline with a late interval report and its follow-up", as
   await clock.advance(14500);
   finish(new Response(null));
   await sending;
-  await clock.advance(start + MAX_LIFECYCLE_WAIT_MS - performance.now() - 1);
-  expect(settled).not.toHaveBeenCalled();
-  await clock.advance(1);
+  await clock.advance(start + MAX_LIFECYCLE_WAIT_MS - performance.now());
   await flush;
+  expect(settled).toHaveBeenCalledOnce();
   expect(fetch.mock.calls.slice(2).every(([, init]) => init?.signal?.aborted)).toBe(true);
   fetch.mockImplementation(normal);
   await client.shutdown();

@@ -30,9 +30,10 @@ export async function runLifecycleTasks(
 
 /** Waits for every already-bounded operation without imposing a second deadline. */
 export async function waitForAll(
-  operations: readonly Promise<void>[],
+  operations: readonly (Promise<void> | undefined)[],
   message: string,
 ): Promise<void> {
+  // eslint-disable-next-line @typescript-eslint/await-thenable -- Absent optional stages are fulfilled no-ops.
   const results = await Promise.allSettled(operations);
   const errors = results.flatMap((result) =>
     result.status === "rejected" ? [result.reason as unknown] : [],
