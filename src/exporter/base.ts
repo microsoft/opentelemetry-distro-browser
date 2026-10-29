@@ -64,7 +64,7 @@ export class AzureMonitorExportClient {
   #stopped = false;
   readonly #stats: InternalSdkStats;
   readonly #buffer: SessionBuffer | undefined;
-  readonly #controller = new AbortController();
+  #controller = new AbortController();
   #shutdown: Promise<void> | undefined;
 
   public constructor(options: AzureMonitorOptions) {
@@ -95,20 +95,12 @@ export class AzureMonitorExportClient {
     this.#buffer =
       storage === null
         ? undefined
-        : new SessionBuffer(
-            `${instrumentationKey}|${ingestionEndpoint}`,
-            storage,
-            (body, codes) => {
-              if (!this.itemStats) return;
-              for (const [index, item] of (JSON.parse(body) as AzureMonitorEnvelope[]).entries()) {
-                if (item?.data && typeof item.data.baseType === "string")
-                  this.itemStats.countEnvelopes(
-                    "Dropped",
-                    [item],
-                    typeof codes === "string" ? codes : codes[index],
-                  );
-              }
-            },
+        : new SessionBuffer(`${instrumentationKey}|${ingestionEndpoint}`, storage, (body, codes) =>
+            this.itemStats?.countEnvelopes(
+              "Dropped",
+              JSON.parse(body) as AzureMonitorEnvelope[],
+              codes,
+            ),
           );
     for (const [id, body] of this.#buffer?.adopt() ?? []) {
       this.#track(
@@ -122,25 +114,25 @@ export class AzureMonitorExportClient {
 
   public exportRecords<T>(
     records: readonly T[],
-    convert: (
-      record: T,
-      preceding: readonly AzureMonitorEnvelope[],
-    ) => readonly AzureMonitorEnvelope[],
+    convert: (record: T, envelopes: AzureMonitorEnvelope[]) => void,
     itemType: (record: T) => ItemType,
     callback: (result: ExportResult) => void,
     shouldCollect?: (record: T) => boolean,
   ): void {
     const envelopes: AzureMonitorEnvelope[] = [];
     let converted = 0;
+    let recordStart = 0;
     try {
       for (const record of records) {
-        if (!shouldCollect || shouldCollect(record)) envelopes.push(...convert(record, envelopes));
+        recordStart = envelopes.length;
+        if (!shouldCollect || shouldCollect(record)) convert(record, envelopes);
         converted++;
       }
     } catch (error) {
       if (this.itemStats) {
         this.itemStats.countEnvelopes("Dropped", envelopes, "CLIENT_EXCEPTION");
-        for (const record of records.slice(converted)) {
+        // A partially converted record already contributed its primary envelope.
+        for (const record of records.slice(converted + (envelopes.length > recordStart ? 1 : 0))) {
           try {
             if (!shouldCollect || shouldCollect(record))
               this.itemStats.count("Dropped", itemType(record), "CLIENT_EXCEPTION");
@@ -184,7 +176,8 @@ export class AzureMonitorExportClient {
     const { requests, dropped, error } = batchResult;
     // Envelopes that cannot fit the unload beacon wait for the next page load.
     if (dropped.length > 0) {
-      const id = this.#buffer?.add(JSON.stringify(dropped));
+      const codes = this.itemStats ? "PAYLOAD_TOO_LARGE" : undefined;
+      const id = this.#buffer?.add(JSON.stringify(dropped), Date.now(), codes);
       if (this.itemStats) {
         const onDrop = (): void => {
           this.itemStats?.countEnvelopes("Dropped", dropped, "PAYLOAD_TOO_LARGE");
@@ -241,8 +234,8 @@ export class AzureMonitorExportClient {
     let outstanding = body;
     /** Ingestion accepted or permanently rejected the batch. */
     let final = false;
-    const settle = (keep: boolean): void => {
-      if (id !== undefined) this.#buffer?.settle(id, outstanding, keep);
+    const settle = (keep: boolean, codes?: string | readonly string[]): void => {
+      if (id !== undefined) this.#buffer?.settle(id, outstanding, keep, codes);
     };
     const end = (): void => {
       if (id !== undefined) this.#buffer?.end(id);
@@ -258,15 +251,15 @@ export class AzureMonitorExportClient {
         onDispatch: () => {
           if (id !== undefined) this.#buffer?.dispatch(id);
         },
-        onPartial: (rest) => {
+        onPartial: (rest, codes) => {
           if (rest.length > 0) outstanding = JSON.stringify(rest);
-          settle(rest.length > 0);
+          settle(rest.length > 0, this.itemStats ? codes : undefined);
         },
         // A known status settles the batch even if its body cannot be read. A partial response
         // keeps the whole batch, including a dispatched one, until `onPartial` narrows it.
         onResponse: (status) => {
           final = status !== 206 && !isRetriable(status);
-          settle(!final);
+          settle(!final, this.itemStats && !final ? String(status) : undefined);
         },
         // Stop retrying a batch another document adopted and delivered.
         active: () => id === undefined || this.#buffer?.owns(id) !== false,
@@ -299,32 +292,54 @@ export class AzureMonitorExportClient {
     this.#pending.add(tracked);
   }
 
-  public async forceFlush(): Promise<void> {
+  #drain(phase: "flush" | "shutdown"): Promise<unknown[]> {
+    const pending = [...this.#pending];
+    const controller = this.#controller;
+    // Later exports get a fresh signal; earlier drain generations have earlier deadlines.
+    this.#controller = new AbortController();
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, MAX_SHUTDOWN_WAIT_MS);
+    return Promise.allSettled(pending)
+      .then((results) => {
+        const errors = results.flatMap((result) =>
+          result.status === "rejected" ? [result.reason as unknown] : [],
+        );
+        if (timedOut) errors.push(new Error(`Exporter ${phase} timed out.`));
+        return errors;
+      })
+      .finally(() => clearTimeout(timer));
+  }
+
+  public forceFlush(): Promise<void> {
+    if (this.#stopped) return this.#shutdown ?? Promise.resolve();
     // Customer exports get keepalive capacity before stats.
-    await Promise.all([...this.#pending]);
-    await this.itemStats?.forceFlush();
-    await this.#stats.forceFlush();
+    const pending = this.#drain("flush");
+    return waitForAll(
+      [
+        pending.then((errors) => throwErrors(errors, "Pending exports failed")),
+        pending.then(() => {
+          if (this.#stopped) return this.#shutdown;
+          return waitForAll(
+            [this.itemStats?.forceFlush() ?? Promise.resolve(), this.#stats.forceFlush()],
+            "SDK stats flush failed",
+          );
+        }),
+      ],
+      "Exporter flush failed",
+    );
   }
 
   public shutdown(): Promise<void> {
     if (this.#shutdown) return this.#shutdown;
     if (this.#stopped) return Promise.resolve();
     this.#stopped = true;
-    const timer = setTimeout(() => this.#controller.abort(), MAX_SHUTDOWN_WAIT_MS);
-    const pending = Promise.allSettled([...this.#pending]).finally(() => {
-      clearTimeout(timer);
-      this.#buffer?.dispose();
-    });
+    const pending = this.#drain("shutdown").finally(() => this.#buffer?.dispose());
     this.#shutdown = waitForAll(
       [
-        pending.then((results) => {
-          const errors = results.flatMap((result) =>
-            result.status === "rejected" ? [result.reason as unknown] : [],
-          );
-          if (this.#controller.signal.aborted)
-            errors.push(new Error("Exporter shutdown timed out."));
-          throwErrors(errors, "Pending exports failed");
-        }),
+        pending.then((errors) => throwErrors(errors, "Pending exports failed")),
         this.#stats.shutdown(pending),
         this.itemStats?.shutdown(pending) ?? Promise.resolve(),
       ],

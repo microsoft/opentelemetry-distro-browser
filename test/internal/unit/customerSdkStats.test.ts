@@ -36,6 +36,8 @@ import {
 } from "../../../src/exporter/sessionBuffer.js";
 import { setSessionStorage, testSessionStorage } from "../../fixtures/sessionStorageSetup.js";
 import { isSdkIngestionUrl, rememberSdkIngestionUrl } from "../../../src/shared/globalOwnership.js";
+import { BrowserBatchLogRecordProcessor } from "../../../src/browserBatchLogRecordProcessor.js";
+import { getInternalSdkStatsConfiguration } from "../../fixtures/sdkStatsConfigurationMock.js";
 
 const endpoint = "https://customer.example.test";
 const connectionString = `InstrumentationKey=${TEST_INSTRUMENTATION_KEY};IngestionEndpoint=${endpoint}`;
@@ -692,6 +694,104 @@ it("does not adopt an export callback's never-settling return value", async () =
   expect(vi.getTimerCount()).toBe(0);
 });
 
+it("flushes both stats reporters before propagating an export callback failure", async () => {
+  const internalEndpoint = "https://internal.example.test/v2/track";
+  getInternalSdkStatsConfiguration.mockReturnValue({
+    instrumentationKey: TEST_INSTRUMENTATION_KEY,
+    endpoint: internalEndpoint,
+  });
+  const client = createClient();
+  const failure = new Error("callback failed");
+  client.export(request().envelopes, () => {
+    throw failure;
+  });
+  await expect(client.forceFlush()).rejects.toBe(failure);
+  expect(fetch.mock.calls.map(([url]) => url)).toContain(internalEndpoint);
+  expect(totals()["Item_Success_Count:DEPENDENCY"]).toBe(1);
+});
+
+it("bounds a hung flush without cancelling exports started after it", async () => {
+  const clock = installFakeClock();
+  const client = createClient();
+  const finishFirst = holdNextFetch();
+  client.export(request().envelopes, () => {});
+  const flushing = expect(client.forceFlush()).rejects.toThrow("flush timed out");
+  const finishSecond = holdNextFetch();
+  const sending = exportAsync(client, request([SpanKind.SERVER]).envelopes);
+  await clock.advance(MAX_SHUTDOWN_WAIT_MS / 2);
+  const laterFlushing = client.forceFlush();
+  await clock.advance(MAX_SHUTDOWN_WAIT_MS / 2);
+  await flushing;
+  expect(fetch.mock.calls[0][1]?.signal?.aborted).toBe(true);
+  expect(fetch.mock.calls[1][1]?.signal?.aborted).toBe(false);
+  finishSecond(new Response(null));
+  await expect(sending).resolves.toEqual({ code: ExportResultCode.SUCCESS });
+  await laterFlushing;
+  await client.shutdown();
+  expect(totals()).toEqual({
+    "Item_Success_Count:REQUEST": 1,
+    "Item_Dropped_Count:DEPENDENCY:CLIENT_EXCEPTION": 1,
+  });
+  const calls = fetch.mock.calls.length;
+  finishFirst(new Response(null));
+  await clock.advance(0);
+  expect(fetch).toHaveBeenCalledTimes(calls);
+  expect(vi.getTimerCount()).toBe(0);
+});
+
+it("finishes a hung log exporter and final report within its processor cleanup deadline", async () => {
+  const clock = installFakeClock();
+  const exporter = createExporter("logs");
+  const provider = new LoggerProvider({
+    processors: [
+      new BrowserBatchLogRecordProcessor({
+        exporter,
+        maxExportBatchSize: 1,
+        exportTimeoutMillis: 1,
+      }),
+    ],
+  });
+  owners.push(provider);
+  fetch.mockImplementation(() => new Promise(() => {}));
+  provider.getLogger("deadline").emit({ body: "pending" });
+  const stopped = vi.fn();
+  const result = provider
+    .shutdown()
+    .then(
+      () => undefined,
+      (error: unknown) => error,
+    )
+    .finally(stopped);
+  await clock.advance(MAX_SHUTDOWN_WAIT_MS + 10_002);
+  expect(stopped).toHaveBeenCalledOnce();
+  expect(await result).toBeInstanceOf(Error);
+  expect(fetch).toHaveBeenCalledTimes(2);
+  expect(fetch.mock.calls.every(([, init]) => init?.signal?.aborted)).toBe(true);
+  const [url, init] = fetch.mock.calls[1];
+  const metrics: AzureMonitorEnvelope<MetricData>[] = await new Request(url, init).json();
+  expect(metrics[0].data.baseData.metrics[0]).toMatchObject({
+    name: "Item_Dropped_Count",
+    value: 1,
+  });
+  expect(vi.getTimerCount()).toBe(0);
+});
+
+it("lets shutdown own final reports when an earlier flush is still draining", async () => {
+  const clock = installFakeClock();
+  const client = createClient();
+  fetch.mockImplementation(() => new Promise(() => {}));
+  client.export(request().envelopes, () => {});
+  const flushing = expect(client.forceFlush()).rejects.toThrow("flush timed out");
+  const shutdown = client.shutdown();
+  const settled = Promise.allSettled([shutdown]);
+  expect(client.forceFlush()).toBe(shutdown);
+  await clock.advance(MAX_SHUTDOWN_WAIT_MS + 10_001);
+  await flushing;
+  await settled;
+  expect(fetch).toHaveBeenCalledTimes(2);
+  expect(vi.getTimerCount()).toBe(0);
+});
+
 it.each([false, true])(
   "cancels a hung export at the shutdown deadline and completes final accounting (callback throws: %s)",
   async (callbackThrows) => {
@@ -863,10 +963,17 @@ it.each(
   },
 );
 
-it.each([false, true])(
-  "counts every converted span envelope before a later conversion failure (unloading: %s)",
-  async (unloading) => {
+it.each(
+  [false, true].flatMap((unloading) =>
+    ["next span", "later event"].map((location) => ({ unloading, location })),
+  ),
+)(
+  "counts completed span envelopes before failure in $location (unloading: $unloading)",
+  async ({ unloading, location }) => {
     const exporter = createExporter("spans");
+    const failure = new Error("conversion failed");
+    const badEvent = { name: "bad", time: [1, 0] as [number, number], droppedAttributesCount: 0 };
+    throwOnRead(badEvent, "time", failure);
     const converted = createReadableSpan({
       events: [
         {
@@ -876,11 +983,11 @@ it.each([false, true])(
           droppedAttributesCount: 0,
         },
         { name: "step", time: [1_735_689_602, 0], droppedAttributesCount: 0 },
+        ...(location === "later event" ? [badEvent] : []),
       ],
     });
     const failed = createReadableSpan({ kind: SpanKind.SERVER });
-    const failure = new Error("conversion failed");
-    throwOnRead(failed, "startTime", failure);
+    if (location === "next span") throwOnRead(failed, "startTime", failure);
     const callback = vi.fn();
     if (unloading) beginUnloading();
     try {

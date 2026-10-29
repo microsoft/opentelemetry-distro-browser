@@ -284,34 +284,167 @@ describe("Azure Monitor sessionStorage buffer", () => {
     expect(sentNames(fetch)).toEqual([["oversized"]]);
   });
 
-  it("does not rewrite an oversized unload batch just to account for disabled stats", async () => {
-    const client = createClient();
-    const original = testSessionStorage.setItem.bind(testSessionStorage);
-    const write = vi
-      .spyOn(testSessionStorage, "setItem")
-      .mockImplementationOnce(original)
-      .mockImplementationOnce(() => {
-        throw new DOMException("Quota exceeded", "QuotaExceededError");
+  it.each([false, true])(
+    "does not rewrite an oversized unload batch just to attach stats (%s)",
+    async (enabled) => {
+      const client = createClient({ sdkStats: { enabled } });
+      const original = testSessionStorage.setItem.bind(testSessionStorage);
+      const write = vi
+        .spyOn(testSessionStorage, "setItem")
+        .mockImplementationOnce(original)
+        .mockImplementationOnce(() => {
+          throw new DOMException("Quota exceeded", "QuotaExceededError");
+        });
+      const oversized = { ...envelope("kept"), tags: { large: "x".repeat(MAX_BEACON_BODY_SIZE) } };
+      beginUnloading();
+      try {
+        await expect(exportAsync(client, [oversized])).resolves.toMatchObject({
+          code: ExportResultCode.FAILED,
+        });
+      } finally {
+        endUnloading();
+      }
+      expect(write).toHaveBeenCalledOnce();
+      expect(testSessionStorage.getItem(bufferKeys()[0])).toContain("kept");
+      write.mockRestore();
+      hidePage();
+      loadPage();
+      const fetch = stubFetch();
+      await createClient().forceFlush();
+      expect(sentNames(fetch)).toEqual([["kept"]]);
+    },
+  );
+
+  it.each(["whole", "partial"] as const)(
+    "persists %s retry codes before waiting and uses them for cross-page expiry",
+    async (mode) => {
+      const firstFetch = stubFetch(() =>
+        mode === "whole"
+          ? new Response(null, { status: 503, headers: { "retry-after": "1" } })
+          : breezeResponse(
+              [
+                { index: 1, statusCode: 429 },
+                { index: 0, statusCode: 503 },
+              ],
+              { "retry-after": "1" },
+              2,
+            ),
+      );
+      const client = createClient({ sdkStats: { enabled: true } });
+      const items =
+        mode === "whole" ? [envelope("retry")] : [envelope("retry-503"), envelope("retry-429")];
+      const pending = exportAsync(client, items);
+      await vi.waitFor(() => {
+        const record: unknown[] = JSON.parse(testSessionStorage.getItem(bufferKeys()[0]) ?? "[]");
+        expect((record[1] as unknown[])?.[2]).toEqual(mode === "whole" ? "503" : ["429", "503"]);
       });
-    const oversized = { ...envelope("kept"), tags: { large: "x".repeat(MAX_BEACON_BODY_SIZE) } };
+      expect(firstFetch).toHaveBeenCalledOnce();
+      hidePage();
+      vi.spyOn(Date, "now").mockReturnValue(Date.now() + MAX_SESSION_BUFFER_AGE_MS + 1);
+      loadPage();
+      const fetch = stubFetch();
+      await createClient({ sdkStats: { enabled: true } }).forceFlush();
+      const [url, init] = fetch.mock.calls[0];
+      const metrics: AzureMonitorEnvelope[] = await new Request(url, init).json();
+      expect(metrics.map((item) => item.data.baseData.properties?.dropCode)).toEqual(
+        mode === "whole" ? ["503"] : ["429", "503"],
+      );
+      await pending;
+      expect(firstFetch).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each([false, true])(
+    "commits unreleased outcomes on shutdown even if storage remains blocked (accepted: %s)",
+    async (accepted) => {
+      vi.spyOn(diag, "warn").mockImplementation(() => {});
+      const firstFetch = stubFetch(hang);
+      const client = createClient({ sdkStats: { enabled: true } });
+      const count = vi.spyOn(client.itemStats!, "countEnvelopes");
+      const pending = exportAsync(client, [envelope("unreleased")]);
+      await vi.waitFor(() => expect(hanging).toHaveLength(1));
+      const restoreStorage = blockStorage("setItem", "removeItem");
+      hanging.shift()!(
+        new Response(null, {
+          status: accepted ? 200 : 503,
+          headers: { "retry-after": "86400" },
+        }),
+      );
+      await pending;
+      expect(count).not.toHaveBeenCalled();
+      firstFetch.mockResolvedValue(new Response(null));
+      await client.shutdown();
+      expect(count).toHaveBeenCalledOnce();
+      expect(count.mock.calls[0][0]).toBe(accepted ? "Success" : "Dropped");
+      restoreStorage();
+      vi.spyOn(Date, "now").mockReturnValue(Date.now() + MAX_SESSION_BUFFER_AGE_MS + 1);
+      loadPage();
+      const fetch = stubFetch();
+      await createClient({ sdkStats: { enabled: true } }).forceFlush();
+      expect(fetch).not.toHaveBeenCalled();
+    },
+  );
+
+  it("preserves near-limit payloads when optional drop metadata cannot fit", () => {
+    const now = Date.now();
+    const emptyBody = JSON.stringify([{ name: "fits", pad: "" }]);
+    const padding = MAX_SESSION_BUFFER_LENGTH - `[${now},${emptyBody}]`.length;
+    const body = JSON.stringify([{ name: "fits", pad: "x".repeat(padding) }]);
+    const buffer = new SessionBuffer("near-limit");
+    const onDrop = vi.fn();
+    const id = buffer.add(body, now, "503");
+    expect(buffer.retain(id, onDrop, "503")).toBe(true);
+    expect(onDrop).not.toHaveBeenCalled();
+    const record: [number, [number, unknown[], unknown?]] = JSON.parse(
+      testSessionStorage.getItem(bufferKeys()[0])!,
+    );
+    expect(JSON.stringify(record[1][1])).toBe(body);
+    expect(record[1][2]).toBeUndefined();
+    buffer.dispose();
+    expect(onDrop).toHaveBeenCalledOnce();
+  });
+
+  it("keeps a valid batch if a metadata-only retry write fails", () => {
+    vi.spyOn(diag, "warn").mockImplementation(() => {});
+    const buffer = new SessionBuffer("metadata-only");
+    const body = '[{"name":"kept"}]';
+    const id = buffer.add(body);
+    buffer.begin(id);
+    const before = testSessionStorage.getItem(bufferKeys()[0]);
+    const restoreStorage = blockStorage("setItem");
+    buffer.settle(id, body, true, "503");
+    const onDrop = vi.fn();
+    expect(buffer.retain(id, onDrop, "503")).toBe(true);
+    expect(testSessionStorage.getItem(bufferKeys()[0])).toBe(before);
+    expect(onDrop).not.toHaveBeenCalled();
+    restoreStorage();
+    buffer.dispose();
+    expect(onDrop).toHaveBeenCalledOnce();
+  });
+
+  it("retries the smaller payload when native quota rejects only the optional metadata", async () => {
+    const originalWrite = testSessionStorage.setItem.bind(testSessionStorage);
+    vi.spyOn(testSessionStorage, "setItem").mockImplementation((key, value) => {
+      const record: unknown[] = JSON.parse(value);
+      if (Array.isArray(record[1]) && record[1].length > 2)
+        throw new DOMException("Metadata exceeds quota", "QuotaExceededError");
+      originalWrite(key, value);
+    });
+    const client = createClient({ sdkStats: { enabled: true } });
+    const item = { ...envelope("retained"), tags: { large: "x".repeat(MAX_BEACON_BODY_SIZE) } };
     beginUnloading();
     try {
-      await expect(exportAsync(client, [oversized])).resolves.toMatchObject({
-        code: ExportResultCode.FAILED,
-      });
+      await exportAsync(client, [item]);
     } finally {
       endUnloading();
     }
-    expect(write).toHaveBeenCalledOnce();
-    expect(testSessionStorage.getItem(bufferKeys()[0])).toContain("kept");
-    write.mockRestore();
     hidePage();
+    expect(testSessionStorage.getItem(bufferKeys()[0])).toContain("retained");
     loadPage();
     const fetch = stubFetch();
     await createClient().forceFlush();
-    expect(sentNames(fetch)).toEqual([["kept"]]);
+    expect(sentNames(fetch)).toEqual([["retained"]]);
   });
-
   it("does not adopt telemetry from live documents or the same document", async () => {
     stubFetch(hang);
     void exportAsync(createClient(), [envelope("live")]);

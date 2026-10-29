@@ -68,7 +68,10 @@ export interface SendRequest {
    * Called after each 206 response with the envelopes that are still retriable, or an empty array
    * when none remain.
    */
-  readonly onPartial?: (envelopes: readonly AzureMonitorEnvelope[]) => void;
+  readonly onPartial?: (
+    envelopes: readonly AzureMonitorEnvelope[],
+    codes?: readonly string[],
+  ) => void;
   /** Called with each response status before its body is read. */
   readonly onResponse?: (statusCode: number) => void;
   /** Checked before each attempt; when it returns `false` the request stops with an error. */
@@ -585,7 +588,12 @@ function reportPartial(
   const retryRequest = getRetryRequest(request, result, response?.errors ?? []);
   if (result.statusCode === 206) {
     // An unreadable response leaves every envelope outstanding, without an immediate retry.
-    request.onPartial?.(response ? (retryRequest?.envelopes ?? []) : (request.envelopes ?? []));
+    request.onPartial?.(
+      response ? (retryRequest?.envelopes ?? []) : (request.envelopes ?? []),
+      response
+        ? retriableErrors(response.errors).map((error) => String(error.statusCode))
+        : undefined,
+    );
   }
   return retryRequest;
 }

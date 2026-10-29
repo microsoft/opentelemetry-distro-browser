@@ -73,7 +73,8 @@ export function spanItemType(kind: SpanKind): ItemType {
   return kind === SpanKind.SERVER || kind === SpanKind.CONSUMER ? "REQUEST" : "DEPENDENCY";
 }
 
-function envelopeItemType(envelope: AzureMonitorEnvelope): ItemType {
+function envelopeItemType(envelope: AzureMonitorEnvelope): ItemType | undefined {
+  if (typeof envelope?.data?.baseType !== "string") return undefined;
   switch (envelope.data.baseType) {
     case "RequestData":
       return "REQUEST";
@@ -139,7 +140,8 @@ export function createCustomerSdkStats(
     code?: string | readonly string[],
   ): void {
     for (const [index, envelope] of (envelopes ?? []).entries()) {
-      count(outcome, envelopeItemType(envelope), typeof code === "string" ? code : code?.[index]);
+      const type = envelopeItemType(envelope);
+      if (type) count(outcome, type, typeof code === "string" ? code : code?.[index]);
     }
   }
 

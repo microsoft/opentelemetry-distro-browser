@@ -5,7 +5,7 @@ import type { ExportResult } from "@opentelemetry/core";
 import type { ReadableSpan, SpanExporter } from "@opentelemetry/sdk-trace-base";
 import { AzureMonitorExportClient, type AzureMonitorOptions } from "./base.js";
 import { isUnloading } from "./common.js";
-import { spanToEnvelopes } from "./spanUtils.js";
+import { appendSpanEnvelopes } from "./spanUtils.js";
 import { customerSdkStats, spanItemType } from "./customerSdkStats.js";
 
 /**
@@ -14,8 +14,8 @@ import { customerSdkStats, spanItemType } from "./customerSdkStats.js";
  * @remarks
  * Synthetic page-operation contexts supply an operation ID, but not a parent ID.
  * Application and inherited span contexts retain their parent-ID mapping.
- * Shutdown allows 30 seconds for application exports, then cancels outstanding sends before
- * disposing buffers and making the bounded final SDK Stats reports.
+ * Shutdown allows 15 seconds for application exports, reserving time for final SDK Stats reports
+ * within the enclosing processor's 30-second cleanup deadline.
  *
  * @public
  */
@@ -32,8 +32,8 @@ export class AzureMonitorSpanExporter implements SpanExporter {
     const unloading = isUnloading();
     this.#client.exportRecords(
       spans,
-      (span, preceding) =>
-        spanToEnvelopes(span, this.#client.instrumentationKey, unloading ? preceding : undefined),
+      (span, envelopes) =>
+        appendSpanEnvelopes(span, this.#client.instrumentationKey, envelopes, unloading),
       (span) => spanItemType(span.kind),
       callback,
     );

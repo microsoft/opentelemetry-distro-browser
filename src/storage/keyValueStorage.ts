@@ -15,7 +15,8 @@ export const WRITE_BACKOFF_MS = 60_000;
  */
 export interface KeyValueStorage {
   getItem(key: string): StorageReadResult;
-  setItem(key: string, value: string): boolean;
+  /** Optional smaller representation, attempted before write backoff if the full value fails. */
+  setItem(key: string, value: string, fallbackValue?: string): boolean;
   removeItem(key: string): boolean;
 }
 
@@ -77,10 +78,15 @@ export function createKeyValueStorage(
         { success: false as const },
         "read",
       ),
-    setItem: (key, value) =>
+    setItem: (key, value, fallbackValue) =>
       useStorage(
         (storage) => {
-          storage.setItem(namePrefix + key, value);
+          try {
+            storage.setItem(namePrefix + key, value);
+          } catch (error) {
+            if (fallbackValue === undefined) throw error;
+            storage.setItem(namePrefix + key, fallbackValue);
+          }
           return true;
         },
         false,

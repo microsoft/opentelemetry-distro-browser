@@ -135,8 +135,10 @@ export class SessionBuffer {
     const entry = this.#entries.get(id);
     if (this.#persisted.has(id) && entry && !entry[2]) {
       entry[3] = onDrop;
-      entry[4] = codes;
-      this.#write();
+      if (entry[4] !== codes) {
+        entry[4] = codes;
+        this.#write(true);
+      }
       return true;
     }
     // A caller reporting a terminal drop must never have this batch restored by a later write.
@@ -145,10 +147,10 @@ export class SessionBuffer {
   }
 
   /** Buffers a serialized envelope array and returns its ID. */
-  public add(body: string, time = Date.now()): number {
+  public add(body: string, time = Date.now(), codes?: DropCodes): number {
     this.#reconcile();
     const id = this.#nextId++;
-    this.#entries.set(id, [time, body]);
+    this.#entries.set(id, [time, body, false, undefined, codes]);
     this.#write();
     return id;
   }
@@ -168,12 +170,16 @@ export class SessionBuffer {
    * Keeps `body` for a buffered ID, replacing any earlier body, or removes it once delivered or
    * permanently rejected. Evicted, removed and handed-off IDs stay gone.
    */
-  public settle(id: number, body: string, keep: boolean): void {
+  public settle(id: number, body: string, keep: boolean, codes?: DropCodes): void {
     const entry = this.owns(id) ? this.#entries.get(id) : undefined;
-    if (!entry || (keep && !entry[2] && entry[1] === body)) return;
-    if (keep) this.#entries.set(id, [entry[0], body]);
+    if (!entry) return;
+    const metadataOnly = keep && !entry[2] && entry[1] === body;
+    if (metadataOnly) {
+      if (codes === undefined || codes === entry[4]) return;
+      entry[4] = codes;
+    } else if (keep) this.#entries.set(id, [entry[0], body, false, undefined, codes]);
     else this.#entries.delete(id);
-    this.#write();
+    this.#write(metadataOnly);
   }
 
   /**
@@ -237,7 +243,7 @@ export class SessionBuffer {
     this.#disposed = true;
     this.#unsubscribe();
     this.#reconcile();
-    const invalidated = !this.#persisted.size || this.#invalidate(this.#key);
+    const invalidated = !this.#persisted.size || this.#invalidate(this.#key) || !this.#released;
     if (invalidated) this.#persisted.clear();
     this.#commitOutcomes();
     this.#outcomes.clear();
@@ -290,9 +296,9 @@ export class SessionBuffer {
     this.#persisted.clear();
   }
 
-  #write(): void {
+  #write(metadataOnly = false): void {
     const now = Date.now();
-    const parts: string[] = [];
+    const parts: [text: string, codes: DropCodes | undefined][] = [];
     const persisted = new Map<number, string>();
     const dropped: number[] = [];
     let length = 0;
@@ -301,7 +307,7 @@ export class SessionBuffer {
     let full = false;
     for (const [id, [time, body, dispatched, , codes]] of entries) {
       if (dispatched) continue;
-      const part = `[${time},${body}${codes === undefined ? "" : `,${JSON.stringify(codes)}`}]`;
+      const part = `[${time},${body}]`;
       // Once a batch overflows, it and every older batch are evicted. A batch that cannot fit
       // even alone is dropped without evicting older ones.
       if (
@@ -314,12 +320,29 @@ export class SessionBuffer {
         continue;
       }
       length += part.length + 1;
-      parts.unshift(part);
+      parts.unshift([part, codes]);
       persisted.set(id, body);
     }
+    // Optional accounting must not evict payloads that already fit.
+    let hasMetadata = false;
+    const serialized = parts.map(([part, codes]) => {
+      if (codes === undefined) return part;
+      const extra = `,${JSON.stringify(codes)}`;
+      if (length + extra.length > MAX_SESSION_BUFFER_LENGTH) return part;
+      length += extra.length;
+      hasMetadata = true;
+      return `${part.slice(0, -1)}${extra}]`;
+    });
     const stored =
       parts.length > 0 &&
-      this.#storage.setItem(this.#key, `[${pageHidden ? 1 : 0},${parts.join(",")}]`);
+      this.#storage.setItem(
+        this.#key,
+        `[${pageHidden ? 1 : 0},${serialized.join(",")}]`,
+        hasMetadata
+          ? `[${pageHidden ? 1 : 0},${parts.map(([part]) => part).join(",")}]`
+          : undefined,
+      );
+    if (!stored && metadataOnly) return;
     // A failed write is not terminal while an older record may still be adopted.
     if (!stored && this.#persisted.size && !this.#invalidate(this.#key)) return;
     this.#released = stored && pageHidden;

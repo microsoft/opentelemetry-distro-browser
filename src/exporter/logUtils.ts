@@ -557,19 +557,30 @@ export function logToEnvelopes(
   logRecord: ReadableLogRecord,
   instrumentationKey: string,
 ): readonly AzureMonitorEnvelope[] {
+  const envelopes: AzureMonitorEnvelope[] = [];
+  appendLogEnvelopes(logRecord, instrumentationKey, envelopes);
+  return envelopes;
+}
+
+export function appendLogEnvelopes(
+  logRecord: ReadableLogRecord,
+  instrumentationKey: string,
+  envelopes: AzureMonitorEnvelope[],
+): void {
   const pageViewEnvelope = logToEnvelope(logRecord, instrumentationKey);
+  envelopes.push(pageViewEnvelope);
   if (
     logRecord.eventName !== EVENT_BROWSER_PAGE_VIEW ||
     pageViewEnvelope.data.baseType !== "PageViewData"
   ) {
-    return [pageViewEnvelope];
+    return;
   }
 
   const durations = pageViewPerformanceAttributes.map(
     (attribute) => logRecord.attributes[attribute],
   );
   if (!durations.every((duration) => typeof duration === "number" && Number.isFinite(duration))) {
-    return [pageViewEnvelope];
+    return;
   }
 
   const pageView = pageViewEnvelope.data.baseData as PageViewData;
@@ -597,5 +608,5 @@ export function logToEnvelopes(
     performanceData,
     pageViewEnvelope.sampleRate,
   );
-  return [pageViewEnvelope, performanceEnvelope];
+  envelopes.push(performanceEnvelope);
 }
