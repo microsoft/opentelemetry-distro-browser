@@ -24,6 +24,7 @@ import {
 } from "../../scripts/measure-bundle-size.mjs";
 
 const instrumentationIds = [
+  "click-analytics",
   "console",
   "errors",
   "fetch",
