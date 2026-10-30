@@ -553,6 +553,18 @@ it.each([0, 100])(
     first.logger.emit({ body: "first application log" });
     second.logger.emit({ body: "second application log" });
     await Promise.all([first.handle.forceFlush(), second.handle.forceFlush()]);
+    if (samplingPercentage === 0) {
+      // Sampling sends nothing. Seed real peer timings without sending application records.
+      await Promise.all(
+        [firstOrigin, secondOrigin].map((origin) =>
+          nativeFetch(`${origin}/ingest/${runId}/v2/track`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: "[]",
+          }),
+        ),
+      );
+    }
     for (const { observed } of [first, second]) {
       await vi.waitFor(() => {
         const urls = observed
@@ -567,24 +579,23 @@ it.each([0, 100])(
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
     await Promise.all([first.handle.shutdown(), second.handle.shutdown()]);
-    expect(transport).toHaveBeenCalledTimes(samplingPercentage === 0 ? 2 : 4);
+    expect(transport).toHaveBeenCalledTimes(samplingPercentage === 0 ? 0 : 4);
     const captured: AzureMonitorEnvelope[] = await nativeFetch(
       `${firstOrigin}/captured?runId=${runId}`,
     ).then((response) => response.json());
-    expect(captured).toHaveLength(samplingPercentage === 0 ? 2 : 4);
+    expect(captured).toHaveLength(samplingPercentage === 0 ? 0 : 4);
     const stats = captured.filter((envelope) => envelope.data.baseType === "MetricData");
-    expect(stats).toHaveLength(2);
+    expect(stats).toHaveLength(samplingPercentage === 0 ? 0 : 2);
     for (const envelope of stats) {
       expect(envelope.data.baseData).toMatchObject({
         metrics: [
           {
-            name: samplingPercentage === 0 ? "Item_Dropped_Count" : "Item_Success_Count",
+            name: "Item_Success_Count",
             value: 1,
           },
         ],
         properties: {
           telemetryType: "TRACE",
-          ...(samplingPercentage === 0 ? { dropCode: "SAMPLING" } : {}),
         },
       });
     }

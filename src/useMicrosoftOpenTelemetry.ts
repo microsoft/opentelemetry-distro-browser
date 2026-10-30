@@ -1,28 +1,14 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-import {
-  context,
-  diag,
-  type Attributes,
-  type SpanContext,
-  type SpanKind,
-} from "@opentelemetry/api";
+import { context, diag, type SpanContext } from "@opentelemetry/api";
 import {
   BrowserContextLogRecordProcessor,
   BrowserContextSpanProcessor,
 } from "./context/contextProcessors.js";
 import { createSession } from "./session/createSession.js";
 import { createUserContext } from "./user/createUserContext.js";
-import {
-  spanItemType,
-  resourceItemDimensions,
-  snapshotSdkStatsOptions,
-  type CustomerSdkStats,
-  type ItemType,
-} from "./exporter/customerSdkStats.js";
-import { detectBrowserResource } from "./resource/detectBrowserResource.js";
-import { CUSTOMER_SDK_STATS_ENABLED } from "./shared/buildFeatures.js";
+import { snapshotSdkStatsOptions } from "./exporter/customerSdkStats.js";
 import { createKeyValueStorage } from "./storage/keyValueStorage.js";
 import { createSessionBufferStorage, sessionBufferStorage } from "./exporter/sessionBuffer.js";
 import type { LogRecordProcessor } from "@opentelemetry/sdk-logs";
@@ -252,34 +238,8 @@ export async function useMicrosoftOpenTelemetry(
         )
       : undefined;
   getSharedRegistry();
-  let spanStats: CustomerSdkStats | undefined;
-  let samplingResource: Attributes = {};
-  // Sampling can reject spans before a deferred destination creates its reporter.
-  let pendingSampleDrops: Map<ItemType, number> | undefined;
-  const onSampleDrop =
-    CUSTOMER_SDK_STATS_ENABLED && azureMonitor?.sdkStats?.enabled === true
-      ? (kind: SpanKind) => {
-          if (stopping) return;
-          const type = spanItemType(kind);
-          if (spanStats)
-            spanStats.countDrop(resourceItemDimensions(type, samplingResource), "SAMPLING");
-          else {
-            pendingSampleDrops ??= new Map();
-            pendingSampleDrops.set(type, (pendingSampleDrops.get(type) ?? 0) + 1);
-          }
-        }
-      : undefined;
-  const onSpanStats = CUSTOMER_SDK_STATS_ENABLED
-    ? (stats: CustomerSdkStats) => {
-        spanStats = stats;
-        for (const [type, count] of pendingSampleDrops ?? []) {
-          stats.countDrop(resourceItemDimensions(type, samplingResource), "SAMPLING", count);
-        }
-        pendingSampleDrops = undefined;
-      }
-    : undefined;
   const readSamplingPercentage = () => configuration.snapshot().samplingPercentage;
-  const sampler = new RuntimeSampler(readSamplingPercentage, onSampleDrop);
+  const sampler = new RuntimeSampler(readSamplingPercentage);
   const userContext = createUserContext(
     options.userContext?.enabled,
     createKeyValueStorage(
@@ -387,7 +347,6 @@ export async function useMicrosoftOpenTelemetry(
     });
     void (async () => {
       stopping = true;
-      pendingSampleDrops = undefined;
       const errors: unknown[] = [];
       for (const cleanup of [
         () => {
@@ -518,7 +477,6 @@ export async function useMicrosoftOpenTelemetry(
         readSamplingPercentage,
         azureMonitorExporters,
         () => configuration.snapshot().azureMonitor.disableBeacon,
-        onSpanStats,
       );
       stopAzureMonitorStartup = stop;
       startAzureMonitorDiagnostics = startDiagnostics;
@@ -538,7 +496,6 @@ export async function useMicrosoftOpenTelemetry(
     spanProcessors ??= [];
     logRecordProcessors ??= [];
     await options.resource?.waitForAsyncAttributes?.();
-    if (onSampleDrop) samplingResource = detectBrowserResource(options.resource).attributes;
     if (
       (traceOptions?.contextManager || traceOptions?.propagators) &&
       spanProcessors.length !== 0 &&

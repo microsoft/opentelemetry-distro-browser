@@ -20,10 +20,10 @@ import type { AzureMonitorEnvelope, MetricData } from "./telemetryModels.js";
  *
  * @remarks
  * Not included in CDN bundles or the loader snippet. CDN bundles reject this option.
- * Transport counters count envelopes. Queue and sampling drops count source records.
+ * Transport counters count envelopes. Client-side sampling and queue overflow are not counted.
  * Counts retain available application role and instance tags. Dropped requests and dependencies
  * are separated by their application success value, independently of export success.
- * Sampling drops precede span completion and omit the application success value.
+ * Ingestion-side sampling rejections use the returned status code and completed application success value.
  * Standalone exporters count observed delivery, retry and terminal-drop outcomes, not a durable
  * delivery ledger. Telemetry retained in memory or storage is not a drop; later expiry or eviction is not counted.
  * Cross-page drop attribution and deduplicated accounting after storage failures are deferred.

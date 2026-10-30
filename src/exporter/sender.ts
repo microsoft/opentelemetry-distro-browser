@@ -261,11 +261,7 @@ export class Sender {
           const error = errors.get(index);
           if (!error) stats.countEnvelopes("Success", [envelope]);
           else if (isSamplingRejection(error) || !isRetriable(error.statusCode)) {
-            stats.countEnvelopes(
-              "Dropped",
-              [envelope],
-              isSamplingRejection(error) ? "SAMPLING" : String(error.statusCode),
-            );
+            stats.countEnvelopes("Dropped", [envelope], String(error.statusCode));
           }
         }
         if (!willRetry) {

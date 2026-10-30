@@ -15,16 +15,7 @@ import { unloadBeaconPolicies, type AzureMonitorOptions } from "./base.js";
 import { AzureMonitorLogRecordExporter } from "./log.js";
 import { AzureMonitorSpanExporter } from "./trace.js";
 import { sessionBufferStorage } from "./sessionBuffer.js";
-import {
-  customerSdkStats,
-  recordItemDimensions,
-  shouldCollectSdkStatsLog,
-  spanItemType,
-  type CustomerSdkStats,
-  type ItemDimensions,
-} from "./customerSdkStats.js";
-import { createStatsSpanProcessor } from "../statsSpanProcessor.js";
-import { logItemType } from "./logUtils.js";
+import { customerSdkStats, shouldCollectSdkStatsLog } from "./customerSdkStats.js";
 
 /** Creates only the Azure Monitor branches; custom processors never pass through this queue. */
 export function createAzureMonitorProcessors(
@@ -34,7 +25,6 @@ export function createAzureMonitorProcessors(
   readSamplingPercentage: () => number | undefined,
   exporters: (AzureMonitorSpanExporter | AzureMonitorLogRecordExporter)[],
   readDisableBeacon: () => boolean,
-  onSpanStats?: (stats: CustomerSdkStats) => void,
 ): {
   span?: SpanProcessor;
   log?: LogRecordProcessor;
@@ -43,20 +33,6 @@ export function createAzureMonitorProcessors(
 } {
   let span: SpanProcessor | undefined;
   let log: AzureMonitorSamplingLogRecordProcessor | undefined;
-  const startupDrops =
-    CUSTOMER_SDK_STATS_ENABLED &&
-    options.sdkStats?.enabled &&
-    typeof options.connectionString !== "string"
-      ? { span: new Map<string, number>(), log: new Map<string, number>() }
-      : undefined;
-
-  function transferDrops(signal: "span" | "log", stats: CustomerSdkStats | undefined): void {
-    for (const [key, count] of startupDrops?.[signal] ?? []) {
-      stats?.countDrop(JSON.parse(key) as ItemDimensions, "QUEUE_FULL", count);
-    }
-    startupDrops?.[signal].clear();
-  }
-
   function initialize(connectionString: string): void {
     const resolved = { ...options, connectionString };
     unloadBeaconPolicies.set(resolved, readDisableBeacon);
@@ -68,31 +44,21 @@ export function createAzureMonitorProcessors(
     if (tracesEnabled) {
       const exporter = new AzureMonitorSpanExporter(resolved);
       exporters.push(exporter);
-      const stats = CUSTOMER_SDK_STATS_ENABLED ? customerSdkStats.get(exporter) : undefined;
-      transferDrops("span", stats);
-      if (stats) onSpanStats?.(stats);
       // The distribution already flushes on page hide.
       const processorOptions: BatchSpanProcessorBrowserOptions = {
         exporter,
         disableAutoFlushOnDocumentHide: true,
       };
-      span = stats
-        ? createStatsSpanProcessor(processorOptions, stats)
-        : new BatchSpanProcessor(processorOptions);
+      span = new BatchSpanProcessor(processorOptions);
     }
     if (logsEnabled) {
       const exporter = new AzureMonitorLogRecordExporter(resolved);
       exporters.push(exporter);
       const stats = CUSTOMER_SDK_STATS_ENABLED ? customerSdkStats.get(exporter) : undefined;
-      transferDrops("log", stats);
       log = new AzureMonitorSamplingLogRecordProcessor({
         exporter,
         samplingPercentage: readSamplingPercentage,
         shouldCollect: stats?.shouldCollectLog,
-        onDrop: stats
-          ? (record, reason) =>
-              stats.countDrop(recordItemDimensions(record, logItemType(record)), reason)
-          : undefined,
       });
     }
   }
@@ -126,8 +92,6 @@ export function createAzureMonitorProcessors(
 
   const stop = (): void => {
     queue.shutdown();
-    startupDrops?.span.clear();
-    startupDrops?.log.clear();
     warnings = undefined;
   };
   return {
@@ -141,14 +105,7 @@ export function createAzureMonitorProcessors(
       ? {
           onStart() {},
           onEnd: (record) => {
-            if (
-              queue.track(() => span?.onEnd(record)) === "QUEUE_FULL" &&
-              CUSTOMER_SDK_STATS_ENABLED &&
-              startupDrops
-            ) {
-              const key = JSON.stringify(recordItemDimensions(record, spanItemType(record.kind)));
-              startupDrops.span.set(key, (startupDrops.span.get(key) ?? 0) + 1);
-            }
+            queue.track(() => span?.onEnd(record));
           },
           forceFlush: async () => {
             await span?.forceFlush();
@@ -162,18 +119,14 @@ export function createAzureMonitorProcessors(
     log: logsEnabled
       ? {
           onEmit: (record) => {
-            if (CUSTOMER_SDK_STATS_ENABLED && startupDrops && !shouldCollectSdkStatsLog(record))
+            if (
+              CUSTOMER_SDK_STATS_ENABLED &&
+              options.sdkStats?.enabled &&
+              !shouldCollectSdkStatsLog(record)
+            )
               return;
             const percentage = readSamplingPercentage();
-            if (
-              queue.track(() => log?.onEmitWithSamplingPercentage(record, percentage)) ===
-                "QUEUE_FULL" &&
-              CUSTOMER_SDK_STATS_ENABLED &&
-              startupDrops
-            ) {
-              const key = JSON.stringify(recordItemDimensions(record, logItemType(record)));
-              startupDrops.log.set(key, (startupDrops.log.get(key) ?? 0) + 1);
-            }
+            queue.track(() => log?.onEmitWithSamplingPercentage(record, percentage));
           },
           forceFlush: async () => {
             await log?.forceFlush();

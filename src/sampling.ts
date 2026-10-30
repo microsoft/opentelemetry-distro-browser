@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-import { trace, type Attributes, type Context, type SpanKind } from "@opentelemetry/api";
+import { trace, type Attributes, type Context } from "@opentelemetry/api";
 import {
   AlwaysOnSampler,
   ParentBasedSampler,
@@ -65,8 +65,6 @@ export function getEffectiveSampleRate(
 export class PageOperationSampler implements Sampler {
   readonly #delegate = new ParentBasedSampler({ root: new AlwaysOnSampler() });
 
-  public constructor(private readonly onDrop?: (kind: SpanKind) => void) {}
-
   public shouldSample(
     parentContext: Context,
     ...parameters: Parameters<Sampler["shouldSample"]> extends [Context, ...infer Rest]
@@ -76,9 +74,7 @@ export class PageOperationSampler implements Sampler {
     const parent = trace.getSpanContext(parentContext);
     const samplingContext =
       parent && isPageContext(parent) ? trace.deleteSpan(parentContext) : parentContext;
-    const result = this.#delegate.shouldSample(samplingContext, ...parameters);
-    if (result.decision === SamplingDecision.NOT_RECORD) this.onDrop?.(parameters[2]);
-    return result;
+    return this.#delegate.shouldSample(samplingContext, ...parameters);
   }
 
   public toString(): string {
@@ -91,10 +87,7 @@ export class RuntimeSampler implements Sampler {
   #percentage: number | undefined;
   #delegate: Sampler | undefined;
 
-  public constructor(
-    private readonly read: () => number | undefined,
-    private readonly onDrop?: (kind: SpanKind) => void,
-  ) {
+  public constructor(private readonly read: () => number | undefined) {
     this.#currentDelegate();
   }
 
@@ -103,8 +96,8 @@ export class RuntimeSampler implements Sampler {
     if (!this.#delegate || percentage !== this.#percentage) {
       this.#delegate =
         percentage === undefined
-          ? new PageOperationSampler(this.onDrop)
-          : new ApplicationInsightsSampler(percentage, this.onDrop);
+          ? new PageOperationSampler()
+          : new ApplicationInsightsSampler(percentage);
       this.#percentage = percentage;
     }
     return this.#delegate;
@@ -122,10 +115,7 @@ export class RuntimeSampler implements Sampler {
 export class ApplicationInsightsSampler implements Sampler {
   public readonly samplingPercentage: number;
 
-  public constructor(
-    samplingPercentage = 100,
-    private readonly onDrop?: (kind: SpanKind) => void,
-  ) {
+  public constructor(samplingPercentage = 100) {
     this.samplingPercentage = validateSamplingPercentage(samplingPercentage);
   }
 
@@ -138,7 +128,6 @@ export class ApplicationInsightsSampler implements Sampler {
     _links: Parameters<Sampler["shouldSample"]>[5],
   ): SamplingResult {
     const sampled = isTraceSampled(traceId, this.samplingPercentage);
-    if (!sampled) this.onDrop?.(_spanKind);
     const currentSampleRate = attributes[AZURE_MONITOR_SAMPLE_RATE];
     const effectiveSampleRate = getEffectiveSampleRate(currentSampleRate, this.samplingPercentage);
     const setSampleRate =

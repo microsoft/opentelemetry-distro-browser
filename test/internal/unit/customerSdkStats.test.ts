@@ -3,7 +3,6 @@
 
 import {
   context,
-  createNoopMeter,
   diag,
   propagation,
   ROOT_CONTEXT,
@@ -12,14 +11,12 @@ import {
   trace,
 } from "@opentelemetry/api";
 import { logs } from "@opentelemetry/api-logs";
-import { LoggerProvider } from "@opentelemetry/sdk-logs";
 import { ConsoleInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/console";
 import { ExportResultCode, type ExportResult } from "@opentelemetry/core";
 import { detectResources, resourceFromAttributes } from "@opentelemetry/resources";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import {
   createCustomerSdkStats,
-  recordItemDimensions,
   type CustomerSdkStats,
   type AzureMonitorSdkStatsOptions,
 } from "../../../src/exporter/customerSdkStats.js";
@@ -35,9 +32,6 @@ import {
   MAX_SHUTDOWN_WAIT_MS,
 } from "../../../src/exporter/constants.js";
 import { AzureMonitorExportClient, type AzureMonitorOptions } from "../../../src/exporter/base.js";
-import { createStatsSpanProcessor } from "../../../src/statsSpanProcessor.js";
-import { BrowserBatchLogRecordProcessor } from "../../../src/browserBatchLogRecordProcessor.js";
-import { logItemType } from "../../../src/exporter/logUtils.js";
 import type { AzureMonitorEnvelope, MetricData } from "../../../src/exporter/telemetryModels.js";
 import { createReadableLogRecord, createReadableSpan } from "../../fixtures/telemetry.js";
 import {
@@ -87,6 +81,17 @@ afterEach(async () => {
   vi.useRealTimers();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+  for (const envelope of reports.flat()) {
+    const {
+      metrics: [metric],
+      properties,
+    } = envelope.data.baseData;
+    if (metric.name !== "Item_Dropped_Count") continue;
+    expect(properties?.dropCode).not.toMatch(/SAMPLING|QUEUE_FULL/);
+    if (["DEPENDENCY", "REQUEST"].includes(String(properties?.telemetryType))) {
+      expect(typeof properties?.telemetrySuccess).toBe("boolean");
+    }
+  }
 });
 
 function create(options: AzureMonitorSdkStatsOptions = { enabled: true }): CustomerSdkStats {
@@ -240,7 +245,7 @@ it("reports customer metrics without identifiers, enrichment, application sampli
   const stats = create();
   expect(vi.getTimerCount()).toBe(0);
   stats.count("Success", "DEPENDENCY", "", 4);
-  stats.count("Dropped", "TRACE", "SAMPLING", 2);
+  stats.count("Dropped", "TRACE", "400", 2);
   stats.count("Retry", "DEPENDENCY", "503", 3);
   await clock.advance(899_999);
   expect(fetch).not.toHaveBeenCalled();
@@ -248,7 +253,7 @@ it("reports customer metrics without identifiers, enrichment, application sampli
   await vi.waitFor(() => expect(reports).toHaveLength(1));
   expect(totals()).toEqual({
     "Item_Success_Count:DEPENDENCY": 4,
-    "Item_Dropped_Count:TRACE:SAMPLING": 2,
+    "Item_Dropped_Count:TRACE:400": 2,
     "Item_Retry_Count:DEPENDENCY:503": 3,
   });
   for (const envelope of reports.flat()) {
@@ -464,7 +469,7 @@ it("merges failed counts with counts collected during a shared in-flight flush",
   const first = stats.forceFlush();
   expect(stats.forceFlush()).toBe(first);
   stats.count("Success", "TRACE", "", 2);
-  stats.count("Dropped", "DEPENDENCY", "SAMPLING", 3);
+  stats.count("Dropped", "TRACE", "400", 3);
   finish(new Response(null, { status: 503 }));
   await first;
   expect(reports).toHaveLength(0);
@@ -473,7 +478,7 @@ it("merges failed counts with counts collected during a shared in-flight flush",
   expect(fetch).toHaveBeenCalledTimes(2);
   expect(totals()).toEqual({
     "Item_Success_Count:TRACE": 6,
-    "Item_Dropped_Count:DEPENDENCY:SAMPLING": 3,
+    "Item_Dropped_Count:TRACE:400": 3,
   });
 });
 
@@ -907,7 +912,7 @@ it.each(["available", "disabled", "unavailable", "quota"] as const)(
     expect(totals()).toEqual({
       "Item_Success_Count:DEPENDENCY": 1,
       "Item_Dropped_Count:DEPENDENCY:400": 1,
-      "Item_Dropped_Count:REQUEST:SAMPLING": 1,
+      "Item_Dropped_Count:REQUEST:206": 1,
       ...(storage === "disabled" ? { "Item_Dropped_Count:REQUEST:503": 1 } : {}),
     });
     await client.shutdown();
@@ -1015,7 +1020,7 @@ it.each([false, true])(
       "Item_Success_Count:DEPENDENCY": 2,
       "Item_Success_Count:REQUEST": 1,
       "Item_Dropped_Count:DEPENDENCY:400": 1,
-      "Item_Dropped_Count:REQUEST:SAMPLING": 1,
+      "Item_Dropped_Count:REQUEST:206": 1,
       "Item_Retry_Count:REQUEST:503": 1,
       "Item_Retry_Count:DEPENDENCY:429": 1,
       ...(networkFailure
@@ -1194,84 +1199,86 @@ it("reports customer stats on unload without falling back to beacon", async () =
 });
 
 it.each(["spans", "logs"] as const)(
-  "observes real $signal queue overflow without changing queue ownership",
+  "excludes real distribution $signal queue overflow from customer counters",
   async (signal) => {
-    const sharedMeter = createNoopMeter();
-    const counterDescriptor = Object.getOwnPropertyDescriptor(sharedMeter, "createCounter");
-    const stats = create();
-    const resource = resourceFromAttributes({
-      "service.name": "queue-app",
-      "service.instance.id": "queue-instance",
-      "enduser.id": "private-user",
+    const observed: unknown[] = [];
+    const handle = await useMicrosoftOpenTelemetry({
+      azureMonitor: { connectionString, sdkStats: { enabled: true } },
+      spanProcessors:
+        signal === "spans"
+          ? [
+              {
+                onStart() {},
+                onEnd: (record) => observed.push(record),
+                forceFlush: async () => {},
+                shutdown: async () => {},
+              },
+            ]
+          : [],
+      logRecordProcessors:
+        signal === "logs"
+          ? [
+              {
+                onEmit: (record) => observed.push(record),
+                forceFlush: async () => {},
+                shutdown: async () => {},
+              },
+            ]
+          : [],
+      pageView: { enabled: false },
+      storage: { enabled: false },
+      session: { enabled: false },
     });
-    let complete!: () => void;
-    let calls = 0;
-    const exporter = {
-      export: (_records: unknown[], callback: (result: ExportResult) => void) => {
-        if (++calls === 1) complete = () => callback({ code: ExportResultCode.SUCCESS });
-        else callback({ code: ExportResultCode.SUCCESS });
+    owners.push(handle);
+    const tracer = trace.getTracer("queue");
+    const logger = logs.getLogger("queue");
+    for (let index = 0; index < 2600; index++) {
+      if (signal === "spans") tracer.startSpan(`span-${index}`).end();
+      else logger.emit({ body: `log-${index}` });
+    }
+    await handle.forceFlush();
+    expect(observed).toHaveLength(2600);
+    expect(totals()).toEqual({
+      [`Item_Success_Count:${signal === "spans" ? "DEPENDENCY" : "TRACE"}`]: 2560,
+    });
+    if (signal === "logs") {
+      expect(diag.warn).toHaveBeenCalledWith("Log queue full; dropping records");
+    }
+    const application = await Promise.all(
+      fetch.mock.calls.map(async ([url, init]) => {
+        const envelopes: AzureMonitorEnvelope[] = await new Request(url, init).json();
+        return envelopes.filter((envelope) => envelope.data.baseType !== "MetricData");
+      }),
+    );
+    expect(application.flat()).toHaveLength(2560);
+  },
+);
+
+it.each(
+  [SpanKind.CLIENT, SpanKind.SERVER].flatMap((kind) =>
+    [SpanStatusCode.OK, SpanStatusCode.ERROR].map((code) => ({ kind, code })),
+  ),
+)(
+  "reports ingestion sampling with HTTP 206 and completed success for kind $kind status $code",
+  async ({ kind, code }) => {
+    const exporter = createExporter("spans");
+    fetch.mockResolvedValueOnce(
+      partialResponse(1, [{ index: 0, statusCode: 206, message: "Telemetry sampled out." }]),
+    );
+    expect(await exportAsync(exporter, [createReadableSpan({ kind, status: { code } })])).toEqual({
+      code: ExportResultCode.SUCCESS,
+    });
+    await exporter.forceFlush();
+    expect(reports.flat()).toHaveLength(1);
+    expect(reports.flat()[0].data.baseData).toMatchObject({
+      metrics: [{ name: "Item_Dropped_Count", value: 1 }],
+      properties: {
+        telemetryType: kind === SpanKind.CLIENT ? "DEPENDENCY" : "REQUEST",
+        dropCode: "206",
+        telemetrySuccess: code === SpanStatusCode.OK,
       },
-      shutdown: async () => {},
-      forceFlush: async () => {},
-    };
-    if (signal === "spans") {
-      const processor = createStatsSpanProcessor(
-        {
-          exporter,
-          maxExportBatchSize: 1,
-          maxQueueSize: 1,
-          disableAutoFlushOnDocumentHide: true,
-        },
-        stats,
-      );
-      owners.push(processor);
-      expect(Object.getOwnPropertyDescriptor(sharedMeter, "createCounter")).toEqual(
-        counterDescriptor,
-      );
-      processor.onEnd(createReadableSpan());
-      processor.onEnd(createReadableSpan());
-      processor.onEnd(
-        createReadableSpan({
-          kind: SpanKind.SERVER,
-          resource,
-          status: { code: SpanStatusCode.ERROR },
-        }),
-      );
-    } else {
-      const processor = new BrowserBatchLogRecordProcessor({
-        exporter,
-        maxExportBatchSize: 1,
-        maxQueueSize: 1,
-        onDrop: (record, reason) =>
-          stats.countDrop(recordItemDimensions(record, logItemType(record)), reason),
-      });
-      const provider = new LoggerProvider({ processors: [processor], resource });
-      owners.push(provider);
-      const logger = provider.getLogger("queue");
-      logger.emit({ body: "in flight" });
-      await Promise.resolve();
-      logger.emit({ body: "queued" });
-      logger.emit({ eventName: "exception" });
-    }
-    try {
-      await stats.forceFlush();
-      expect(totals()).toEqual({
-        [`Item_Dropped_Count:${signal === "spans" ? "REQUEST" : "EXCEPTION"}:QUEUE_FULL`]: 1,
-      });
-      expect(reports.flat()[0].tags).toEqual({
-        "ai.internal.sdkVersion": expect.any(String),
-        "ai.cloud.role": "queue-app",
-        "ai.cloud.roleInstance": "queue-instance",
-      });
-      expect(reports.flat()[0].data.baseData.properties?.telemetrySuccess).toBe(
-        signal === "spans" ? false : undefined,
-      );
-    } finally {
-      complete();
-      expect(Object.getOwnPropertyDescriptor(sharedMeter, "createCounter")).toEqual(
-        counterDescriptor,
-      );
-    }
+    });
+    expect(fetch).toHaveBeenCalledTimes(2);
   },
 );
 
@@ -1300,6 +1307,7 @@ it.each(
   ),
 )("snapshots $shape with a deferred destination: $deferred", async ({ shape, deferred }) => {
   const clock = installFakeClock();
+  const timer = vi.spyOn(globalThis, "setTimeout");
   const values = { enabled: true, collectionIntervalMillis: 100 };
   class StatsOptions {
     get enabled() {
@@ -1325,7 +1333,7 @@ it.each(
   const pending = new Promise<string>((done) => (resolve = done));
   const handle = await useMicrosoftOpenTelemetry({
     azureMonitor: { connectionString: deferred ? pending : connectionString, sdkStats },
-    samplingPercentage: 0,
+    samplingPercentage: 100,
     pageView: { enabled: false },
     session: { enabled: false },
     storage: { enabled: false },
@@ -1333,25 +1341,22 @@ it.each(
   owners.push(handle);
   values.enabled = false;
   values.collectionIntervalMillis = 900_000;
-  trace.getTracer("inherited-stats").startSpan("sampled").end();
-  logs.getLogger("inherited-stats").emit({ body: "sampled" });
+  logs.getLogger("inherited-stats").emit({ body: "retained" });
   if (deferred) {
     resolve(connectionString);
     await Promise.resolve();
   }
-  await clock.advance(99);
-  expect(fetch).not.toHaveBeenCalled();
-  await clock.advance(1);
+  await clock.advance(2000);
   await vi.waitFor(() =>
     expect(totals()).toEqual({
-      "Item_Dropped_Count:DEPENDENCY:SAMPLING": 1,
-      "Item_Dropped_Count:TRACE:SAMPLING": 1,
+      "Item_Success_Count:TRACE": 1,
     }),
   );
+  expect(timer).toHaveBeenCalledWith(expect.any(Function), 100);
 });
 
 it.each([false, true])(
-  "preserves resource dimensions on sampling drops with a deferred destination: %s",
+  "excludes sampling drops and preserves retained resource dimensions with a deferred destination: %s",
   async (deferred) => {
     let resolve!: (value: string) => void;
     const pending = new Promise<string>((done) => (resolve = done));
@@ -1387,9 +1392,15 @@ it.each([false, true])(
       await Promise.resolve();
     }
     await handle.forceFlush();
+    expect(fetch).not.toHaveBeenCalled();
+    expect(totals()).toEqual({});
+    await handle.updateCfg({ samplingPercentage: 100 });
+    trace.getTracer("sampling-dimensions").startSpan("request", { kind: SpanKind.SERVER }).end();
+    logs.getLogger("sampling-dimensions").emit({ body: "private-body" });
+    await handle.forceFlush();
     expect(totals()).toEqual({
-      "Item_Dropped_Count:REQUEST:SAMPLING": 1,
-      "Item_Dropped_Count:TRACE:SAMPLING": 1,
+      "Item_Success_Count:REQUEST": 1,
+      "Item_Success_Count:TRACE": 1,
     });
     for (const envelope of reports.flat()) {
       expect(envelope.tags).toEqual({
@@ -1403,25 +1414,22 @@ it.each([false, true])(
   },
 );
 
-it("reports trace and log sampling at zero percent, with no customer items sent", async () => {
+it("sends no customer items or stats for trace and log sampling at zero percent", async () => {
   const handle = await initialize(TEST_INSTRUMENTATION_KEY, 0);
   trace.getTracer("sample").startSpan("private span", { kind: SpanKind.SERVER }).end();
   logs.getLogger("sample").emit({ eventName: "private event", body: "private body" });
   await handle.forceFlush();
-  expect(totals()).toEqual({
-    "Item_Dropped_Count:REQUEST:SAMPLING": 1,
-    "Item_Dropped_Count:CUSTOM_EVENT:SAMPLING": 1,
-  });
-  expect(fetch).toHaveBeenCalledTimes(2);
+  expect(totals()).toEqual({});
+  expect(fetch).not.toHaveBeenCalled();
   expect(JSON.stringify(reports)).not.toContain("private");
   const tracer = trace.getTracer("stale");
   await handle.shutdown();
   tracer.startSpan("after shutdown").end();
   await handle.forceFlush();
-  expect(fetch).toHaveBeenCalledTimes(2);
+  expect(fetch).not.toHaveBeenCalled();
 });
 
-it("counts the default parent-based sampler's drops", async () => {
+it("excludes the default parent-based sampler's drops", async () => {
   const handle = await initialize();
   const parent = trace.setSpanContext(ROOT_CONTEXT, {
     traceId: "1".repeat(32),
@@ -1430,10 +1438,11 @@ it("counts the default parent-based sampler's drops", async () => {
   });
   trace.getTracer("parent").startSpan("child", {}, parent).end();
   await handle.forceFlush();
-  expect(totals()).toEqual({ "Item_Dropped_Count:DEPENDENCY:SAMPLING": 1 });
+  expect(totals()).toEqual({});
+  expect(fetch).not.toHaveBeenCalled();
 });
 
-it("keeps sampling counters attached across runtime policy changes", async () => {
+it("counts only retained items across runtime sampling policy changes", async () => {
   const handle = await initialize(TEST_INSTRUMENTATION_KEY, 100);
   const tracer = trace.getTracer("runtime-stats");
   const logger = logs.getLogger("runtime-stats");
@@ -1452,12 +1461,10 @@ it("keeps sampling counters attached across runtime policy changes", async () =>
   expect(totals()).toEqual({
     "Item_Success_Count:REQUEST": 2,
     "Item_Success_Count:TRACE": 2,
-    "Item_Dropped_Count:REQUEST:SAMPLING": 1,
-    "Item_Dropped_Count:TRACE:SAMPLING": 1,
   });
 });
 
-it("retains sampling counts and emission-time log policy while the destination resolves", async () => {
+it("excludes sampled items using the emission-time log policy while the destination resolves", async () => {
   let resolve!: (value: string) => void;
   const pending = new Promise<string>((done) => (resolve = done));
   const handle = await useMicrosoftOpenTelemetry({
@@ -1479,15 +1486,13 @@ it("retains sampling counts and emission-time log policy while the destination r
   await Promise.resolve();
   await handle.forceFlush();
   expect(totals()).toEqual({
-    "Item_Dropped_Count:REQUEST:SAMPLING": 1,
-    "Item_Dropped_Count:TRACE:SAMPLING": 1,
     "Item_Success_Count:DEPENDENCY": 1,
     "Item_Success_Count:TRACE": 1,
   });
 });
 
 it.each([0, 1])(
-  "counts deferred startup overflow by signal and type with capacity %s",
+  "excludes deferred startup overflow from customer counters with capacity %s",
   async (initInMemoMaxSize) => {
     let resolve!: (value: string) => void;
     const pending = new Promise<string>((done) => (resolve = done));
@@ -1529,31 +1534,18 @@ it.each([0, 1])(
     await handle.forceFlush();
     expect(totals()).toEqual({
       ...(initInMemoMaxSize ? { "Item_Success_Count:TRACE": 1 } : {}),
-      "Item_Dropped_Count:TRACE:QUEUE_FULL": 2 - initInMemoMaxSize,
-      "Item_Dropped_Count:EXCEPTION:QUEUE_FULL": 1,
-      "Item_Dropped_Count:DEPENDENCY:QUEUE_FULL": 1,
-      "Item_Dropped_Count:REQUEST:QUEUE_FULL": 2,
     });
+    expect(diag.warn).toHaveBeenCalledWith("Telemetry startup queue full; dropping new items");
     for (const envelope of reports.flat()) {
       expect(envelope.tags["ai.cloud.role"]).toBe("startup-app");
       expect(envelope.tags["ai.cloud.roleInstance"]).toBe("startup-instance");
     }
-    const droppedRequests = reports
-      .flat()
-      .filter((envelope) => envelope.data.baseData.properties?.telemetryType === "REQUEST");
-    expect(
-      droppedRequests.map((envelope) => envelope.data.baseData.properties?.telemetrySuccess),
-    ).toEqual([true, false]);
     tracer.startSpan("after activation").end();
     logger.emit({ body: "after activation" });
     await handle.shutdown();
     expect(totals()).toEqual({
       "Item_Success_Count:TRACE": initInMemoMaxSize + 1,
       "Item_Success_Count:DEPENDENCY": 1,
-      "Item_Dropped_Count:TRACE:QUEUE_FULL": 2 - initInMemoMaxSize,
-      "Item_Dropped_Count:EXCEPTION:QUEUE_FULL": 1,
-      "Item_Dropped_Count:DEPENDENCY:QUEUE_FULL": 1,
-      "Item_Dropped_Count:REQUEST:QUEUE_FULL": 2,
     });
   },
 );
@@ -1574,11 +1566,9 @@ it.each([undefined, 0, 100])(
       attributes: { "url.full": "https://application.example.test/image.png" },
     });
     await handle.forceFlush();
-    expect(totals()).toEqual({
-      [samplingPercentage === 0
-        ? "Item_Dropped_Count:CUSTOM_EVENT:SAMPLING"
-        : "Item_Success_Count:CUSTOM_EVENT"]: 1,
-    });
+    expect(totals()).toEqual(
+      samplingPercentage === 0 ? {} : { "Item_Success_Count:CUSTOM_EVENT": 1 },
+    );
   },
 );
 
@@ -1636,6 +1626,7 @@ it.each([
   });
   await handle.forceFlush();
   expect(fetch).not.toHaveBeenCalled();
+  await handle.updateCfg({ samplingPercentage: 100 });
   logger.emit({
     eventName: "browser.resource_timing",
     attributes: { "url.full": `${redirectedEndpoint}/unrelated` },
@@ -1645,13 +1636,13 @@ it.each([
     attributes: { "url.full": redirectedEndpoint },
   });
   await handle.forceFlush();
-  expect(totals()).toEqual({ "Item_Dropped_Count:CUSTOM_EVENT:SAMPLING": 2 });
+  expect(totals()).toEqual({ "Item_Success_Count:CUSTOM_EVENT": 2 });
 });
 
 it("keeps opt-in and counters isolated across instances and hands off after shutdown", async () => {
   const secondKey = "22222222-2222-2222-2222-222222222222";
-  const first = await initialize(TEST_INSTRUMENTATION_KEY, 0, false);
-  const second = await initialize(secondKey, 0);
+  const first = await initialize(TEST_INSTRUMENTATION_KEY, 100, false);
+  const second = await initialize(secondKey, 100);
   trace.getTracer("first").startSpan("not reported").end();
   logs.getLogger("first").emit({ body: "not reported" });
   await first.shutdown();
@@ -1661,8 +1652,8 @@ it("keeps opt-in and counters isolated across instances and hands off after shut
   await second.shutdown();
   expect(reports.flat().every((envelope) => envelope.iKey === secondKey)).toBe(true);
   expect(totals()).toEqual({
-    "Item_Dropped_Count:DEPENDENCY:SAMPLING": 1,
-    "Item_Dropped_Count:TRACE:SAMPLING": 1,
+    "Item_Success_Count:DEPENDENCY": 1,
+    "Item_Success_Count:TRACE": 1,
   });
 });
 

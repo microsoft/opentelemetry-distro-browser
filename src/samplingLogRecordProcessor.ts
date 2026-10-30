@@ -59,10 +59,7 @@ export class AzureMonitorSamplingLogRecordProcessor extends BrowserBatchLogRecor
       ? isTraceSampled(spanContext.traceId, samplingPercentage)
       : samplingPercentage === 100 ||
         (samplingPercentage !== 0 && this.random() * 100 < samplingPercentage);
-    if (!sampled) {
-      this.drop(record, "SAMPLING");
-      return;
-    }
+    if (!sampled) return;
 
     const currentSampleRate = record.attributes[AZURE_MONITOR_SAMPLE_RATE];
     const effectiveSampleRate = getEffectiveSampleRate(
