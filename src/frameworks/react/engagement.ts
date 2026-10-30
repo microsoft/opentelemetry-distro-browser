@@ -181,7 +181,7 @@ export function withAITracking<P extends object>(
           className,
           onKeyDown: this.trackActivity,
           onMouseMove: this.trackActivity,
-          onScroll: this.trackActivity,
+          onScrollCapture: this.trackActivity,
           onMouseDown: this.trackActivity,
           onTouchStart: this.trackActivity,
           onTouchMove: this.trackActivity,

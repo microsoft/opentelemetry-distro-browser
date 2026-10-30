@@ -1,7 +1,11 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-import type { PageViewInstrumentationConfig } from "../../instrumentation/pageView/types.js";
+import type {
+  InternalPageViewInstrumentationConfig,
+  PageViewInstrumentationConfig,
+} from "../../instrumentation/pageView/types.js";
+import { ROUTE_SOURCE_ACTIVE } from "../../shared/constants.js";
 import { FrameworkPlugin } from "../telemetry.js";
 
 /**
@@ -71,11 +75,15 @@ export class ReactPlugin extends FrameworkPlugin {
       location.pathname + (location.search ?? "") + (location.hash ?? "");
     let url = history ? urlOf(history.location) : "";
     let ignoredLocation = history?.location;
-    this.pageView = {
+    let awaitingRoute = false;
+    const pageView: InternalPageViewInstrumentationConfig = {
       ...(config.routeResolver ? { routeResolver: config.routeResolver } : {}),
       ...(history
         ? {
             routeSource: {
+              // A resumed adapter cannot lead from a location reached while it was paused.
+              [ROUTE_SOURCE_ACTIVE]: () =>
+                this.#routesEnabled && (!awaitingRoute || history.location !== ignoredLocation),
               getCurrentUrl: () => {
                 // History commits before invoking listeners. Read it even from earlier listeners,
                 // but do not replay the location reached while observation was paused.
@@ -96,6 +104,7 @@ export class ReactPlugin extends FrameworkPlugin {
                       const location = "location" in update ? update.location : update;
                       if (location === ignoredLocation) return;
                       ignoredLocation = undefined;
+                      awaitingRoute = false;
                       url = urlOf(location);
                       const navigationAction = "location" in update ? update.action : action;
                       const type =
@@ -112,6 +121,7 @@ export class ReactPlugin extends FrameworkPlugin {
                   stop: () => {
                     const stop = unlisten;
                     unlisten = undefined;
+                    if (stop) awaitingRoute = true;
                     stop?.();
                   },
                 };
@@ -133,6 +143,7 @@ export class ReactPlugin extends FrameworkPlugin {
           }
         : {}),
     };
+    this.pageView = pageView;
   }
 
   /** Resumes route observation and helper telemetry. Navigations while paused are not replayed. */

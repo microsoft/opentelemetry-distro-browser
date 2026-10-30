@@ -28,6 +28,11 @@ import {
 } from "../../../src/index.js";
 import { PageViewInstrumentation } from "../../../src/instrumentation/pageView/index.js";
 import { addInstance, withInstance } from "../../../src/routing/instanceRouter.js";
+import {
+  addPageCorrelation,
+  getPageOperation,
+  getPageOperationName,
+} from "../../../src/routing/pageContext.js";
 import { startTelemetryInstance } from "../../../src/routing/telemetryInstance.js";
 import { getSharedRegistry } from "../../../src/shared/globalOwnership.js";
 import { createInMemoryPipeline } from "../../fixtures/telemetry.js";
@@ -394,6 +399,55 @@ it("keeps the first instance's page context and reports unused context options",
   expect(warn).toHaveBeenCalledExactlyOnceWith(
     "Trace context options ignored; page context already registered",
   );
+});
+
+it("keeps operation, name and context on an observing owner across pause and resume", () => {
+  let firstActive = true;
+  let secondActive = true;
+  const firstOperation = {
+    traceId: "12345678901234567890123456789012",
+    spanId: "1234567890123456",
+    traceFlags: 1,
+  };
+  const secondOperation = { ...firstOperation, traceId: "abcdefabcdefabcdefabcdefabcdefab" };
+  const first = {
+    decorate: (active: Context) => trace.setSpanContext(active, firstOperation),
+    operation: () => firstOperation,
+    operationName: () => "/first",
+    isActive: () => firstActive,
+  };
+  const second = {
+    decorate: (active: Context) => trace.setSpanContext(active, secondOperation),
+    operation: () => secondOperation,
+    operationName: () => "/second",
+    isActive: () => secondActive,
+  };
+  const removeFirst = addPageCorrelation(first);
+  const removeSecond = addPageCorrelation(second);
+  const expectOwner = (owner: typeof first) => {
+    expect(getPageOperation(undefined)).toBe(owner.operation());
+    expect(getPageOperation(owner)).toBeUndefined();
+    expect(getPageOperationName(undefined)).toBe(owner.operationName());
+    expect(trace.getSpanContext(getSharedRegistry().page!.manager.active())).toBe(
+      owner.operation(),
+    );
+  };
+  try {
+    expectOwner(first);
+    firstActive = false;
+    expectOwner(second);
+    firstActive = true;
+    expectOwner(second);
+    secondActive = false;
+    expectOwner(first);
+    firstActive = false;
+    expectOwner(first);
+    removeFirst();
+    expectOwner(second);
+  } finally {
+    removeFirst();
+    removeSecond();
+  }
 });
 
 it("hands page correlation to a surviving instance when the owner shuts down", async () => {

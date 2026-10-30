@@ -14,7 +14,7 @@ import {
 import { type LogRecord } from "@opentelemetry/api-logs";
 import { RandomIdGenerator } from "@opentelemetry/sdk-trace-base";
 import { InstrumentationBase, safeExecuteInTheMiddle } from "@opentelemetry/instrumentation";
-import { OPENTELEMETRY_BROWSER_VERSION } from "../../shared/constants.js";
+import { OPENTELEMETRY_BROWSER_VERSION, ROUTE_SOURCE_ACTIVE } from "../../shared/constants.js";
 import { markPageContext } from "../../shared/pageOperationContext.js";
 import { createPageViewContext, generatePageViewId } from "./pageViewContext.js";
 import { redactUrl } from "../../shared/urlRedaction.js";
@@ -225,6 +225,11 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
    */
   public getOperationContext(): SpanContext | undefined {
     return this.enabledState ? this.#currentOperation() : undefined;
+  }
+
+  /** Whether this source can advance the shared operation, rather than a paused route. @internal */
+  public isActive(): boolean {
+    return this.enabledState && (this.getConfig().routeSource?.[ROUTE_SOURCE_ACTIVE]?.() ?? true);
   }
 
   /** Safe name resolved with the current operation before its page view is published. */

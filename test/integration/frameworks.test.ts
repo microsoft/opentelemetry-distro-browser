@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-import { ROOT_CONTEXT, context, trace } from "@opentelemetry/api";
+import { ROOT_CONTEXT, context, propagation, trace } from "@opentelemetry/api";
 import { createMemoryHistory } from "history";
 import { StrictMode, createElement, useEffect, type ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -329,6 +329,47 @@ describe("built React integration", () => {
     });
   });
 
+  it("reports exceptions that cannot be converted to strings", async () => {
+    const plugin = new frameworks.react.ReactPlugin();
+    const fixture = await startFrameworkTelemetry(plugin, { enabled: false });
+    const badMessage = new TypeError("original");
+    Object.defineProperty(badMessage, "stack", { value: "safe stack" });
+    Object.defineProperty(badMessage, "message", {
+      get() {
+        throw new Error("message getter failed");
+      },
+    });
+    const errors: unknown[] = [
+      Object.create(null),
+      {
+        toString: () => {
+          throw new Error("toString failed");
+        },
+      },
+      {
+        [Symbol.toPrimitive]: () => {
+          throw new Error("conversion failed");
+        },
+      },
+      badMessage,
+    ];
+    for (const error of errors) {
+      expect(() => plugin.trackException({ exception: error })).not.toThrow();
+    }
+    await fixture.telemetry.forceFlush();
+    expect(fixture.records()).toHaveLength(errors.length);
+    for (const record of fixture.records()) {
+      expect(record).toMatchObject({
+        eventName: "exception",
+        attributes: { "exception.message": "Unknown error" },
+      });
+    }
+    expect(fixture.records()[3].attributes).toMatchObject({
+      "exception.type": "TypeError",
+      "exception.stacktrace": "safe stack",
+    });
+  });
+
   it("applies the owning React URL sanitizer without reserved-property bypasses", async () => {
     const plugin = new frameworks.react.ReactPlugin();
     const sanitizeUrl = vi.fn((url: string) => new URL(url).pathname.replace("/42", "/:id"));
@@ -517,6 +558,37 @@ describe("built React integration", () => {
     });
   });
 
+  it("recovers and reports a null-prototype value thrown by a descendant", async () => {
+    const plugin = new frameworks.react.ReactPlugin();
+    const fixture = await startFrameworkTelemetry(plugin, { enabled: false });
+    const thrown: unknown = Object.create(null);
+    function Broken(): never {
+      throw thrown;
+    }
+    function Fallback() {
+      return createElement("p", null, "Recovered");
+    }
+    const app = mountReact(
+      createElement(frameworks.react.AppInsightsErrorBoundary, {
+        appInsights: plugin,
+        onError: Fallback,
+        children: createElement(Broken),
+      }),
+    );
+    expect(app.host.textContent).toBe("Recovered");
+    await fixture.telemetry.forceFlush();
+    expect(fixture.records()).toHaveLength(1);
+    expect(fixture.records()[0]).toMatchObject({
+      eventName: "exception",
+      severityNumber: 17,
+      attributes: {
+        "exception.type": "Error",
+        "exception.message": "Unknown error",
+        componentStack: expect.stringContaining("Broken"),
+      },
+    });
+  });
+
   it("excludes idle gaps and emits engagement on real unmount with the latest props", async () => {
     const plugin = new frameworks.react.ReactPlugin();
     const fixture = await startFrameworkTelemetry(plugin, { enabled: false });
@@ -598,6 +670,36 @@ describe("built React integration", () => {
     });
   });
 
+  it("tracks non-bubbling scroll activity from a descendant", async () => {
+    const plugin = new frameworks.react.ReactPlugin();
+    const fixture = await startFrameworkTelemetry(plugin, { enabled: false });
+    let now = 0;
+    vi.spyOn(performance, "now").mockImplementation(() => now);
+    function Scroller() {
+      return createElement(
+        "div",
+        { style: { overflow: "auto", height: 20 } },
+        createElement("div", { style: { height: 100 } }, "Scrollable"),
+      );
+    }
+    const Tracked = frameworks.react.withAITracking(plugin, Scroller);
+    const app = mountReact(createElement(Tracked));
+    const scroller = app.host.firstElementChild!.firstElementChild!;
+    for (const time of [0, 4000, 8000]) {
+      now = time;
+      scroller.dispatchEvent(new Event("scroll", { bubbles: false }));
+    }
+    now = 8500;
+    app.unmount();
+    await Promise.resolve();
+    await fixture.telemetry.forceFlush();
+    expect(fixture.records()).toHaveLength(1);
+    expect(fixture.records()[0].attributes).toMatchObject({
+      "metric.value": 8.5,
+      "Component Name": "Scroller",
+    });
+  });
+
   it("supports AITrackedComponentBase subclasses with their own activity handlers", async () => {
     const plugin = new frameworks.react.ReactPlugin();
     const fixture = await startFrameworkTelemetry(plugin, { enabled: false });
@@ -645,6 +747,93 @@ describe("built React integration", () => {
     expect(b.records().map((record) => record.eventName)).toEqual(["second", "still alive"]);
     expect(first.getConfig().enabled).toBe(false);
   });
+
+  it("keeps an initially observing router ahead of a later browser source", async () => {
+    const history = createMemoryHistory({ initialEntries: ["/home"] });
+    const first = new frameworks.react.ReactPlugin({ history });
+    const a = await startFrameworkTelemetry(first);
+    const b = await startFrameworkTelemetry(new frameworks.react.ReactPlugin());
+    await Promise.all([a.waitForPages(1), b.waitForPages(1)]);
+    const initial = a.pages()[0].spanContext?.traceId;
+    history.push("/orders/1");
+    await a.waitForPages(2);
+    const operation = a.pages()[1].spanContext?.traceId;
+    expect(operation).not.toBe(initial);
+    expect(trace.getSpanContext(context.active())?.traceId).toBe(operation);
+  });
+
+  it.each([false, true])(
+    "hands shared correlation to an observing plugin when the first pauses (logs-only first: %s)",
+    async (logsOnly) => {
+      const history = createMemoryHistory({ initialEntries: ["/home"] });
+      let callbackTraceId: string | undefined;
+      const stop = history.listen(() => {
+        callbackTraceId = trace.getSpanContext(context.active())?.traceId;
+        trace.getTracer("framework-test").startSpan("earlier listener").end();
+      });
+      const first = new frameworks.react.ReactPlugin({ history, routeResolver: () => "/first" });
+      const second = new frameworks.react.ReactPlugin({ history, routeResolver: () => "/second" });
+      const a = await startFrameworkTelemetry(
+        first,
+        first.pageView,
+        logsOnly ? { spanProcessors: [] } : {},
+      );
+      const b = await startFrameworkTelemetry(second);
+      const callbackFixture = logsOnly ? b : a;
+      await Promise.all([a.waitForPages(1), b.waitForPages(1)]);
+      let operation = a.pages()[0].spanContext?.traceId;
+      first.disable();
+      for (const [index, url] of ["/orders/1", "/orders/2"].entries()) {
+        history.push(url);
+        second.trackEvent({ name: "routed" });
+        await b.waitForPages(index + 2);
+        const next = b.pages().at(-1)?.spanContext?.traceId;
+        expect(next).toBeDefined();
+        expect(next).not.toBe(operation);
+        expect(callbackTraceId).toBe(next);
+        expect(trace.getSpanContext(context.active())?.traceId).toBe(next);
+        const headers: Record<string, string> = {};
+        propagation.inject(context.active(), headers);
+        expect(headers.traceparent).toContain(next);
+        expect(
+          b
+            .records()
+            .filter((record) => record.eventName === "routed")
+            .at(-1)?.spanContext?.traceId,
+        ).toBe(next);
+        // Global tracers use the first trace-enabled SDK, independently of router ownership.
+        await callbackFixture.telemetry.forceFlush();
+        expect(callbackFixture.spanExporter.getFinishedSpans().at(-1)?.spanContext().traceId).toBe(
+          next,
+        );
+        expect(a.pages()).toHaveLength(1);
+        expect(first.pageView.routeSource!.getCurrentUrl()).toBe("/home");
+        operation = next;
+      }
+      first.enable();
+      history.go(0);
+      expect(trace.getSpanContext(context.active())?.traceId).toBe(operation);
+      await a.telemetry.forceFlush();
+      expect(a.pages()).toHaveLength(1);
+      history.push("/orders/3");
+      await Promise.all([a.waitForPages(2), b.waitForPages(4)]);
+      expect(a.pages().at(-1)?.spanContext?.traceId).toBe(b.pages().at(-1)?.spanContext?.traceId);
+      expect(a.pages().at(-1)?.spanContext?.traceId).not.toBe(operation);
+
+      second.disable();
+      history.push("/orders/4");
+      await a.waitForPages(3);
+      expect(callbackTraceId).toBe(a.pages().at(-1)?.spanContext?.traceId);
+      expect(callbackTraceId).not.toBe(b.pages().at(-1)?.spanContext?.traceId);
+      second.enable();
+      expect(trace.getSpanContext(context.active())?.traceId).toBe(callbackTraceId);
+      await a.telemetry.shutdown();
+      history.push("/orders/5");
+      await b.waitForPages(5);
+      expect(callbackTraceId).toBe(b.pages().at(-1)?.spanContext?.traceId);
+      stop();
+    },
+  );
 
   it("unsubscribes history on shutdown without stopping another instance", async () => {
     const history = createMemoryHistory();

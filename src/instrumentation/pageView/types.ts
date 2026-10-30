@@ -3,6 +3,7 @@
 
 import type { SpanContext } from "@opentelemetry/api";
 import { type LogRecord } from "@opentelemetry/api-logs";
+import type { ROUTE_SOURCE_ACTIVE } from "../../shared/constants.js";
 import type { KeyValueStorage } from "../../storage/keyValueStorage.js";
 
 /**
@@ -254,6 +255,10 @@ export interface PageViewInstrumentationConfig {
  * @internal
  */
 export interface InternalPageViewInstrumentationConfig extends PageViewInstrumentationConfig {
+  /** Internal adapter eligibility for realm-wide page-operation ownership. */
+  readonly routeSource?: NonNullable<PageViewInstrumentationConfig["routeSource"]> & {
+    [ROUTE_SOURCE_ACTIVE]?(): boolean;
+  };
   /** Null disables persistence; undefined uses the standalone sessionStorage default. */
   readonly visitStorage?: KeyValueStorage | null;
   /** Stable destination/instance-specific storage key supplied by the distribution. */

@@ -428,7 +428,7 @@ for (const format of ["module", "commonjs"]) {
   });
 }
 
-test("React runtime bundles share only telemetry and URL redaction, not the core SDK", async () => {
+test("React runtime bundles share only telemetry, URL redaction and constants, not the core SDK", async () => {
   for (const file of ["dist/esm/react.js", "dist/commonjs/react.cjs"]) {
     const map = JSON.parse(await readFile(new URL(`${file}.map`, root), "utf8"));
     const sources = map.sources.map((source) =>
@@ -441,7 +441,8 @@ test("React runtime bundles share only telemetry and URL redaction, not the core
       assert.ok(
         source.startsWith(`${src}frameworks/react/`) ||
           source === `${src}frameworks/telemetry.ts` ||
-          source === `${src}shared/urlRedaction.ts`,
+          source === `${src}shared/urlRedaction.ts` ||
+          source === `${src}shared/constants.ts`,
         `${file} embeds unexpected core or dependency code: ${source}`,
       );
     }

@@ -151,14 +151,34 @@ export class FrameworkPlugin implements BrowserInstrumentation {
 
   public trackException(exception: ExceptionTelemetry, customProperties?: CustomProperties): void {
     const error = exception.exception ?? exception.error;
+    let isError = false;
+    let type = "Error";
+    let message = "Unknown error";
+    let stack: string | undefined;
+    try {
+      isError = error instanceof Error;
+      if (isError) type = (error as Error).name;
+    } catch {
+      // Some thrown values have inaccessible prototypes or error properties.
+    }
+    try {
+      message = isError ? (error as Error).message : String(error);
+    } catch {
+      // Keep the fallback when the thrown value cannot be converted to a message.
+    }
+    try {
+      if (isError) stack = (error as Error).stack;
+    } catch {
+      // Stack formatting can itself access a throwing message getter.
+    }
     this.emit({
       eventName: "exception",
       severityNumber: this.severity(exception.severityLevel ?? 3),
       attributes: {
         ...properties({ ...exception.properties, ...customProperties }),
-        "exception.type": error instanceof Error ? error.name : "Error",
-        "exception.message": error instanceof Error ? error.message : String(error),
-        ...(error instanceof Error && error.stack ? { "exception.stacktrace": error.stack } : {}),
+        "exception.type": type,
+        "exception.message": message,
+        ...(stack ? { "exception.stacktrace": stack } : {}),
       },
     });
   }

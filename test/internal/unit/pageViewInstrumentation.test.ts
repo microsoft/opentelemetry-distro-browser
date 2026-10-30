@@ -122,6 +122,24 @@ afterEach(() => {
 });
 
 describe("PageViewInstrumentation", () => {
+  it.each([true, () => false])(
+    "ignores an unrelated route source isActive property: %s",
+    (isActive) => {
+      const source = {
+        getCurrentUrl: () => "/custom-source",
+        subscribe: () => () => {},
+        isActive,
+      };
+      const { instrumentation } = createInstrumentation({ routeSource: source });
+      expect(instrumentation.isActive()).toBe(false);
+      instrumentation.enable();
+      expect(instrumentation.isActive()).toBe(true);
+      expect(instrumentation.getOperationContext()?.traceId).toBeDefined();
+      instrumentation.disable();
+      expect(instrumentation.isActive()).toBe(false);
+    },
+  );
+
   it("follows a committed route source without patching History and releases it on disable", async () => {
     let url = "/framework-start";
     let notify!: Parameters<

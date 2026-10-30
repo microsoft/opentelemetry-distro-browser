@@ -475,6 +475,7 @@ export async function useMicrosoftOpenTelemetry(
           () => pageInstrumentation.getOperationContext(),
           pageInstrumentation.pageViews,
           (traceId) => pageInstrumentation.getOperationName(traceId),
+          () => pageInstrumentation.isActive(),
         )
       : undefined;
     correlationState.current = correlation;
