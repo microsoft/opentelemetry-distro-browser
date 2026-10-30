@@ -91,12 +91,12 @@ in each Node job's check summary and uploads all three files as build artifacts.
 
 Every executable published entry point has absolute minified, gzip and Brotli budgets:
 
-| Entry point                            |  Minified |    Gzip |   Brotli |
-| -------------------------------------- | --------: | ------: | -------: |
-| `.`                                    | 152.75 kB |   48 kB | 42.25 kB |
-| `./instrumentations`                   |     64 kB |   24 kB |    22 kB |
-| `./snippet`                            |   6.25 kB | 2.75 kB |   2.5 kB |
-| `./react` (framework runtime exernal)  |    12 KiB |   4 KiB |  3.5 KiB |
+| Entry point                           |  Minified |    Gzip |   Brotli |
+| ------------------------------------- | --------: | ------: | -------: |
+| `.`                                   | 152.75 kB |   48 kB | 42.25 kB |
+| `./instrumentations`                  |     64 kB |   24 kB |    22 kB |
+| `./snippet`                           |   6.25 kB | 2.75 kB |   2.5 kB |
+| `./react` (framework runtime exernal) |    12 KiB |   4 KiB |  3.5 KiB |
 
 The generated JSON and Markdown reports show the measured values, ceilings and result for each
 entry point. The framework row gives **ceilings**, not measured sizes; 1 KiB is 1024 bytes. During
