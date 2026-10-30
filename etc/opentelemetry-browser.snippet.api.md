@@ -60,7 +60,7 @@ export interface SdkLoaderConfig {
 }
 
 // @public
-export type SdkLoaderInstrumentationName = "console" | "errors" | "fetch" | "navigation" | "navigationTiming" | "resourceTiming" | "userAction" | "webVitals" | "xhr";
+export type SdkLoaderInstrumentationName = "clickAnalytics" | "console" | "errors" | "fetch" | "navigation" | "navigationTiming" | "resourceTiming" | "userAction" | "webVitals" | "xhr";
 
 // @public
 export interface SdkLoaderJsonObject {

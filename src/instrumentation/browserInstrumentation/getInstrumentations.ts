@@ -2,6 +2,23 @@
 // Licensed under the MIT License.
 
 import type { BrowserInstrumentation, InstrumentationOptions } from "../../types.js";
+import type {
+  ClickAnalyticsInstrumentation,
+  ClickAnalyticsInstrumentationConfig,
+} from "../clickAnalytics/types.js";
+
+/**
+ * Creates a deferred Click Analytics instance with manual capture APIs, without eagerly loading
+ * its implementation into applications that use only other instrumentations.
+ * @public
+ */
+export async function createClickAnalyticsInstrumentation(
+  config: ClickAnalyticsInstrumentationConfig = {},
+): Promise<ClickAnalyticsInstrumentation> {
+  const { ClickAnalyticsInstrumentation } =
+    await import("../clickAnalytics/clickAnalyticsInstrumentation.js");
+  return new ClickAnalyticsInstrumentation({ ...config, enabled: false });
+}
 
 const DEFAULT_INITIATOR_TYPES: readonly string[] = ["script", "link", "css"];
 const DEFAULT_MAX_QUEUE_SIZE = 256;
@@ -46,8 +63,8 @@ function isEnabled(options: { enabled?: boolean } | undefined, defaultEnabled: b
  * providers first and enables them afterwards, so nothing is collected before it can be exported.
  *
  * The only settings applied beyond what a caller passes are bounds on subresource timing volume,
- * which are defaults a caller can override. Every instrumentation here comes from
- * `@opentelemetry/browser-instrumentation`. Registration shares their browser method patches
+ * which are defaults a caller can override. Apart from distribution-owned Click Analytics,
+ * instrumentations come from `@opentelemetry/browser-instrumentation`. Registration shares their browser method patches
  * without replacing their collection logic or per-instance configuration.
  *
  * @param options - Selects which instrumentations to construct and configures each one.
@@ -142,6 +159,15 @@ export async function getInstrumentations(
       import("@opentelemetry/browser-instrumentation/experimental/web-vitals").then(
         ({ WebVitalsInstrumentation }) =>
           new WebVitalsInstrumentation({ ...options.webVitals, ...DEFERRED }),
+      ),
+    );
+  }
+
+  if (isEnabled(options.clickAnalytics, false)) {
+    pending.push(
+      import("../clickAnalytics/clickAnalyticsInstrumentation.js").then(
+        ({ ClickAnalyticsInstrumentation }) =>
+          new ClickAnalyticsInstrumentation({ ...options.clickAnalytics, ...DEFERRED }),
       ),
     );
   }
