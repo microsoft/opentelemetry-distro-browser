@@ -500,7 +500,8 @@ it("does not fall back to beacon because beacon cannot suppress private page ref
   stats.countResponse(200, 10);
   await stats.forceFlush();
   stats.countResponse(200, 10);
-  transport.mockRejectedValueOnce(new TypeError("keepalive unavailable"));
+  const failure = new TypeError("transport unavailable");
+  transport.mockRejectedValueOnce(failure);
   beginUnloading();
   try {
     await stats.forceFlush();
@@ -510,7 +511,8 @@ it("does not fall back to beacon because beacon cannot suppress private page ref
     expect(diag.warn).toHaveBeenCalledWith(
       "SDK stats export failed",
       expect.objectContaining({
-        message: "sendBeacon fallback is unavailable for the unload request.",
+        message: "Browser transport failed",
+        cause: failure,
       }),
     );
   } finally {

@@ -243,6 +243,40 @@ export function createEnvelope<T extends AzureMonitorBaseData>(
   };
 }
 
+export interface EnvelopeBatch<T extends AzureMonitorBaseData = AzureMonitorBaseData> {
+  body: string;
+  envelopes: readonly AzureMonitorEnvelope<T>[];
+}
+
+export function createEnvelopeBatches<T extends AzureMonitorBaseData>(
+  envelopes: readonly AzureMonitorEnvelope<T>[],
+  maxBatchSize: number,
+): EnvelopeBatch<T>[] {
+  const encoder = new TextEncoder();
+  const requests: EnvelopeBatch<T>[] = [];
+  let batch: AzureMonitorEnvelope<T>[] = [];
+  let serializedBatch: string[] = [];
+  let batchSize = 2;
+  const flush = (): void => {
+    if (batch.length === 0) return;
+    requests.push({ body: `[${serializedBatch.join(",")}]`, envelopes: batch });
+    batch = [];
+    serializedBatch = [];
+    batchSize = 2;
+  };
+  for (const envelope of envelopes) {
+    // Send an oversized individual envelope alone so ingestion can report its failure.
+    const serialized = JSON.stringify(envelope);
+    const size = encoder.encode(serialized).byteLength;
+    if (batch.length > 0 && batchSize + 1 + size > maxBatchSize) flush();
+    batch.push(envelope);
+    serializedBatch.push(serialized);
+    batchSize += (batch.length === 1 ? 0 : 1) + size;
+  }
+  flush();
+  return requests;
+}
+
 export function getSampleRate(attributes: Attributes): number {
   const sampleRate = attributes[AZURE_MONITOR_SAMPLE_RATE];
   return typeof sampleRate === "number" &&

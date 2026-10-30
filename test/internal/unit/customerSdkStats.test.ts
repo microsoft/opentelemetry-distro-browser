@@ -18,6 +18,7 @@ import { spanToEnvelopes } from "../../../src/exporter/spanUtils.js";
 import { beginUnloading, endUnloading } from "../../../src/exporter/common.js";
 import {
   MAX_FLUSH_WAIT_MS,
+  MAX_BATCH_SIZE_IN_BYTES,
   MAX_SEND_ATTEMPTS,
   MAX_SHUTDOWN_WAIT_MS,
 } from "../../../src/exporter/constants.js";
@@ -373,6 +374,51 @@ it.each([400, 413])("does not retain a permanently rejected HTTP %s report", asy
   expect(diag.warn).toHaveBeenCalledWith("Customer SDK stats export failed", expect.any(Error));
   expect(vi.getTimerCount()).toBe(0);
 });
+
+it.each([200, 400, 503, 206])(
+  "batches role groups and retains only failed HTTP %i items",
+  async (status) => {
+    const stats = create();
+    const original = fetch.getMockImplementation()!;
+    const batches: AzureMonitorEnvelope<MetricData>[][] = [];
+    fetch.mockImplementation(async (...args) => {
+      const body = await new Request(...args).text();
+      expect(new TextEncoder().encode(body).byteLength).toBeLessThanOrEqual(
+        MAX_BATCH_SIZE_IN_BYTES,
+      );
+      const envelopes: AzureMonitorEnvelope<MetricData>[] = JSON.parse(body);
+      batches.push(envelopes);
+      if (batches.length === 1 && status !== 200) {
+        return status === 206
+          ? partialResponse(envelopes.length, [
+              { index: 0, statusCode: 503, message: "retry" },
+              { index: 1, statusCode: 400, message: "invalid" },
+            ])
+          : new Response(null, { status });
+      }
+      return original(...args);
+    });
+    const envelope = request().envelopes[0];
+    stats.countEnvelopes(
+      "Success",
+      Array.from({ length: 250 }, (_, index) => ({
+        ...envelope,
+        tags: { ...envelope.tags, "ai.cloud.roleInstance": `worker-${index}-\u20ac` },
+      })),
+    );
+    await stats.forceFlush();
+    expect(batches).toHaveLength(2);
+    expect(batches.flat()).toHaveLength(250);
+    expect(new Set(fetch.mock.calls.map(([, init]) => init?.signal)).size).toBe(2);
+    const identities = (batch: readonly AzureMonitorEnvelope[]) =>
+      batch.map((item) => item.tags["ai.cloud.roleInstance"]);
+    expect(new Set(identities(batches.flat())).size).toBe(250);
+    await stats.forceFlush();
+    const retry = status === 503 ? batches[0] : status === 206 ? batches[0].slice(0, 1) : [];
+    expect(batches).toHaveLength(retry.length ? 3 : 2);
+    if (retry.length) expect(identities(batches[2])).toEqual(identities(retry));
+  },
+);
 
 it.each([200, 400])(
   "does not replay HTTP %s counts when reading the response body fails",
@@ -1121,8 +1167,7 @@ it("reports customer stats on unload without falling back to beacon", async () =
   } finally {
     endUnloading();
   }
-  const body = fetch.mock.calls[0][1]?.body as Uint8Array;
-  expect(fetch.mock.calls[0][1]?.keepalive).toBe(body.byteLength <= 536);
+  expect(fetch.mock.calls[0][1]?.keepalive).toBe(false);
   expect(beacon).not.toHaveBeenCalled();
   await stats.forceFlush();
   expect(fetch).toHaveBeenCalledTimes(2);

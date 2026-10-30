@@ -33,7 +33,7 @@ interface SharedRegistry {
   pending?: { signal: "trace" | "logs"; rollback: () => void }[];
 }
 
-/** Lazy shared reservations: application and diagnostic lanes, each [bytes, requests]. */
+/** Application reservations in slot 0. Slot 1 remains available to older SDK copies. */
 export function getKeepaliveReservations(): [number, number][] {
   return (realm[keepaliveKey] ??= [
     [0, 0],

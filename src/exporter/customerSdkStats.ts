@@ -5,11 +5,13 @@ import { SpanKind } from "@opentelemetry/api";
 import type { LogRecordExporter, ReadableLogRecord } from "@opentelemetry/sdk-logs";
 import type { ReadableSpan, SpanExporter } from "@opentelemetry/sdk-trace-base";
 import { isRetriable } from "./breezeUtils.js";
-import { createTags, getSdkVersion, isUnloading } from "./common.js";
+import { createEnvelopeBatches, createTags, getSdkVersion, isUnloading } from "./common.js";
+import { MAX_BATCH_SIZE_IN_BYTES } from "./constants.js";
 import { spanSucceeded } from "./spanUtils.js";
 import { Sender } from "./sender.js";
 import { createSdkStatsEnvelope, reportFailure, sendSdkStats } from "./sdkStats.js";
 import { isSdkIngestionUrl } from "../shared/globalOwnership.js";
+import { waitForAll } from "../shared/lifecycle.js";
 import type { AzureMonitorEnvelope, MetricData } from "./telemetryModels.js";
 
 /**
@@ -22,7 +24,8 @@ import type { AzureMonitorEnvelope, MetricData } from "./telemetryModels.js";
  * Standalone exporters count observed delivery, retry and terminal-drop outcomes, not a durable
  * delivery ledger. Telemetry retained in memory or storage is not a drop; later expiry or eviction is not counted.
  * Cross-page drop attribution and deduplicated accounting after storage failures are deferred.
- * Reports bypass application pipelines and time out after 10 seconds.
+ * Reports bypass application pipelines, use the application batch-size threshold and ordinary
+ * fetch, and time out after 10 seconds per request.
  * Retryable counts remain in memory for the next report, but are not persisted across page loads.
  * Shutdown makes one final attempt after any in-flight report, then discards remaining counts.
  * Reports are best-effort: page exit or enclosing processor deadlines may prevent completion,
@@ -234,18 +237,23 @@ export function createCustomerSdkStats(
       );
     }
     counts.clear();
-    const controller = new AbortController();
-    flushing = sendSdkStats(sender, [...pending.keys()], controller, isUnloading(), {
-      onResponse: (status) => {
-        if (!isRetriable(status)) pending.clear();
-      },
-      onPartial: (remaining) => {
-        const retriable = new Set(remaining);
-        for (const envelope of pending.keys()) {
-          if (!retriable.has(envelope)) pending.delete(envelope);
-        }
-      },
-    })
+    const unloading = isUnloading();
+    flushing = waitForAll(
+      createEnvelopeBatches([...pending.keys()], MAX_BATCH_SIZE_IN_BYTES).map(({ envelopes }) =>
+        sendSdkStats(sender, envelopes, new AbortController(), unloading, {
+          onResponse: (status) => {
+            if (!isRetriable(status)) for (const envelope of envelopes) pending.delete(envelope);
+          },
+          onPartial: (remaining) => {
+            const retriable = new Set(remaining);
+            for (const envelope of envelopes) {
+              if (!retriable.has(envelope)) pending.delete(envelope);
+            }
+          },
+        }),
+      ),
+      "Customer SDK stats requests failed",
+    )
       .catch((error: unknown) => {
         for (const [key, value] of pending.values()) {
           counts.set(key, (counts.get(key) ?? 0) + value);

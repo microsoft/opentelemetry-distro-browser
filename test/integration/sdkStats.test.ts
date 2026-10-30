@@ -47,7 +47,7 @@ it.each(["index.js", "index.min.js"])(
       disableBeacon: true,
     });
     const request = { contentType: "application/json", unloading: true };
-    const pending = sender.send({ ...request, sdkStats: true, body: new Uint8Array(536) });
+    const pending = sender.send({ ...request, body: new Uint8Array(60 * 1024) });
     let handle: MicrosoftOpenTelemetryBrowser | undefined;
     try {
       handle = await distro.useMicrosoftOpenTelemetry({
@@ -68,8 +68,9 @@ it.each(["index.js", "index.min.js"])(
         .filter(([, init]) => init?.credentials === "omit");
       expect(reports.length).toBeGreaterThan(0);
       expect(reports.every(([, init]) => init?.keepalive === false)).toBe(true);
-      await sender.send({ ...request, body: new Uint8Array(60 * 1024) });
-      expect(transport.mock.calls.at(-1)?.[1]?.keepalive).toBe(true);
+      expect(transport.mock.calls.slice(1).every(([, init]) => init?.credentials === "omit")).toBe(
+        true,
+      );
     } finally {
       release();
       await pending;

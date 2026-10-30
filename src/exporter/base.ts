@@ -6,7 +6,7 @@ import type { ReadableLogRecord } from "@opentelemetry/sdk-logs";
 import type { ReadableSpan } from "@opentelemetry/sdk-trace-base";
 import { callWithTimeout, ExportResultCode } from "@opentelemetry/core";
 import { isRetriable, isSamplingRejection } from "./breezeUtils.js";
-import { isUnloading } from "./common.js";
+import { createEnvelopeBatches, isUnloading, type EnvelopeBatch } from "./common.js";
 import { isValidInstrumentationKey, parseConnectionString } from "./connectionStringParser.js";
 import {
   MAX_BATCH_SIZE_IN_BYTES,
@@ -343,13 +343,13 @@ function createBatchRequests(
   maxBatchSize: number,
   enforceMaxBatchSize: boolean,
 ): {
-  requests: BatchRequest[];
+  requests: EnvelopeBatch[];
   /** Original envelopes left out of an unload request. */
   dropped: readonly AzureMonitorEnvelope[];
   error?: RangeError;
 } {
-  const encoder = new TextEncoder();
   if (enforceMaxBatchSize) {
+    const encoder = new TextEncoder();
     if (envelopes.length === 0) return { requests: [], dropped: [] };
     const original = serializeBatch(envelopes, encoder);
     const fitted =
@@ -383,39 +383,7 @@ function createBatchRequests(
     };
   }
 
-  const requests: BatchRequest[] = [];
-  let batch: AzureMonitorEnvelope[] = [];
-  let serializedBatch: string[] = [];
-  let batchSize = 2;
-
-  const flush = (): void => {
-    if (batch.length === 0) return;
-    requests.push({ body: `[${serializedBatch.join(",")}]`, envelopes: batch });
-    batch = [];
-    serializedBatch = [];
-    batchSize = 2;
-  };
-
-  for (const envelope of envelopes) {
-    // Normal exports treat maxBatchSize as a split threshold only. A single oversized envelope is
-    // still sent on its own so ingestion can report a per-item failure; rejecting it locally would
-    // hide that diagnostic.
-    const separatorSize = batch.length === 0 ? 0 : 1;
-    const { serialized, size: serializedSize } = serializeEnvelope(envelope, encoder);
-    if (batch.length > 0 && batchSize + separatorSize + serializedSize > maxBatchSize) {
-      flush();
-    }
-    batch.push(envelope);
-    serializedBatch.push(serialized);
-    batchSize += (batch.length === 1 ? 0 : 1) + serializedSize;
-  }
-  flush();
-  return { requests, dropped: [] };
-}
-
-interface BatchRequest {
-  body: string;
-  envelopes: readonly AzureMonitorEnvelope[];
+  return { requests: createEnvelopeBatches(envelopes, maxBatchSize), dropped: [] };
 }
 
 interface SerializedEnvelope {
