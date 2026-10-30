@@ -161,7 +161,6 @@ test("the package exposes ESM and CommonJS entry points", () => {
   assert.equal(pkg.types, pkg.exports["."].import.types);
 });
 
-
 test("customer SDK stats expose configuration only, not internal reporting controls", async () => {
   for (const file of ["dist/esm/index.d.ts", "dist/commonjs/index.d.cts"]) {
     const declarations = await readFile(new URL(file, root), "utf8");
