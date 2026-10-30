@@ -1,7 +1,13 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-import { context, diag, type SpanContext, type SpanKind } from "@opentelemetry/api";
+import {
+  context,
+  diag,
+  type Attributes,
+  type SpanContext,
+  type SpanKind,
+} from "@opentelemetry/api";
 import {
   BrowserContextLogRecordProcessor,
   BrowserContextSpanProcessor,
@@ -10,10 +16,12 @@ import { createSession } from "./session/createSession.js";
 import { createUserContext } from "./user/createUserContext.js";
 import {
   spanItemType,
+  resourceItemDimensions,
   validateSdkStatsOptions,
   type CustomerSdkStats,
   type ItemType,
 } from "./exporter/customerSdkStats.js";
+import { detectBrowserResource } from "./resource/detectBrowserResource.js";
 import { createKeyValueStorage } from "./storage/keyValueStorage.js";
 import { createSessionBufferStorage, sessionBufferStorage } from "./exporter/sessionBuffer.js";
 import type { LogRecordProcessor } from "@opentelemetry/sdk-logs";
@@ -172,6 +180,7 @@ export async function useMicrosoftOpenTelemetry(
 ): Promise<MicrosoftOpenTelemetryBrowser> {
   validateSdkStatsOptions(options.azureMonitor?.sdkStats);
   let stopping = false;
+  let instrumentationRegistry: ReturnType<typeof createInstrumentationRegistry> | undefined;
   const sessionOptions = options.session;
   const inactivityTimeout = sessionOptions?.inactivityTimeout;
   const maxDuration = sessionOptions?.maxDuration;
@@ -204,7 +213,11 @@ export async function useMicrosoftOpenTelemetry(
       }),
       azureMonitor: { disableBeacon: azureMonitor?.disableBeacon },
     },
-    () => stopping,
+    () => {
+      instrumentationRegistry?.check();
+      return stopping;
+    },
+    (next) => instrumentationRegistry?.setNetworkGates(next),
   );
   const redactedQueryParams: readonly string[] = [
     ...DEFAULT_QUERY_STRINGS_TO_REDACT,
@@ -239,6 +252,7 @@ export async function useMicrosoftOpenTelemetry(
       : undefined;
   getSharedRegistry();
   let spanStats: CustomerSdkStats | undefined;
+  let samplingResource: Attributes = {};
   // Sampling can reject spans before a deferred destination creates its reporter.
   let pendingSampleDrops: Map<ItemType, number> | undefined;
   const onSampleDrop =
@@ -246,7 +260,8 @@ export async function useMicrosoftOpenTelemetry(
       ? (kind: SpanKind) => {
           if (stopping) return;
           const type = spanItemType(kind);
-          if (spanStats) spanStats.count("Dropped", type, "SAMPLING");
+          if (spanStats)
+            spanStats.countDrop(resourceItemDimensions(type, samplingResource), "SAMPLING");
           else {
             pendingSampleDrops ??= new Map();
             pendingSampleDrops.set(type, (pendingSampleDrops.get(type) ?? 0) + 1);
@@ -316,7 +331,6 @@ export async function useMicrosoftOpenTelemetry(
   let flushPromise: Promise<void> | undefined;
   let unloadFlushPromise: Promise<void> | undefined;
   let removeUnloadSubscription: (() => void) | undefined;
-  let instrumentationRegistry: ReturnType<typeof createInstrumentationRegistry> | undefined;
   const flushForUnload = (): void => {
     if (stopping || unloadFlushPromise) return;
     beginUnloading();
@@ -444,6 +458,14 @@ export async function useMicrosoftOpenTelemetry(
     shutdown,
     userContext: userContext.context,
     updateCfg: (patch, mergeExisting) => configuration.updateCfg(patch, mergeExisting),
+    instrumentations: {
+      get: (id) => instrumentationRegistry?.get(id),
+      setEnabled: (id, enabled) =>
+        configuration.enqueue(() => {
+          if (!instrumentationRegistry) throw new Error("Instrumentation registry is unavailable.");
+          instrumentationRegistry.setEnabled(id, enabled);
+        }),
+    },
   };
 
   try {
@@ -489,7 +511,7 @@ export async function useMicrosoftOpenTelemetry(
         (stats) => {
           spanStats = stats;
           for (const [type, count] of pendingSampleDrops ?? []) {
-            stats.count("Dropped", type, "SAMPLING", count);
+            stats.countDrop(resourceItemDimensions(type, samplingResource), "SAMPLING", count);
           }
           pendingSampleDrops = undefined;
         },
@@ -512,6 +534,7 @@ export async function useMicrosoftOpenTelemetry(
     spanProcessors ??= [];
     logRecordProcessors ??= [];
     await options.resource?.waitForAsyncAttributes?.();
+    if (onSampleDrop) samplingResource = detectBrowserResource(options.resource).attributes;
     if (
       (traceOptions?.contextManager || traceOptions?.propagators) &&
       spanProcessors.length !== 0 &&
@@ -551,6 +574,7 @@ export async function useMicrosoftOpenTelemetry(
       instrumentations,
       instance,
       spanProcessors.length !== 0,
+      () => stopping,
     );
     removeUnloadSubscription = subscribeToUnload(flushForUnload);
     instrumentationRegistry.enable();

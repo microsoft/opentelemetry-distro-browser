@@ -61,7 +61,10 @@ function omitCustomFields(envelope: AzureMonitorEnvelope): AzureMonitorEnvelope 
   return { ...envelope, data: { ...envelope.data, baseData } };
 }
 
-function spanSucceeded(span: ReadableSpan, statusCode: number): boolean {
+export function spanSucceeded(
+  span: ReadableSpan,
+  statusCode = Number(span.attributes[HTTP_STATUS_CODE]) || 0,
+): boolean {
   if (span.status.code !== SpanStatusCode.UNSET) {
     return span.status.code === SpanStatusCode.OK;
   }

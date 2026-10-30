@@ -351,18 +351,15 @@ export class Sender {
     let releaseAttempt: (() => void) | undefined;
     let transport: Promise<unknown> | undefined;
     const unloading = request.unloading === true;
-    const lane = request.sdkStats ? 1 : 0;
-    const reservation = getKeepaliveReservations()[lane];
-    const keepaliveAvailable =
-      reservation[0] + request.body.byteLength <=
-        (lane ? 65536 - MAX_BEACON_BODY_SIZE : MAX_PENDING_KEEPALIVE_BODY_SIZE) &&
-      reservation[1] < (lane ? 1 : MAX_PENDING_KEEPALIVE_REQUESTS);
-    if (unloading && !keepaliveAvailable && !request.sdkStats) {
-      return this.#sendWithBeacon(request);
-    }
-
-    const useKeepalive = unloading && keepaliveAvailable;
+    const useKeepalive = unloading && !request.sdkStats;
+    const reservation = getKeepaliveReservations()[0];
     if (useKeepalive) {
+      if (
+        reservation[0] + request.body.byteLength > MAX_PENDING_KEEPALIVE_BODY_SIZE ||
+        reservation[1] >= MAX_PENDING_KEEPALIVE_REQUESTS
+      ) {
+        return this.#sendWithBeacon(request);
+      }
       reservation[0] += request.body.byteLength;
       reservation[1]++;
     }
@@ -414,7 +411,7 @@ export class Sender {
         endpoint = this.#rememberRedirectEndpoint(response, endpoint);
         this.#stats?.countResponse(response.status, Date.now() - startTime, endpoint);
       } catch (error) {
-        if (unloading && !signal?.aborted) {
+        if (useKeepalive && !signal?.aborted) {
           return this.#sendWithBeacon(
             request,
             error instanceof BrowserTransportError ? error.cause : error,
@@ -439,7 +436,7 @@ export class Sender {
         if (!isRetriable(response.status)) {
           throw error;
         }
-        if (unloading && !signal?.aborted) {
+        if (useKeepalive && !signal?.aborted) {
           return this.#sendWithBeacon(request, error);
         }
         throw new BrowserTransportError(error, response.status, retryAfterMs);

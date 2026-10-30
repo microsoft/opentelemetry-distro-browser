@@ -7,6 +7,7 @@ import {
   type BrowserInstrumentation,
   type MicrosoftOpenTelemetryBrowser,
   type MicrosoftOpenTelemetryBrowserConfigurationUpdate,
+  type MicrosoftOpenTelemetryBrowserInstrumentations,
   type MicrosoftOpenTelemetryBrowserOptions,
   type MicrosoftOpenTelemetryBrowserSessionOptions,
 } from "@microsoft/opentelemetry-browser";
@@ -89,6 +90,10 @@ const asynchronousOptions: AzureMonitorOptions<Promise<string>> = {
 useMicrosoftOpenTelemetry({ azureMonitor: synchronousOptions });
 useMicrosoftOpenTelemetry({ azureMonitor: asynchronousOptions });
 useMicrosoftOpenTelemetry({ azureMonitor: { connectionString, disableBeacon: true } });
+// @ts-expect-error Network tracking gates are runtime-only.
+useMicrosoftOpenTelemetry({ disableFetchTracking: true });
+// @ts-expect-error Network tracking gates are runtime-only.
+useMicrosoftOpenTelemetry({ disableAjaxTracking: false });
 // @ts-expect-error The unload-beacon alias is runtime-only.
 useMicrosoftOpenTelemetry({ onunloadDisableBeacon: true });
 // @ts-expect-error The unload-beacon alias is runtime-only.
@@ -155,6 +160,33 @@ export async function updateSampling(handle: MicrosoftOpenTelemetryBrowser): Pro
   await handle.updateCfg({ samplingPercentage: 25 });
   await handle.updateCfg({ samplingPercentage: undefined });
   await handle.updateCfg(reset);
+}
+
+export async function controlInstrumentations(
+  handle: MicrosoftOpenTelemetryBrowser,
+): Promise<BrowserInstrumentation | undefined> {
+  const controls: MicrosoftOpenTelemetryBrowserInstrumentations = handle.instrumentations;
+  const found = controls.get("fetch");
+  await controls.setEnabled("fetch", false);
+  await controls.setEnabled("fetch", true);
+  // @ts-expect-error Instrumentation controls do not add instrumentations at runtime.
+  controls.add(instrumentation);
+  // @ts-expect-error Instrumentation controls do not remove instrumentations at runtime.
+  controls.remove("fetch");
+  // @ts-expect-error The handle instrumentation controls cannot be replaced.
+  handle.instrumentations = controls;
+  return found;
+}
+
+export async function updateNetworkGates(handle: MicrosoftOpenTelemetryBrowser): Promise<void> {
+  await handle.updateCfg({ disableFetchTracking: true, disableAjaxTracking: false });
+  await handle.updateCfg({ disableFetchTracking: undefined, disableAjaxTracking: undefined });
+  // @ts-expect-error Runtime fetch tracking gates require booleans.
+  await handle.updateCfg({ disableFetchTracking: "true" });
+  // @ts-expect-error Runtime XHR tracking gates require booleans.
+  await handle.updateCfg({ disableAjaxTracking: 0 });
+  // @ts-expect-error Instrumentation lists are startup-only.
+  await handle.updateCfg({ instrumentations: [] });
 }
 
 export async function updateSessionLifetimes(handle: MicrosoftOpenTelemetryBrowser): Promise<void> {

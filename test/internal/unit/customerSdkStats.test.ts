@@ -8,15 +8,18 @@ import {
   propagation,
   ROOT_CONTEXT,
   SpanKind,
+  SpanStatusCode,
   trace,
 } from "@opentelemetry/api";
 import { logs } from "@opentelemetry/api-logs";
 import { LoggerProvider } from "@opentelemetry/sdk-logs";
 import { ConsoleInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/console";
 import { ExportResultCode, type ExportResult } from "@opentelemetry/core";
+import { detectResources, resourceFromAttributes } from "@opentelemetry/resources";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import {
   createCustomerSdkStats,
+  recordItemDimensions,
   type CustomerSdkStats,
   type AzureMonitorSdkStatsOptions,
 } from "../../../src/exporter/customerSdkStats.js";
@@ -27,6 +30,7 @@ import { spanToEnvelopes } from "../../../src/exporter/spanUtils.js";
 import { beginUnloading, endUnloading } from "../../../src/exporter/common.js";
 import {
   MAX_FLUSH_WAIT_MS,
+  MAX_BATCH_SIZE_IN_BYTES,
   MAX_SEND_ATTEMPTS,
   MAX_SHUTDOWN_WAIT_MS,
 } from "../../../src/exporter/constants.js";
@@ -252,6 +256,7 @@ it("reports customer metrics without identifiers, enrichment, application sampli
     expect(envelope.iKey).toBe(TEST_INSTRUMENTATION_KEY);
     expect(envelope.sampleRate).toBeUndefined();
     expect(Object.keys(envelope.tags)).toEqual(["ai.internal.sdkVersion"]);
+    expect(envelope.data.baseData.properties?.language).toBe("JavaScript");
   }
   expect(fetch.mock.calls[0]).toEqual([
     `${endpoint}/v2/track`,
@@ -266,6 +271,91 @@ it("reports customer metrics without identifiers, enrichment, application sampli
   expect(fetch).toHaveBeenCalledOnce();
   expect(vi.getTimerCount()).toBe(0);
 });
+
+it.each(
+  (["spans", "logs"] as const).flatMap((signal) =>
+    [false, true].map((conversionFailure) => ({ signal, conversionFailure })),
+  ),
+)(
+  "preserves $signal role groups after conversion failure: $conversionFailure",
+  async ({ signal, conversionFailure }) => {
+    const exporter = createExporter(signal);
+    const roles = [
+      ["checkout:west", "one"],
+      ["checkout", "west:one"],
+    ];
+    const resources = roles.map(([role, instance]) =>
+      resourceFromAttributes({ "service.name": role, "service.instance.id": instance }),
+    );
+    const failure = new Error("conversion failed");
+    if (exporter instanceof AzureMonitorSpanExporter) {
+      const records = resources.map((resource) => createReadableSpan({ resource }));
+      if (conversionFailure) throwOnRead(records[0], "startTime", failure);
+      await exportAsync(exporter, records);
+    } else {
+      const records = resources.map((resource) => createReadableLogRecord({ resource }));
+      if (conversionFailure) throwOnRead(records[0], "hrTime", failure);
+      await exportAsync(exporter, records);
+    }
+    await exporter.forceFlush();
+    expect(reports.flat()).toHaveLength(2);
+    for (const [index, envelope] of reports.flat().entries()) {
+      assertAzureMonitorEnvelope(envelope);
+      expect(envelope.tags).toEqual({
+        "ai.internal.sdkVersion": expect.any(String),
+        "ai.cloud.role": roles[index][0],
+        "ai.cloud.roleInstance": roles[index][1],
+      });
+      expect(envelope.data.baseData.metrics).toEqual([
+        {
+          name: conversionFailure ? "Item_Dropped_Count" : "Item_Success_Count",
+          kind: 0,
+          value: 1,
+        },
+      ]);
+      expect(envelope.data.baseData.properties?.telemetrySuccess).toBe(
+        conversionFailure && signal === "spans" ? true : undefined,
+      );
+    }
+  },
+);
+
+it.each(
+  [SpanKind.CLIENT, SpanKind.SERVER].flatMap((kind) =>
+    [false, true].map((conversionFailure) => ({ kind, conversionFailure })),
+  ),
+)(
+  "separates dropped kind $kind by application outcome after conversion failure: $conversionFailure",
+  async ({ kind, conversionFailure }) => {
+    const exporter = createExporter("spans");
+    const records = [
+      { status: { code: SpanStatusCode.OK } },
+      { attributes: { "http.response.status_code": 200 } },
+      { status: { code: SpanStatusCode.ERROR } },
+      { attributes: { "http.response.status_code": 500 } },
+    ].map((options) => createReadableSpan({ ...options, kind }));
+    if (conversionFailure) throwOnRead(records[0], "startTime", new Error("conversion failed"));
+    else fetch.mockResolvedValueOnce(new Response(null, { status: 400 }));
+    expect((await exportAsync(exporter, records)).code).toBe(ExportResultCode.FAILED);
+    await exporter.forceFlush();
+    expect(reports.flat()).toHaveLength(2);
+    for (const [index, envelope] of reports.flat().entries()) {
+      assertAzureMonitorEnvelope(envelope);
+      expect(envelope.data.baseData.metrics).toEqual([
+        {
+          name: "Item_Dropped_Count",
+          kind: 0,
+          value: 2,
+        },
+      ]);
+      expect(envelope.data.baseData.properties).toMatchObject({
+        telemetryType: kind === SpanKind.CLIENT ? "DEPENDENCY" : "REQUEST",
+        dropCode: conversionFailure ? "CLIENT_EXCEPTION" : "400",
+        telemetrySuccess: index === 0,
+      });
+    }
+  },
+);
 
 it.each([401, 403, 408, 429, 439, 500, 502, 503, 504, "network"] as const)(
   "retains a failed %s report until the next interval without counting its own failure",
@@ -303,6 +393,51 @@ it.each([400, 413])("does not retain a permanently rejected HTTP %s report", asy
   expect(diag.warn).toHaveBeenCalledWith("Customer SDK stats export failed", expect.any(Error));
   expect(vi.getTimerCount()).toBe(0);
 });
+
+it.each([200, 400, 503, 206])(
+  "batches role groups and retains only failed HTTP %i items",
+  async (status) => {
+    const stats = create();
+    const original = fetch.getMockImplementation()!;
+    const batches: AzureMonitorEnvelope<MetricData>[][] = [];
+    fetch.mockImplementation(async (...args) => {
+      const body = await new Request(...args).text();
+      expect(new TextEncoder().encode(body).byteLength).toBeLessThanOrEqual(
+        MAX_BATCH_SIZE_IN_BYTES,
+      );
+      const envelopes: AzureMonitorEnvelope<MetricData>[] = JSON.parse(body);
+      batches.push(envelopes);
+      if (batches.length === 1 && status !== 200) {
+        return status === 206
+          ? partialResponse(envelopes.length, [
+              { index: 0, statusCode: 503, message: "retry" },
+              { index: 1, statusCode: 400, message: "invalid" },
+            ])
+          : new Response(null, { status });
+      }
+      return original(...args);
+    });
+    const envelope = request().envelopes[0];
+    stats.countEnvelopes(
+      "Success",
+      Array.from({ length: 250 }, (_, index) => ({
+        ...envelope,
+        tags: { ...envelope.tags, "ai.cloud.roleInstance": `worker-${index}-\u20ac` },
+      })),
+    );
+    await stats.forceFlush();
+    expect(batches).toHaveLength(2);
+    expect(batches.flat()).toHaveLength(250);
+    expect(new Set(fetch.mock.calls.map(([, init]) => init?.signal)).size).toBe(2);
+    const identities = (batch: readonly AzureMonitorEnvelope[]) =>
+      batch.map((item) => item.tags["ai.cloud.roleInstance"]);
+    expect(new Set(identities(batches.flat())).size).toBe(250);
+    await stats.forceFlush();
+    const retry = status === 503 ? batches[0] : status === 206 ? batches[0].slice(0, 1) : [];
+    expect(batches).toHaveLength(retry.length ? 3 : 2);
+    if (retry.length) expect(identities(batches[2])).toEqual(identities(retry));
+  },
+);
 
 it.each([200, 400])(
   "does not replay HTTP %s counts when reading the response body fails",
@@ -1051,8 +1186,7 @@ it("reports customer stats on unload without falling back to beacon", async () =
   } finally {
     endUnloading();
   }
-  const body = fetch.mock.calls[0][1]?.body as Uint8Array;
-  expect(fetch.mock.calls[0][1]?.keepalive).toBe(body.byteLength <= 536);
+  expect(fetch.mock.calls[0][1]?.keepalive).toBe(false);
   expect(beacon).not.toHaveBeenCalled();
   await stats.forceFlush();
   expect(fetch).toHaveBeenCalledTimes(2);
@@ -1065,6 +1199,11 @@ it.each(["spans", "logs"] as const)(
     const sharedMeter = createNoopMeter();
     const counterDescriptor = Object.getOwnPropertyDescriptor(sharedMeter, "createCounter");
     const stats = create();
+    const resource = resourceFromAttributes({
+      "service.name": "queue-app",
+      "service.instance.id": "queue-instance",
+      "enduser.id": "private-user",
+    });
     let complete!: () => void;
     let calls = 0;
     const exporter = {
@@ -1091,15 +1230,22 @@ it.each(["spans", "logs"] as const)(
       );
       processor.onEnd(createReadableSpan());
       processor.onEnd(createReadableSpan());
-      processor.onEnd(createReadableSpan({ kind: SpanKind.SERVER }));
+      processor.onEnd(
+        createReadableSpan({
+          kind: SpanKind.SERVER,
+          resource,
+          status: { code: SpanStatusCode.ERROR },
+        }),
+      );
     } else {
       const processor = new BrowserBatchLogRecordProcessor({
         exporter,
         maxExportBatchSize: 1,
         maxQueueSize: 1,
-        onDrop: (record, reason) => stats.count("Dropped", logItemType(record), reason),
+        onDrop: (record, reason) =>
+          stats.countDrop(recordItemDimensions(record, logItemType(record)), reason),
       });
-      const provider = new LoggerProvider({ processors: [processor] });
+      const provider = new LoggerProvider({ processors: [processor], resource });
       owners.push(provider);
       const logger = provider.getLogger("queue");
       logger.emit({ body: "in flight" });
@@ -1112,6 +1258,14 @@ it.each(["spans", "logs"] as const)(
       expect(totals()).toEqual({
         [`Item_Dropped_Count:${signal === "spans" ? "REQUEST" : "EXCEPTION"}:QUEUE_FULL`]: 1,
       });
+      expect(reports.flat()[0].tags).toEqual({
+        "ai.internal.sdkVersion": expect.any(String),
+        "ai.cloud.role": "queue-app",
+        "ai.cloud.roleInstance": "queue-instance",
+      });
+      expect(reports.flat()[0].data.baseData.properties?.telemetrySuccess).toBe(
+        signal === "spans" ? false : undefined,
+      );
     } finally {
       complete();
       expect(Object.getOwnPropertyDescriptor(sharedMeter, "createCounter")).toEqual(
@@ -1139,6 +1293,59 @@ async function initialize(
   owners.push(handle);
   return handle;
 }
+
+it.each([false, true])(
+  "preserves resource dimensions on sampling drops with a deferred destination: %s",
+  async (deferred) => {
+    let resolve!: (value: string) => void;
+    const pending = new Promise<string>((done) => (resolve = done));
+    const handle = await useMicrosoftOpenTelemetry({
+      azureMonitor: {
+        connectionString: deferred ? pending : connectionString,
+        sdkStats: { enabled: true },
+      },
+      resource: detectResources({
+        detectors: [
+          {
+            detect: () => ({
+              attributes: {
+                "service.name": Promise.resolve("sampling-app"),
+                "service.instance.id": Promise.resolve("sampling-instance"),
+                "enduser.id": "private-user",
+              },
+            }),
+          },
+        ],
+      }),
+      samplingPercentage: 0,
+      pageView: { enabled: false },
+      storage: { enabled: false },
+      session: { enabled: false },
+    });
+    owners.push(handle);
+    trace.getTracer("sampling-dimensions").startSpan("request", { kind: SpanKind.SERVER }).end();
+    logs.getLogger("sampling-dimensions").emit({ body: "private-body" });
+    if (deferred) {
+      expect(fetch).not.toHaveBeenCalled();
+      resolve(connectionString);
+      await Promise.resolve();
+    }
+    await handle.forceFlush();
+    expect(totals()).toEqual({
+      "Item_Dropped_Count:REQUEST:SAMPLING": 1,
+      "Item_Dropped_Count:TRACE:SAMPLING": 1,
+    });
+    for (const envelope of reports.flat()) {
+      expect(envelope.tags).toEqual({
+        "ai.internal.sdkVersion": expect.any(String),
+        "ai.cloud.role": "sampling-app",
+        "ai.cloud.roleInstance": "sampling-instance",
+      });
+      expect(envelope.data.baseData.properties?.telemetrySuccess).toBeUndefined();
+    }
+    expect(JSON.stringify(reports)).not.toContain("private");
+  },
+);
 
 it("reports trace and log sampling at zero percent, with no customer items sent", async () => {
   const handle = await initialize(TEST_INSTRUMENTATION_KEY, 0);
@@ -1235,6 +1442,10 @@ it.each([0, 1])(
         sdkStats: { enabled: true },
       },
       samplingPercentage: 100,
+      resource: resourceFromAttributes({
+        "service.name": "startup-app",
+        "service.instance.id": "startup-instance",
+      }),
       pageView: { enabled: false },
       storage: { enabled: false },
       session: { enabled: false },
@@ -1252,7 +1463,10 @@ it.each([0, 1])(
     logger.emit({ eventName: "exception" });
     tracer.startSpan("dependency").end();
     tracer.startSpan("request", { kind: SpanKind.SERVER }).end();
-    tracer.startSpan("another request", { kind: SpanKind.CONSUMER }).end();
+    tracer
+      .startSpan("another request", { kind: SpanKind.CONSUMER })
+      .setStatus({ code: SpanStatusCode.ERROR })
+      .end();
     expect(fetch).not.toHaveBeenCalled();
     resolve(connectionString);
     await Promise.resolve();
@@ -1264,6 +1478,16 @@ it.each([0, 1])(
       "Item_Dropped_Count:DEPENDENCY:QUEUE_FULL": 1,
       "Item_Dropped_Count:REQUEST:QUEUE_FULL": 2,
     });
+    for (const envelope of reports.flat()) {
+      expect(envelope.tags["ai.cloud.role"]).toBe("startup-app");
+      expect(envelope.tags["ai.cloud.roleInstance"]).toBe("startup-instance");
+    }
+    const droppedRequests = reports
+      .flat()
+      .filter((envelope) => envelope.data.baseData.properties?.telemetryType === "REQUEST");
+    expect(
+      droppedRequests.map((envelope) => envelope.data.baseData.properties?.telemetrySuccess),
+    ).toEqual([true, false]);
     tracer.startSpan("after activation").end();
     logger.emit({ body: "after activation" });
     await handle.shutdown();

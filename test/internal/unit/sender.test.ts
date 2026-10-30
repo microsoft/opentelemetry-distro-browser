@@ -16,17 +16,23 @@ describe("Sender", () => {
   it.each([536, 537, 3000])(
     "keeps the application unload allowance when a %i-byte stats report starts first",
     async (size) => {
-      let release!: () => void;
+      const releases: Array<() => void> = [];
+      let pendingBytes = 0;
       const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response(null));
-      fetch.mockImplementationOnce(
-        () =>
-          new Promise((resolve) => {
-            release = () => resolve(new Response(null));
+      const hold: typeof globalThis.fetch = (_url, init) => {
+        const bytes = init?.keepalive && init.body instanceof Uint8Array ? init.body.byteLength : 0;
+        pendingBytes += bytes;
+        return new Promise((resolve) =>
+          releases.push(() => {
+            pendingBytes -= bytes;
+            resolve(new Response(null));
           }),
-      );
+        );
+      };
+      fetch.mockImplementationOnce(hold).mockImplementationOnce(hold);
       const beacon = vi.fn(
         (_url: string | URL, body?: BodyInit | null) =>
-          body instanceof Blob && (size <= 536 ? size : 0) + body.size <= 65536,
+          body instanceof Blob && pendingBytes + body.size <= 65536,
       );
       const sender = new Sender({
         endpoint: "https://example.test/v2/track",
@@ -35,21 +41,17 @@ describe("Sender", () => {
       });
       const request = { contentType: "application/json", unloading: true };
       const stats = sender.send({ ...request, sdkStats: true, body: new Uint8Array(size) });
+      const application = sender.send({ ...request, body: new Uint8Array(300) });
       try {
-        await sender.send({ ...request, body: new Uint8Array(60 * 1024) });
         await sender.send({ ...request, sdkStats: true, body: new Uint8Array(size) });
-        expect(fetch.mock.calls.map(([, init]) => init?.keepalive)).toEqual([
-          size <= 536,
-          true,
-          false,
-        ]);
+        expect(fetch.mock.calls.map(([, init]) => init?.keepalive)).toEqual([false, true, false]);
         await expect(
           sender.send({ ...request, body: new Uint8Array(MAX_BEACON_BODY_SIZE) }),
         ).resolves.toEqual({ transport: "beacon" });
         expect(beacon).toHaveBeenCalledOnce();
       } finally {
-        release();
-        await stats;
+        for (const release of releases) release();
+        await Promise.all([stats, application]);
         sender.dispose();
       }
     },
@@ -64,13 +66,16 @@ describe("Sender", () => {
           release = () => resolve(new Response(null));
         }),
     );
-    const sender = new Sender({ endpoint: "https://example.test/v2/track", fetch });
+    const sender = new Sender({
+      endpoint: "https://example.test/v2/track",
+      fetch,
+      disableBeacon: true,
+    });
     const controller = new AbortController();
     const request = {
       contentType: "application/json",
       unloading: true,
-      sdkStats: true,
-      body: new Uint8Array(512),
+      body: new Uint8Array(60 * 1024),
     };
     const pending = expect(
       sender.send({ ...request, signal: controller.signal }),
@@ -78,12 +83,12 @@ describe("Sender", () => {
     try {
       controller.abort();
       await pending;
-      await sender.send(request);
-      expect(fetch.mock.calls[1][1]?.keepalive).toBe(false);
+      await expect(sender.send(request)).rejects.toThrow("sendBeacon fallback is unavailable");
+      expect(fetch).toHaveBeenCalledOnce();
       release();
       await Promise.resolve();
       await sender.send(request);
-      expect(fetch.mock.calls[2][1]?.keepalive).toBe(true);
+      expect(fetch.mock.calls[1][1]?.keepalive).toBe(true);
     } finally {
       release();
       sender.dispose();

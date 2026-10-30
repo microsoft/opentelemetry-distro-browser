@@ -5,7 +5,7 @@ import { commands } from "vitest/browser";
 import { expect, inject, it } from "vitest";
 
 const openSnippetPage = async (
-  scenario: "valid" | "configured" | "tampered" | "missing" | "reported",
+  scenario: "valid" | "configured" | "stats" | "tampered" | "missing" | "reported",
 ) => {
   const runId = crypto.randomUUID();
   const ingestionEndpoint = `${inject("ingestionEndpoint")}${encodeURIComponent(runId)}`;
@@ -117,6 +117,34 @@ it.each([
 
   expect(state).toMatch(/^failed: OpenTelemetry browser bundle failed to load: /);
   await expect(fetch(captureUrl).then((response) => response.json())).resolves.toEqual([]);
+});
+
+it("reports role-scoped sampling drops through the generated snippet", async () => {
+  const { state, diagnostics, captureUrl } = await openSnippetPage("stats");
+  expect(state, diagnostics.join("\n")).toBe("ready");
+  const envelopes = await waitForEnvelopes(captureUrl, (captured) => captured.length === 2);
+  expect(envelopes).toHaveLength(2);
+  for (const [telemetryType, value] of [
+    ["DEPENDENCY", 3],
+    ["EXCEPTION", 1],
+  ] as const) {
+    expect(envelopes).toContainEqual(
+      expect.objectContaining({
+        tags: {
+          "ai.internal.sdkVersion": expect.any(String),
+          "ai.cloud.role": "cdn-stats-service",
+          "ai.cloud.roleInstance": "cdn-stats-instance",
+        },
+        data: expect.objectContaining({
+          baseType: "MetricData",
+          baseData: expect.objectContaining({
+            metrics: [{ name: "Item_Dropped_Count", kind: 0, value }],
+            properties: expect.objectContaining({ telemetryType, dropCode: "SAMPLING" }),
+          }),
+        }),
+      }),
+    );
+  }
 });
 
 it("reports a missing bundle to Azure Monitor when reportLoadFailure is set", async () => {

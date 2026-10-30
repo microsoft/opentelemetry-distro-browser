@@ -213,13 +213,14 @@ export function createSdkStatsEnvelope(
   time: string,
   name: string,
   value: number,
-  properties: Record<string, string>,
+  properties: Record<string, string | boolean>,
   sampleRate?: number,
+  tags?: Readonly<Record<string, string>>,
 ): AzureMonitorEnvelope<MetricData> {
   return createEnvelope(
     instrumentationKey,
     time,
-    { "ai.internal.sdkVersion": getSdkVersion() },
+    { "ai.internal.sdkVersion": getSdkVersion(), ...tags },
     "MetricData",
     { ver: 2, metrics: [{ name, kind: 0, value }], properties },
     sampleRate,

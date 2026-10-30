@@ -107,7 +107,7 @@ export class SessionBuffer {
   public retain(id: number): boolean {
     this.#reconcile();
     const entry = this.#entries.get(id);
-    return !!entry && !entry[2];
+    return (!!entry && !entry[2]) || this.#persisted.has(id);
   }
 
   /** Buffers a serialized envelope array and returns its ID. */
@@ -249,10 +249,11 @@ export class SessionBuffer {
     const stored =
       parts.length > 0 &&
       this.#storage.setItem(this.#key, `[${pageHidden ? 1 : 0},${parts.join(",")}]`);
+    // Bound memory even when an older stored snapshot cannot be invalidated.
+    for (const id of dropped) this.#entries.delete(id);
     // A failed write is not terminal while an older record may still be adopted.
     if (!stored && this.#persisted.size && !this.#invalidate(this.#key)) return;
     this.#released = stored && pageHidden;
     this.#persisted = stored ? persisted : new Set<number>();
-    for (const id of dropped) this.#entries.delete(id);
   }
 }

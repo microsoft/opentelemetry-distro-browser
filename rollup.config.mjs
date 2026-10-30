@@ -40,7 +40,7 @@ const bundleForBrowser = () => [
 ];
 
 /**
- * Instrumentation members that `sharedBrowserPatches.ts` reads or replaces by name on
+ * Instrumentation members that the distro reads or replaces by name on
  * instrumentations that may come from another bundle or the application, so they keep their names.
  */
 const crossBundleProperties = [
@@ -50,8 +50,10 @@ const crossBundleProperties = [
   "_isHistoryPatched",
   "_isPatched",
   "_isXhrPatched",
+  "_onErrorHandler",
   "_unwrap",
   "_wrap",
+  "_xhrSpanMap",
 ];
 
 /**

@@ -3,7 +3,7 @@
 
 import type { ContextAPI, DiagAPI, PropagationAPI, TraceAPI } from "@opentelemetry/api";
 import type { LoggerProvider } from "@opentelemetry/api-logs";
-import { expect, it } from "vitest";
+import { expect, inject, it, vi } from "vitest";
 import type {
   MicrosoftOpenTelemetryBrowser,
   MicrosoftOpenTelemetryBrowserOptions,
@@ -248,6 +248,185 @@ it("records dependencies from the minified instrumentation bundle in the minifie
     restoreDefine();
   }
 });
+
+async function withSeparateInstrumentationBundle(
+  file: string,
+  run: (bundle: BrowserBundle, instrumentations: InstrumentationBundle) => Promise<void>,
+): Promise<void> {
+  const restoreDefine = preserveAmdDefine();
+  delete window.define;
+  delete window.Microsoft;
+  const scripts: HTMLScriptElement[] = [];
+  let bundle: BrowserBundle | undefined;
+  try {
+    scripts.push(await loadScript("opentelemetry-browser.iife.min.js"));
+    bundle = getBrowserBundle();
+    scripts.push(await loadScript(file));
+    const instrumentations = getInstrumentationBundle();
+    if (!bundle || !instrumentations) throw new Error("A browser bundle did not load");
+    await run(bundle, instrumentations);
+  } finally {
+    bundle?.trace.disable();
+    bundle?.logs.disable();
+    bundle?.propagation.disable();
+    bundle?.context.disable();
+    bundle?.diag.disable();
+    vi.restoreAllMocks();
+    for (const script of scripts) script.remove();
+    delete window.Microsoft;
+    restoreDefine();
+  }
+}
+
+function sendOpenedXhr(xhr: XMLHttpRequest): Promise<{ traceparent?: string }> {
+  return new Promise((resolve, reject) => {
+    xhr.onload = () => resolve(JSON.parse(xhr.responseText) as { traceparent?: string });
+    xhr.onerror = () => reject(new Error("XHR failed"));
+    xhr.send();
+  });
+}
+
+it.each([
+  "opentelemetry-browser-instrumentations.iife.min.js",
+  "opentelemetry-browser-instrumentations.iife.js",
+])("preserves XHR open semantics across the minified SDK and %s", async (file) => {
+  await withSeparateInstrumentationBundle(file, async (bundle, instrumentations) => {
+    const endpoint = new URL("/headers", inject("redirectEndpoint")).href;
+    const ignored = `${endpoint}#ignored`;
+    const pipeline = createInMemoryPipeline();
+    const telemetry = await bundle.useMicrosoftOpenTelemetry({
+      ...pipeline.options,
+      pageView: { enabled: false },
+      instrumentations: await instrumentations.getInstrumentations({
+        fetch: { enabled: false },
+        xhr: { ignoreUrls: [ignored], propagateTraceHeaderCorsUrls: [endpoint] },
+      }),
+    });
+    try {
+      // The first tracked open is never sent; the ignored reopen must replace it.
+      const ignoredXhr = new XMLHttpRequest();
+      const setHeader = vi.spyOn(ignoredXhr, "setRequestHeader");
+      ignoredXhr.open("GET", endpoint);
+      ignoredXhr.open("GET", ignored);
+      const ignoredHeaders = await sendOpenedXhr(ignoredXhr);
+      await telemetry.forceFlush();
+      expect(setHeader).not.toHaveBeenCalled();
+      expect(ignoredHeaders.traceparent).toBeUndefined();
+      expect(pipeline.spanExporter.getFinishedSpans()).toHaveLength(0);
+
+      // A native validation failure must instead preserve the earlier tracked open.
+      const trackedXhr = new XMLHttpRequest();
+      trackedXhr.open("GET", endpoint);
+      expect(() => trackedXhr.open("invalid method", `${endpoint}#replacement`)).toThrow();
+      const trackedHeaders = await sendOpenedXhr(trackedXhr);
+      await expect
+        .poll(async () => {
+          await telemetry.forceFlush();
+          return pipeline.spanExporter.getFinishedSpans().length;
+        })
+        .toBe(1);
+      const [span] = pipeline.spanExporter.getFinishedSpans();
+      expect(span.attributes["url.full"]).toBe(endpoint);
+      expect(trackedHeaders.traceparent?.split("-")[2]).toBe(span.spanContext().spanId);
+    } finally {
+      await telemetry.shutdown();
+    }
+  });
+});
+
+it.each([
+  ["opentelemetry-browser-instrumentations.iife.min.js", "disable"],
+  ["opentelemetry-browser-instrumentations.iife.min.js", "shutdown"],
+  ["opentelemetry-browser-instrumentations.iife.js", "disable"],
+  ["opentelemetry-browser-instrumentations.iife.js", "shutdown"],
+] as const)(
+  "cleans up errors listeners from %s after partial %s removal",
+  async (file, operation) => {
+    await withSeparateInstrumentationBundle(file, async (bundle, instrumentations) => {
+      const capture = vi.fn(() => ({}));
+      const selected = await instrumentations.getInstrumentations({
+        fetch: { enabled: false },
+        xhr: { enabled: false },
+        errors: { enabled: true, applyCustomAttributes: capture },
+      });
+      const add = vi.spyOn(window, "addEventListener");
+      const nativeRemove = window.removeEventListener.bind(window);
+      const remove = vi.spyOn(window, "removeEventListener");
+      const pipeline = createInMemoryPipeline();
+      let telemetry: MicrosoftOpenTelemetryBrowser | undefined;
+      let shutdownAttempted = false;
+      try {
+        telemetry = await bundle.useMicrosoftOpenTelemetry({
+          ...pipeline.options,
+          pageView: { enabled: false },
+          instrumentations: selected,
+        });
+        const handler = add.mock.calls.find(([name]) => name === "unhandledrejection")?.[1];
+        if (!handler) throw new Error("Errors listener was not registered");
+        expect(add).toHaveBeenCalledWith("error", handler);
+
+        // Invoke the registered callback without sending synthetic failures to Vitest's own
+        // global error listeners. Native listener removal is checked below for every handler.
+        const notify = (event: Event) => {
+          if (typeof handler === "function") handler.call(window, event);
+          else handler.handleEvent(event);
+        };
+        notify(new ErrorEvent("error", { message: "cross-bundle error" }));
+        notify(
+          new PromiseRejectionEvent("unhandledrejection", {
+            promise: Promise.resolve(),
+            reason: new Error("cross-bundle rejection"),
+          }),
+        );
+        expect(capture).toHaveBeenCalledTimes(2);
+
+        let failed = false;
+        const removed: { name: string; listener: EventListenerOrEventListenerObject | null }[] = [];
+        remove.mockImplementation((...args) => {
+          if (!failed && args[0] === "error" && args[1] === handler) {
+            failed = true;
+            throw new Error("partial errors removal failed");
+          }
+          nativeRemove(...args);
+          removed.push({ name: args[0], listener: args[1] });
+        });
+        if (operation === "disable") {
+          await expect(telemetry.instrumentations.setEnabled("errors", false)).rejects.toThrow(
+            "partial errors removal failed",
+          );
+          expect(removed).toContainEqual({ name: "error", listener: handler });
+          expect(removed).toContainEqual({ name: "unhandledrejection", listener: handler });
+          shutdownAttempted = true;
+          await telemetry.shutdown();
+        } else {
+          shutdownAttempted = true;
+          await expect(telemetry.shutdown()).rejects.toThrow("partial errors removal failed");
+        }
+
+        // Rollback can register another handler; shutdown must remove every registered pair.
+        const handlers = add.mock.calls
+          .filter(([name]) => name === "unhandledrejection")
+          .map(([, listener]) => listener);
+        for (const listener of handlers) {
+          expect(removed).toContainEqual({ name: "error", listener });
+          expect(removed).toContainEqual({ name: "unhandledrejection", listener });
+        }
+        expect(capture).toHaveBeenCalledTimes(2);
+      } finally {
+        try {
+          if (telemetry && !shutdownAttempted) await telemetry.shutdown();
+        } finally {
+          // Remove observed listeners even if an assertion fails before normal cleanup.
+          for (const [name, listener] of add.mock.calls) {
+            if (name !== "unhandledrejection" || !listener) continue;
+            nativeRemove("error", listener);
+            nativeRemove("unhandledrejection", listener);
+          }
+        }
+      }
+    });
+  },
+);
 
 it.each([
   "opentelemetry-browser-instrumentations.umd.js",

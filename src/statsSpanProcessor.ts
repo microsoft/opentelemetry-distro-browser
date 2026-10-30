@@ -7,7 +7,11 @@ import {
   type BatchSpanProcessorBrowserOptions,
   type ReadableSpan,
 } from "@opentelemetry/sdk-trace";
-import { spanItemType, type CustomerSdkStats } from "./exporter/customerSdkStats.js";
+import {
+  recordItemDimensions,
+  spanItemType,
+  type CustomerSdkStats,
+} from "./exporter/customerSdkStats.js";
 
 /** Observes upstream queue drops without replacing its buffer. */
 export function createStatsSpanProcessor(
@@ -23,7 +27,11 @@ export function createStatsSpanProcessor(
       ? {
           add: (value, attributes) => {
             if (currentSpan && attributes?.["error.type"] === "queue_full") {
-              stats.count("Dropped", spanItemType(currentSpan.kind), "QUEUE_FULL", value);
+              stats.countDrop(
+                recordItemDimensions(currentSpan, spanItemType(currentSpan.kind)),
+                "QUEUE_FULL",
+                value,
+              );
             }
           },
         }

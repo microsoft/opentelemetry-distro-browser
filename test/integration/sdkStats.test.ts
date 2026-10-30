@@ -6,6 +6,7 @@ import { logs } from "@opentelemetry/api-logs";
 import { FetchInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/fetch";
 import { ConsoleInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/console";
 import { ExportResultCode, type ExportResult } from "@opentelemetry/core";
+import { resourceFromAttributes } from "@opentelemetry/resources";
 import { ResourceTimingInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/resource-timing";
 import {
   BatchLogRecordProcessor,
@@ -53,7 +54,7 @@ it.each(["index.js", "index.min.js"])(
       disableBeacon: true,
     });
     const request = { contentType: "application/json", unloading: true };
-    const pending = sender.send({ ...request, sdkStats: true, body: new Uint8Array(536) });
+    const pending = sender.send({ ...request, body: new Uint8Array(60 * 1024) });
     let handle: MicrosoftOpenTelemetryBrowser | undefined;
     try {
       handle = await distro.useMicrosoftOpenTelemetry({
@@ -74,8 +75,9 @@ it.each(["index.js", "index.min.js"])(
         .filter(([, init]) => init?.credentials === "omit");
       expect(reports.length).toBeGreaterThan(0);
       expect(reports.every(([, init]) => init?.keepalive === false)).toBe(true);
-      await sender.send({ ...request, body: new Uint8Array(60 * 1024) });
-      expect(transport.mock.calls.at(-1)?.[1]?.keepalive).toBe(true);
+      expect(transport.mock.calls.slice(1).every(([, init]) => init?.credentials === "omit")).toBe(
+        true,
+      );
     } finally {
       release();
       await pending;
@@ -339,6 +341,10 @@ it.each(
           connectionString: `InstrumentationKey=${key};IngestionEndpoint=${customerOrigin}/ingest/${id}`,
           sdkStats: { enabled: customerStats },
         },
+        resource: resourceFromAttributes({
+          "service.name": `application-${key}`,
+          "service.instance.id": id,
+        }),
         pageView: { enabled: false },
         instrumentations: instrumented ? [instrumentation] : [],
       });
@@ -404,7 +410,11 @@ it.each(
         expect(envelope.data.baseData).toMatchObject({
           metrics: [{ name: "Item_Success_Count", value: 1 }],
         });
-        expect(Object.keys(envelope.tags)).toEqual(["ai.internal.sdkVersion"]);
+        expect(envelope.tags).toEqual({
+          "ai.internal.sdkVersion": expect.any(String),
+          "ai.cloud.role": `application-${key}`,
+          "ai.cloud.roleInstance": id,
+        });
       }
       expect(JSON.stringify(itemStats)).not.toMatch(
         /private-user|private-account|application span|application log|ai\.operation|ai\.session/,

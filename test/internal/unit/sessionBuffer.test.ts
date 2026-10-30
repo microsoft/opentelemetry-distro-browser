@@ -807,6 +807,45 @@ describe("Azure Monitor sessionStorage buffer", () => {
     buffer.dispose();
   });
 
+  it.each([false, true])(
+    "bounds new batches when writes fail and removal fails: %s",
+    (removeFails) => {
+      const buffer = new SessionBuffer("destination");
+      const original = buffer.add('[{"name":"original"}]');
+      const write = vi.spyOn(testSessionStorage, "setItem").mockImplementation(() => {
+        throw new DOMException("Storage blocked", "SecurityError");
+      });
+      const remove = vi.spyOn(testSessionStorage, "removeItem");
+      if (removeFails)
+        remove.mockImplementation(() => {
+          throw new DOMException("Storage blocked", "SecurityError");
+        });
+      const bodies = Array.from({ length: 25 }, (_, index) =>
+        JSON.stringify([{ name: `batch-${index}`, pad: "x".repeat(80_000) }]),
+      );
+      const ids = bodies.map((body) => buffer.add(body));
+      const kept = ids.filter((id) => buffer.retain(id));
+      expect(kept).toEqual(ids.slice(-6));
+      expect(kept.reduce((sum, id) => sum + bodies[ids.indexOf(id)].length, 0)).toBeLessThanOrEqual(
+        MAX_SESSION_BUFFER_LENGTH,
+      );
+      expect(buffer.retain(original)).toBe(removeFails);
+      const oversized = buffer.add(
+        JSON.stringify([{ pad: "x".repeat(MAX_SESSION_BUFFER_LENGTH) }]),
+      );
+      expect(buffer.retain(oversized)).toBe(false);
+      write.mockRestore();
+      remove.mockRestore();
+      vi.spyOn(Date, "now").mockReturnValue(Date.now() + 61_000);
+      hidePage();
+      expect(buffer.retain(original)).toBe(false);
+      const stored = testSessionStorage.getItem(bufferKeys()[0])!;
+      expect(stored.length).toBeLessThanOrEqual(MAX_SESSION_BUFFER_LENGTH + 4);
+      expect(stored).not.toContain('"original"');
+      buffer.dispose();
+    },
+  );
+
   it("evicts the oldest batches by timestamp, not insertion order", () => {
     const buffer = new SessionBuffer("destination");
     const now = Date.now();

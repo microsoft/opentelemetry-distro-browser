@@ -24,6 +24,7 @@ interface Patchable extends BrowserInstrumentation {
   _isHistoryPatched?: boolean;
   historyPatched?: boolean;
   _isPatched?: boolean;
+  _xhrSpanMap?: WeakMap<object, { span?: unknown }>;
   _wrap: Wrap;
   _unwrap: <T extends object>(target: T, name: keyof T) => void;
 }
@@ -31,6 +32,7 @@ interface Patchable extends BrowserInstrumentation {
 interface Subscription {
   invoke: Method;
   next?: Method;
+  prepareOpen?: (receiver: object) => () => void;
 }
 
 interface Patch {
@@ -157,6 +159,14 @@ function dispatch(
     notify(patch, receiver, args, () => result);
     return result;
   }
+  const rollbackOpen =
+    isXhr && name === "open"
+      ? [...patch.subscribers].flatMap((subscriber) =>
+          subscriber.prepareOpen ? [subscriber.prepareOpen(receiver as object)] : [],
+        )
+      : [];
+  const previousHeaders =
+    isXhr && name === "open" ? shared.xhrHeaders.get(receiver as object) : undefined;
   if (isXhr && name === "open") shared.xhrHeaders.set(receiver as XMLHttpRequest, new Set());
   const previous = shared.injecting;
   if (isXhr && name === "send") {
@@ -169,7 +179,16 @@ function dispatch(
   } finally {
     shared.injecting = previous;
   }
-  return patch.original.apply(receiver, args);
+  try {
+    return patch.original.apply(receiver, args);
+  } catch (error) {
+    for (const rollback of rollbackOpen) rollback();
+    if (rollbackOpen.length) {
+      if (previousHeaders) shared.xhrHeaders.set(receiver as object, previousHeaders);
+      else shared.xhrHeaders.delete(receiver as object);
+    }
+    throw error;
+  }
 }
 
 function subscribe(target: object, name: PropertyKey, subscriber: Subscription): () => void {
@@ -276,6 +295,9 @@ function adapt(instrumentation: Patchable): void {
   }[] = [];
   const enable = instrumentation.enable.bind(instrumentation);
   const disable = instrumentation.disable.bind(instrumentation);
+  // Only collect sends whose open was observed by this subscriber since its last pause.
+  // Keep upstream in-flight records intact so requests already sent can still complete.
+  let xhrOpens = new WeakMap<object, Set<string> | undefined>();
   const failure: { error?: Error } = {};
   instrumentation._wrap = (target, name, factory) => {
     try {
@@ -285,6 +307,19 @@ function adapt(instrumentation: Patchable): void {
         return;
       }
       const subscriber: Subscription = { invoke: () => undefined };
+      if (instrumentation.instrumentationName.endsWith("/xhr") && name === "open") {
+        subscriber.prepareOpen = (receiver) => {
+          const record = instrumentation._xhrSpanMap?.get(receiver);
+          const token = xhrOpens.get(receiver);
+          const observed = xhrOpens.has(receiver);
+          return () => {
+            if (record) instrumentation._xhrSpanMap?.set(receiver, record);
+            else instrumentation._xhrSpanMap?.delete(receiver);
+            if (observed) xhrOpens.set(receiver, token);
+            else xhrOpens.delete(receiver);
+          };
+        };
+      }
       const next: Method = function (...args) {
         return subscriber.next?.apply(this, args);
       };
@@ -293,7 +328,23 @@ function adapt(instrumentation: Patchable): void {
       if (typeof wrapped !== "function") {
         conflict("browser-instrumentation-wrapper", "Instrumentation wrapper must be a function");
       }
-      subscriber.invoke = wrapped as Method;
+      subscriber.invoke = instrumentation.instrumentationName.endsWith("/xhr")
+        ? function (...args) {
+            if (name === "open") {
+              // Ignored opens do not replace upstream's previous unsent record.
+              if (!instrumentation._xhrSpanMap?.get(this as object)?.span)
+                instrumentation._xhrSpanMap?.delete(this as object);
+              xhrOpens.set(this as object, state().xhrHeaders.get(this as object));
+            }
+            if (
+              name === "send" &&
+              (!xhrOpens.has(this as object) ||
+                xhrOpens.get(this as object) !== state().xhrHeaders.get(this as object))
+            )
+              return;
+            return (wrapped as Method).apply(this, args);
+          }
+        : (wrapped as Method);
       const entry = { target, name, subscriber, remove: subscribe(target, name, subscriber) };
       entries.push(entry);
     } catch (error) {
@@ -341,6 +392,7 @@ function adapt(instrumentation: Patchable): void {
     }
   };
   instrumentation.disable = () => {
+    xhrOpens = new WeakMap();
     try {
       disable();
     } finally {

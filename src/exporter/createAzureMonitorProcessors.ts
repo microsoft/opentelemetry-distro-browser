@@ -3,7 +3,11 @@
 
 import { diag } from "@opentelemetry/api";
 import type { LogRecordProcessor } from "@opentelemetry/sdk-logs";
-import { BatchSpanProcessor, type SpanProcessor } from "@opentelemetry/sdk-trace-base";
+import {
+  BatchSpanProcessor,
+  type BatchSpanProcessorBrowserOptions,
+  type SpanProcessor,
+} from "@opentelemetry/sdk-trace";
 import { AzureMonitorSamplingLogRecordProcessor } from "../samplingLogRecordProcessor.js";
 import { StartupQueue } from "../shared/startupQueue.js";
 import { unloadBeaconPolicies, type AzureMonitorOptions } from "./base.js";
@@ -12,10 +16,11 @@ import { AzureMonitorSpanExporter } from "./trace.js";
 import { sessionBufferStorage } from "./sessionBuffer.js";
 import {
   customerSdkStats,
+  recordItemDimensions,
   shouldCollectSdkStatsLog,
   spanItemType,
   type CustomerSdkStats,
-  type ItemType,
+  type ItemDimensions,
 } from "./customerSdkStats.js";
 import { createStatsSpanProcessor } from "../statsSpanProcessor.js";
 import { logItemType } from "./logUtils.js";
@@ -39,12 +44,12 @@ export function createAzureMonitorProcessors(
   let log: AzureMonitorSamplingLogRecordProcessor | undefined;
   const startupDrops =
     options.sdkStats?.enabled && typeof options.connectionString !== "string"
-      ? { span: new Map<ItemType, number>(), log: new Map<ItemType, number>() }
+      ? { span: new Map<string, number>(), log: new Map<string, number>() }
       : undefined;
 
   function transferDrops(signal: "span" | "log", stats: CustomerSdkStats | undefined): void {
-    for (const [type, count] of startupDrops?.[signal] ?? []) {
-      stats?.count("Dropped", type, "QUEUE_FULL", count);
+    for (const [key, count] of startupDrops?.[signal] ?? []) {
+      stats?.countDrop(JSON.parse(key) as ItemDimensions, "QUEUE_FULL", count);
     }
     startupDrops?.[signal].clear();
   }
@@ -64,9 +69,13 @@ export function createAzureMonitorProcessors(
       transferDrops("span", stats);
       if (stats) onSpanStats?.(stats);
       // The distribution already flushes on page hide.
+      const processorOptions: BatchSpanProcessorBrowserOptions = {
+        exporter,
+        disableAutoFlushOnDocumentHide: true,
+      };
       span = stats
-        ? createStatsSpanProcessor({ exporter, disableAutoFlushOnDocumentHide: true }, stats)
-        : new BatchSpanProcessor(exporter, { disableAutoFlushOnDocumentHide: true });
+        ? createStatsSpanProcessor(processorOptions, stats)
+        : new BatchSpanProcessor(processorOptions);
     }
     if (logsEnabled) {
       const exporter = new AzureMonitorLogRecordExporter(resolved);
@@ -78,7 +87,8 @@ export function createAzureMonitorProcessors(
         samplingPercentage: readSamplingPercentage,
         shouldCollect: stats?.shouldCollectLog,
         onDrop: stats
-          ? (record, reason) => stats.count("Dropped", logItemType(record), reason)
+          ? (record, reason) =>
+              stats.countDrop(recordItemDimensions(record, logItemType(record)), reason)
           : undefined,
       });
     }
@@ -129,8 +139,8 @@ export function createAzureMonitorProcessors(
           onStart() {},
           onEnd: (record) => {
             if (queue.track(() => span?.onEnd(record)) === "QUEUE_FULL" && startupDrops) {
-              const type = spanItemType(record.kind);
-              startupDrops.span.set(type, (startupDrops.span.get(type) ?? 0) + 1);
+              const key = JSON.stringify(recordItemDimensions(record, spanItemType(record.kind)));
+              startupDrops.span.set(key, (startupDrops.span.get(key) ?? 0) + 1);
             }
           },
           forceFlush: async () => {
@@ -152,8 +162,8 @@ export function createAzureMonitorProcessors(
                 "QUEUE_FULL" &&
               startupDrops
             ) {
-              const type = logItemType(record);
-              startupDrops.log.set(type, (startupDrops.log.get(type) ?? 0) + 1);
+              const key = JSON.stringify(recordItemDimensions(record, logItemType(record)));
+              startupDrops.log.set(key, (startupDrops.log.get(key) ?? 0) + 1);
             }
           },
           forceFlush: async () => {
