@@ -6,6 +6,7 @@ All notable changes to this package are documented in this file.
 
 ### Added
 
+- Add opt-in Application Insights-compatible Click Analytics
 - Support instance-local runtime instrumentation add/remove/replace with explicit IDs,
   provider binding, ownership transfer, network-gate preservation and best-effort rollback.
 - Add instance-local `instrumentations.get(id)` and supported pause/resume via
