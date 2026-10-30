@@ -84,11 +84,17 @@ export class ClickAnalyticsInstrumentation extends InstrumentationBase<ClickAnal
   public enable(): void {
     if (this.enabledState) return;
     this.enabledState = true;
-    this.#metadata = getMetadata(this.getConfig());
-    if (this.getConfig().autoCapture !== false && typeof window !== "undefined") {
-      window.addEventListener("mousedown", this.#onAction);
-      window.addEventListener("keyup", this.#onAction);
-      this.#listening = true;
+    try {
+      this.#metadata = getMetadata(this.getConfig());
+      if (this.getConfig().autoCapture !== false && typeof window !== "undefined") {
+        // A wrapper may register a listener and then throw, so arm cleanup before either call.
+        this.#listening = true;
+        window.addEventListener("mousedown", this.#onAction);
+        window.addEventListener("keyup", this.#onAction);
+      }
+    } catch (error) {
+      this.disable();
+      throw error;
     }
   }
 

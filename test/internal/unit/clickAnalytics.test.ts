@@ -1096,6 +1096,48 @@ describe("ClickAnalyticsInstrumentation", () => {
   });
 
   describe("lifecycle and isolation", () => {
+    it.each([
+      ["mousedown", false],
+      ["mousedown", true],
+      ["keyup", false],
+      ["keyup", true],
+    ] as const)(
+      "rolls back listener installation when %s throws (after registration: %s)",
+      async (failedEvent, afterRegistration) => {
+        const { instrumentation, records } = createInstrumentation();
+        const target = element('<button data-id="retry"></button>');
+        const originalAdd = window.addEventListener.bind(window);
+        const failure = new Error("listener installation failed");
+        const remove = vi.spyOn(window, "removeEventListener");
+        const add = vi
+          .spyOn(window, "addEventListener")
+          .mockImplementation((type, listener, options) => {
+            if (type !== failedEvent || afterRegistration) originalAdd(type, listener, options);
+            if (type === failedEvent) throw failure;
+          });
+
+        expect(() => instrumentation.enable()).toThrow(failure);
+        const listener = add.mock.calls[0][1];
+        expect(remove).toHaveBeenCalledWith("mousedown", listener);
+        expect(remove).toHaveBeenCalledWith("keyup", listener);
+        mouse(target);
+        keyboard(target, "Enter");
+        instrumentation.capturePageAction(target);
+        instrumentation.trackPageAction({ name: "failed initialization" });
+        expect(await records()).toEqual([]);
+
+        add.mockRestore();
+        instrumentation.enable();
+        mouse(target);
+        keyboard(target, "Enter");
+        expect(await records()).toHaveLength(2);
+        instrumentation.disable();
+        mouse(target);
+        keyboard(target, "Enter");
+        expect(await records()).toHaveLength(2);
+      },
+    );
+
     it("supports manual capture with autoCapture disabled and updates automatic listeners with config", async () => {
       const { instrumentation, records } = createInstrumentation({ autoCapture: false });
       instrumentation.enable();
