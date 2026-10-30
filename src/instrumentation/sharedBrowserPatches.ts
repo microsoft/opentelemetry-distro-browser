@@ -249,6 +249,7 @@ function isPatchable(value: BrowserInstrumentation): value is Patchable {
     "instrumentationName" in value &&
     typeof value.instrumentationName === "string" &&
     (value.instrumentationName === "@microsoft/opentelemetry-browser/page-view" ||
+      value.instrumentationName === "@microsoft/opentelemetry-browser/click-analytics" ||
       /^@opentelemetry\/browser-instrumentation\/(fetch|xhr|console|navigation)$/.test(
         value.instrumentationName,
       ))
