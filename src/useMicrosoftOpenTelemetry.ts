@@ -424,6 +424,21 @@ export async function useMicrosoftOpenTelemetry(
     updateCfg: (patch, mergeExisting) => configuration.updateCfg(patch, mergeExisting),
     instrumentations: {
       get: (id) => instrumentationRegistry?.get(id),
+      add: (id, instrumentation) =>
+        configuration.enqueue(() => {
+          if (!instrumentationRegistry) throw new Error("Instrumentation registry is unavailable.");
+          instrumentationRegistry.add(id, instrumentation);
+        }),
+      remove: (id) =>
+        configuration.enqueue(() => {
+          if (!instrumentationRegistry) throw new Error("Instrumentation registry is unavailable.");
+          instrumentationRegistry.remove(id);
+        }),
+      replace: (id, instrumentation) =>
+        configuration.enqueue(() => {
+          if (!instrumentationRegistry) throw new Error("Instrumentation registry is unavailable.");
+          instrumentationRegistry.replace(id, instrumentation);
+        }),
       setEnabled: (id, enabled) =>
         configuration.enqueue(() => {
           if (!instrumentationRegistry) throw new Error("Instrumentation registry is unavailable.");

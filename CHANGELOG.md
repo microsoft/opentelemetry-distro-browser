@@ -6,6 +6,8 @@ All notable changes to this package are documented in this file.
 
 ### Added
 
+- Support instance-local runtime instrumentation add/remove/replace with explicit IDs,
+  provider binding, ownership transfer, network-gate preservation and best-effort rollback.
 - Add instance-local `instrumentations.get(id)` and supported pause/resume via
   `instrumentations.setEnabled(id, enabled)`, serialized with `updateCfg`. Add runtime-only
   `disableFetchTracking` and `disableAjaxTracking` collection gates that preserve manual pauses.

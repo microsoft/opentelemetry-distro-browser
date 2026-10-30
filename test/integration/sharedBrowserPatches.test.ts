@@ -826,3 +826,201 @@ it("keeps live console configuration updates local to their subscriber", async (
     "second",
   ]);
 });
+
+it.each(["fetch", "xhr"] as const)(
+  "adds, removes, and transfers %s registrations without disturbing another handle",
+  async (kind) => {
+    const original = kind === "fetch" ? globalThis.fetch : XMLHttpRequest.prototype.send;
+    const native =
+      kind === "fetch" ? vi.spyOn(globalThis, "fetch") : vi.spyOn(XMLHttpRequest.prototype, "send");
+    const first = await start("first", []);
+    const second = await start("second", [
+      network(kind, { sanitizeUrl: () => "https://second.test/" }),
+    ]);
+    const instrumentation = network(kind, { sanitizeUrl: () => "https://first.test/" });
+    const controls = first.handle.instrumentations;
+
+    await expect(controls.add("", instrumentation)).rejects.toThrow("non-empty");
+    await controls.add(kind, instrumentation);
+    const patched = kind === "fetch" ? globalThis.fetch : XMLHttpRequest.prototype.send;
+    expect(patched).not.toBe(original);
+    await request(kind);
+    expect((await spans(first, 1))[0].attributes["url.full"]).toBe("https://first.test/");
+    expect((await spans(second, 1))[0].attributes["url.full"]).toBe("https://second.test/");
+    expect(native).toHaveBeenCalledOnce();
+
+    await controls.remove(kind);
+    expect(kind === "fetch" ? globalThis.fetch : XMLHttpRequest.prototype.send).toBe(patched);
+    await request(kind);
+    await spans(first, 1);
+    await spans(second, 2);
+
+    await second.handle.instrumentations.add("transferred", instrumentation);
+    await first.handle.shutdown();
+    await request(kind);
+    const transferred = await spans(second, 4);
+    expect(transferred.at(-1)?.resource.attributes["service.name"]).toBe("second");
+    expect(native).toHaveBeenCalledTimes(3);
+  },
+);
+
+it.each(["fetch", "xhr"] as const)(
+  "replaces %s collection with instance-bound providers and hooks",
+  async (kind) => {
+    const first = await start("first", [
+      network(kind, {
+        sanitizeUrl: () => "https://old.test/",
+        applyCustomAttributesOnSpan: (span: { setAttribute(key: string, value: string): void }) =>
+          span.setAttribute("subscriber", "old"),
+      }),
+    ]);
+    const second = await start("second", [
+      network(kind, {
+        sanitizeUrl: () => "https://second.test/",
+        applyCustomAttributesOnSpan: (span: { setAttribute(key: string, value: string): void }) =>
+          span.setAttribute("subscriber", "second"),
+      }),
+    ]);
+    const patched = kind === "fetch" ? globalThis.fetch : XMLHttpRequest.prototype.send;
+    const pending = request(kind);
+    await first.handle.instrumentations.replace(
+      kind,
+      network(kind, {
+        sanitizeUrl: () => "https://replacement.test/",
+        applyCustomAttributesOnSpan: (span: { setAttribute(key: string, value: string): void }) =>
+          span.setAttribute("subscriber", "replacement"),
+      }),
+    );
+    await pending;
+    await spans(first, 1);
+    await spans(second, 1);
+    await request(kind);
+    const [old, replacement] = await spans(first, 2);
+    const [, sibling] = await spans(second, 2);
+    expect(old.attributes).toMatchObject({ "url.full": "https://old.test/", subscriber: "old" });
+    expect(replacement.attributes).toMatchObject({
+      "url.full": "https://replacement.test/",
+      subscriber: "replacement",
+    });
+    expect(replacement.resource.attributes["service.name"]).toBe("first");
+    expect(sibling.attributes).toMatchObject({
+      "url.full": "https://second.test/",
+      subscriber: "second",
+    });
+    expect(kind === "fetch" ? globalThis.fetch : XMLHttpRequest.prototype.send).toBe(patched);
+  },
+);
+
+it("keeps a replacement paused and applies the replacement kind's gate", async () => {
+  const first = await start("first", [network("fetch")]);
+  const second = await start("second", [network("fetch")]);
+  const controls = first.handle.instrumentations;
+  await first.handle.instrumentations.setEnabled("fetch", false);
+  const pausedFetch = network("fetch");
+  await controls.replace("fetch", pausedFetch);
+  expect(first.handle.instrumentations.get("fetch")).toBe(pausedFetch);
+  await request("fetch");
+  await spans(first, 0);
+  await spans(second, 1);
+
+  await first.handle.updateCfg({ disableAjaxTracking: true });
+  await controls.replace("fetch", network("xhr"));
+  await request("xhr");
+  await spans(first, 0);
+  await spans(second, 1);
+  await first.handle.instrumentations.setEnabled("fetch", true);
+  await first.handle.updateCfg({ disableAjaxTracking: false });
+  await request("xhr");
+  await spans(first, 1);
+});
+
+it("serializes a gated network addition with updateCfg", async () => {
+  const first = await start("first", []);
+  const second = await start("second", [network("fetch")]);
+  await Promise.all([
+    first.handle.updateCfg({ disableFetchTracking: true }),
+    first.handle.instrumentations.add("added", network("fetch")),
+  ]);
+  await request("fetch");
+  await spans(first, 0);
+  await spans(second, 1);
+  await first.handle.updateCfg({ disableFetchTracking: false });
+  await request("fetch");
+  await spans(first, 1);
+  await spans(second, 2);
+});
+
+it.each(["fetch", "xhr"] as const)(
+  "requires a trace pipeline before adding %s collection",
+  async (kind) => {
+    const logsOnly = await start("logs-only", [], { spanProcessors: [] });
+    await expect(logsOnly.handle.instrumentations.add(kind, network(kind))).rejects.toThrow(
+      "trace pipeline",
+    );
+  },
+);
+
+it("does not collect an XHR opened before replacement until it is opened again", async () => {
+  const first = await start("first", [network("xhr")]);
+  const second = await start("second", [network("xhr")]);
+  const xhr = new XMLHttpRequest();
+  xhr.open("GET", endpoint);
+  await first.handle.instrumentations.replace("xhr", network("xhr"));
+  await sendOpenedXhr(xhr);
+  await spans(first, 0);
+  await spans(second, 1);
+
+  await request("xhr");
+  await spans(first, 1);
+  await spans(second, 2);
+});
+
+it.each(["console", "errors", "user-action"] as const)(
+  "replaces and removes %s collection without changing a sibling subscriber",
+  async (kind) => {
+    const makeInstrumentation = (): BrowserInstrumentation => {
+      switch (kind) {
+        case "console":
+          return new ConsoleInstrumentation({ enabled: false, logMethods: ["info"] });
+        case "errors":
+          return new ErrorsInstrumentation({
+            enabled: false,
+            applyCustomAttributes: () => ({ "test.error-hook": "owned" }),
+          });
+        case "user-action":
+          return new UserActionInstrumentation({ enabled: false });
+      }
+    };
+    const first = await start("first", [makeInstrumentation()]);
+    const second = await start("second", [makeInstrumentation()]);
+    const button = document.createElement("button");
+    document.body.append(button);
+    const emit = () => {
+      if (kind === "console") console.info("registry event");
+      else if (kind === "errors") {
+        window.dispatchEvent(new ErrorEvent("error", { message: "registry event" }));
+      } else button.click();
+    };
+    const records = async (pipeline: Awaited<ReturnType<typeof start>>, count: number) => {
+      await vi.waitFor(async () => {
+        await pipeline.handle.forceFlush();
+        expect(pipeline.logExporter.getFinishedLogRecords()).toHaveLength(count);
+      });
+    };
+    try {
+      emit();
+      await records(first, 1);
+      await records(second, 1);
+      await first.handle.instrumentations.replace(kind, makeInstrumentation());
+      emit();
+      await records(first, 2);
+      await records(second, 2);
+      await first.handle.instrumentations.remove(kind);
+      emit();
+      await records(first, 2);
+      await records(second, 3);
+    } finally {
+      button.remove();
+    }
+  },
+);

@@ -335,6 +335,82 @@ it.each([
 });
 
 it.each([
+  "opentelemetry-browser-instrumentations.iife.min.js",
+  "opentelemetry-browser-instrumentations.iife.js",
+])("cuts over dynamic XHR registrations across the minified SDK and %s", async (file) => {
+  await withSeparateInstrumentationBundle(file, async (bundle, instrumentations) => {
+    const endpoint = new URL("/headers", inject("redirectEndpoint")).href;
+    const [original] = await instrumentations.getInstrumentations({
+      fetch: { enabled: false },
+      xhr: {
+        applyCustomAttributesOnSpan: (span) => span.setAttribute("registration", "original"),
+        propagateTraceHeaderCorsUrls: [endpoint],
+      },
+    });
+    const [replacement] = await instrumentations.getInstrumentations({
+      fetch: { enabled: false },
+      xhr: {
+        applyCustomAttributesOnSpan: (span) => span.setAttribute("registration", "replacement"),
+        propagateTraceHeaderCorsUrls: [endpoint],
+      },
+    });
+    if (!original || !replacement) throw new Error("XHR instrumentation was not created");
+
+    const pipeline = createInMemoryPipeline();
+    const telemetry = await bundle.useMicrosoftOpenTelemetry({
+      ...pipeline.options,
+      pageView: { enabled: false },
+      instrumentations: [],
+    });
+    try {
+      await telemetry.instrumentations.add("bundle-xhr", original);
+      const firstXhr = new XMLHttpRequest();
+      firstXhr.open("GET", endpoint);
+      const firstHeaders = await sendOpenedXhr(firstXhr);
+      await expect
+        .poll(async () => {
+          await telemetry.forceFlush();
+          return pipeline.spanExporter.getFinishedSpans().length;
+        })
+        .toBe(1);
+      expect(firstHeaders.traceparent).toBeDefined();
+      expect(pipeline.spanExporter.getFinishedSpans()[0]?.attributes).toMatchObject({
+        "url.full": endpoint,
+        registration: "original",
+      });
+
+      await telemetry.instrumentations.replace("bundle-xhr", replacement);
+      const secondXhr = new XMLHttpRequest();
+      secondXhr.open("GET", endpoint);
+      const secondHeaders = await sendOpenedXhr(secondXhr);
+      await expect
+        .poll(async () => {
+          await telemetry.forceFlush();
+          return pipeline.spanExporter.getFinishedSpans().length;
+        })
+        .toBe(2);
+      expect(secondHeaders.traceparent).toBeDefined();
+      expect(pipeline.spanExporter.getFinishedSpans()[1]?.attributes).toMatchObject({
+        "url.full": endpoint,
+        registration: "replacement",
+      });
+
+      await telemetry.instrumentations.add("released-original", original);
+      await telemetry.instrumentations.remove("released-original");
+      await telemetry.instrumentations.remove("bundle-xhr");
+      const removedXhr = new XMLHttpRequest();
+      removedXhr.open("GET", endpoint);
+      const removedHeaders = await sendOpenedXhr(removedXhr);
+      await telemetry.forceFlush();
+      expect(removedHeaders.traceparent).toBeUndefined();
+      expect(pipeline.spanExporter.getFinishedSpans()).toHaveLength(2);
+    } finally {
+      await telemetry.shutdown();
+    }
+  });
+});
+
+it.each([
   ["opentelemetry-browser-instrumentations.iife.min.js", "disable"],
   ["opentelemetry-browser-instrumentations.iife.min.js", "shutdown"],
   ["opentelemetry-browser-instrumentations.iife.js", "disable"],

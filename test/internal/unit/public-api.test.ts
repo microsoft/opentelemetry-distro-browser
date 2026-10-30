@@ -135,6 +135,18 @@ it("exposes distro-owned configuration and lifecycle contracts", () => {
   expectTypeOf<MicrosoftOpenTelemetryBrowserInstrumentations["get"]>().toEqualTypeOf<
     (id: string) => BrowserInstrumentation | undefined
   >();
+  expectTypeOf<keyof MicrosoftOpenTelemetryBrowserInstrumentations>().toEqualTypeOf<
+    "get" | "setEnabled" | "add" | "remove" | "replace"
+  >();
+  expectTypeOf<MicrosoftOpenTelemetryBrowserInstrumentations["add"]>().toEqualTypeOf<
+    (id: string, instrumentation: BrowserInstrumentation) => Promise<void>
+  >();
+  expectTypeOf<MicrosoftOpenTelemetryBrowserInstrumentations["replace"]>().toEqualTypeOf<
+    (id: string, instrumentation: BrowserInstrumentation) => Promise<void>
+  >();
+  expectTypeOf<MicrosoftOpenTelemetryBrowserInstrumentations["remove"]>().toEqualTypeOf<
+    (id: string) => Promise<void>
+  >();
   expectTypeOf<MicrosoftOpenTelemetryBrowserInstrumentations["setEnabled"]>().toEqualTypeOf<
     (id: string, enabled: boolean) => Promise<void>
   >();

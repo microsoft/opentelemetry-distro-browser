@@ -112,7 +112,10 @@ export interface MicrosoftOpenTelemetryBrowserConfigurationUpdateResult {
 
 // @public
 export interface MicrosoftOpenTelemetryBrowserInstrumentations {
+    add(id: string, instrumentation: BrowserInstrumentation): Promise<void>;
     get(id: string): BrowserInstrumentation | undefined;
+    remove(id: string): Promise<void>;
+    replace(id: string, instrumentation: BrowserInstrumentation): Promise<void>;
     setEnabled(id: string, enabled: boolean): Promise<void>;
 }
 
