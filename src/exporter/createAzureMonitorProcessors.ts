@@ -10,6 +10,7 @@ import {
 } from "@opentelemetry/sdk-trace";
 import { AzureMonitorSamplingLogRecordProcessor } from "../samplingLogRecordProcessor.js";
 import { StartupQueue } from "../shared/startupQueue.js";
+import { CUSTOMER_SDK_STATS_ENABLED } from "../shared/buildFeatures.js";
 import { unloadBeaconPolicies, type AzureMonitorOptions } from "./base.js";
 import { AzureMonitorLogRecordExporter } from "./log.js";
 import { AzureMonitorSpanExporter } from "./trace.js";
@@ -43,7 +44,9 @@ export function createAzureMonitorProcessors(
   let span: SpanProcessor | undefined;
   let log: AzureMonitorSamplingLogRecordProcessor | undefined;
   const startupDrops =
-    options.sdkStats?.enabled && typeof options.connectionString !== "string"
+    CUSTOMER_SDK_STATS_ENABLED &&
+    options.sdkStats?.enabled &&
+    typeof options.connectionString !== "string"
       ? { span: new Map<string, number>(), log: new Map<string, number>() }
       : undefined;
 
@@ -65,7 +68,7 @@ export function createAzureMonitorProcessors(
     if (tracesEnabled) {
       const exporter = new AzureMonitorSpanExporter(resolved);
       exporters.push(exporter);
-      const stats = customerSdkStats.get(exporter);
+      const stats = CUSTOMER_SDK_STATS_ENABLED ? customerSdkStats.get(exporter) : undefined;
       transferDrops("span", stats);
       if (stats) onSpanStats?.(stats);
       // The distribution already flushes on page hide.
@@ -80,7 +83,7 @@ export function createAzureMonitorProcessors(
     if (logsEnabled) {
       const exporter = new AzureMonitorLogRecordExporter(resolved);
       exporters.push(exporter);
-      const stats = customerSdkStats.get(exporter);
+      const stats = CUSTOMER_SDK_STATS_ENABLED ? customerSdkStats.get(exporter) : undefined;
       transferDrops("log", stats);
       log = new AzureMonitorSamplingLogRecordProcessor({
         exporter,
@@ -138,7 +141,11 @@ export function createAzureMonitorProcessors(
       ? {
           onStart() {},
           onEnd: (record) => {
-            if (queue.track(() => span?.onEnd(record)) === "QUEUE_FULL" && startupDrops) {
+            if (
+              queue.track(() => span?.onEnd(record)) === "QUEUE_FULL" &&
+              CUSTOMER_SDK_STATS_ENABLED &&
+              startupDrops
+            ) {
               const key = JSON.stringify(recordItemDimensions(record, spanItemType(record.kind)));
               startupDrops.span.set(key, (startupDrops.span.get(key) ?? 0) + 1);
             }
@@ -155,11 +162,13 @@ export function createAzureMonitorProcessors(
     log: logsEnabled
       ? {
           onEmit: (record) => {
-            if (startupDrops && !shouldCollectSdkStatsLog(record)) return;
+            if (CUSTOMER_SDK_STATS_ENABLED && startupDrops && !shouldCollectSdkStatsLog(record))
+              return;
             const percentage = readSamplingPercentage();
             if (
               queue.track(() => log?.onEmitWithSamplingPercentage(record, percentage)) ===
                 "QUEUE_FULL" &&
+              CUSTOMER_SDK_STATS_ENABLED &&
               startupDrops
             ) {
               const key = JSON.stringify(recordItemDimensions(record, logItemType(record)));

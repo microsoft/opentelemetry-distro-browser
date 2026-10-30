@@ -162,15 +162,13 @@ test("the package exposes ESM and CommonJS entry points", () => {
 });
 
 test("customer SDK stats expose configuration only, not internal reporting controls", async () => {
-  for (const file of [
-    "dist/esm/index.d.ts",
-    "dist/commonjs/index.d.cts",
-    "dist/esm/snippet.d.ts",
-  ]) {
+  for (const file of ["dist/esm/index.d.ts", "dist/commonjs/index.d.cts"]) {
     const declarations = await readFile(new URL(file, root), "utf8");
     assert.match(declarations, /sdkStats\?: AzureMonitorSdkStatsOptions/);
     assert.doesNotMatch(declarations, /InternalSdkStats|createCustomerSdkStats|CustomerSdkStats/);
   }
+  const snippetDeclarations = await readFile(new URL("dist/esm/snippet.d.ts", root), "utf8");
+  assert.doesNotMatch(snippetDeclarations, /sdkStats|SdkStats/);
   for (const distro of [
     await import(new URL("dist/esm/index.js", root).href),
     require(fileURLToPath(new URL("dist/commonjs/index.cjs", root))),

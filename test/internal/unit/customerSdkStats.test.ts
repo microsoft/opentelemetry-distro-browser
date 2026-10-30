@@ -1294,6 +1294,62 @@ async function initialize(
   return handle;
 }
 
+it.each(
+  ["prototype getters", "inherited fields", "non-enumerable fields"].flatMap((shape) =>
+    [false, true].map((deferred) => ({ shape, deferred })),
+  ),
+)("snapshots $shape with a deferred destination: $deferred", async ({ shape, deferred }) => {
+  const clock = installFakeClock();
+  const values = { enabled: true, collectionIntervalMillis: 100 };
+  class StatsOptions {
+    get enabled() {
+      return values.enabled;
+    }
+    get collectionIntervalMillis() {
+      return values.collectionIntervalMillis;
+    }
+  }
+  const sdkStats: AzureMonitorSdkStatsOptions =
+    shape === "prototype getters"
+      ? new StatsOptions()
+      : shape === "inherited fields"
+        ? Object.create(values)
+        : Object.defineProperties(
+            {},
+            {
+              enabled: { value: true },
+              collectionIntervalMillis: { value: 100 },
+            },
+          );
+  let resolve!: (value: string) => void;
+  const pending = new Promise<string>((done) => (resolve = done));
+  const handle = await useMicrosoftOpenTelemetry({
+    azureMonitor: { connectionString: deferred ? pending : connectionString, sdkStats },
+    samplingPercentage: 0,
+    pageView: { enabled: false },
+    session: { enabled: false },
+    storage: { enabled: false },
+  });
+  owners.push(handle);
+  values.enabled = false;
+  values.collectionIntervalMillis = 900_000;
+  trace.getTracer("inherited-stats").startSpan("sampled").end();
+  logs.getLogger("inherited-stats").emit({ body: "sampled" });
+  if (deferred) {
+    resolve(connectionString);
+    await Promise.resolve();
+  }
+  await clock.advance(99);
+  expect(fetch).not.toHaveBeenCalled();
+  await clock.advance(1);
+  await vi.waitFor(() =>
+    expect(totals()).toEqual({
+      "Item_Dropped_Count:DEPENDENCY:SAMPLING": 1,
+      "Item_Dropped_Count:TRACE:SAMPLING": 1,
+    }),
+  );
+});
+
 it.each([false, true])(
   "preserves resource dimensions on sampling drops with a deferred destination: %s",
   async (deferred) => {

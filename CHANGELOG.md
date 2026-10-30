@@ -19,7 +19,7 @@ All notable changes to this package are documented in this file.
 - Add opt-in best-effort customer SDK Stats to standalone Azure Monitor exporters.
 - Support per-instance runtime session lifetime updates and Application Insights millisecond aliases
   `sessionRenewalMs` and `sessionExpirationMs` at initialization and through `updateCfg`.
-- Add distribution sampling/queue SDK Stats and loader snippet configuration.
+- Add npm-only distribution sampling/queue SDK Stats while keeping customer reporting out of CDN bundles.
 - Support per-instance runtime sampling updates through dynamic configuration
 - Add opt-in `pageView.autoTrackPageVisitTime` to report previous-page visit duration as an
   Application Insights `PageVisitTime` metric across SPA and full-page navigation.

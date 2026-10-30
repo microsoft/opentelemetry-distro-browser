@@ -12,7 +12,7 @@ import {
   type MicrosoftOpenTelemetryBrowserSessionOptions,
 } from "@microsoft/opentelemetry-browser";
 import type { AzureMonitorSdkStatsOptions } from "@microsoft/opentelemetry-browser";
-import type { AzureMonitorSdkStatsOptions as LoaderSdkStatsOptions } from "@microsoft/opentelemetry-browser/snippet";
+import { getSdkLoaderScript } from "@microsoft/opentelemetry-browser/snippet";
 import { OTLPLogExporter } from "@opentelemetry/exporter-logs-otlp-http";
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
 import { BatchLogRecordProcessor } from "@opentelemetry/sdk-logs";
@@ -72,10 +72,11 @@ export const azureMonitorOptions: MicrosoftOpenTelemetryBrowserOptions = {
     } satisfies AzureMonitorSdkStatsOptions,
   },
 };
-export const loaderStats: LoaderSdkStatsOptions = {
-  enabled: true,
-  collectionIntervalMillis: 900000,
-};
+getSdkLoaderScript({
+  connectionString,
+  // @ts-expect-error Customer SDK Stats is npm-only, not a loader option.
+  azureMonitor: { sdkStats: { enabled: true } },
+});
 useMicrosoftOpenTelemetry({
   // @ts-expect-error Customer stats cannot override Microsoft's internal destination.
   azureMonitor: { connectionString, sdkStats: { endpoint: "https://example.test" } },

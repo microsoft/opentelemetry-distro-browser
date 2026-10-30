@@ -17,11 +17,12 @@ import { createUserContext } from "./user/createUserContext.js";
 import {
   spanItemType,
   resourceItemDimensions,
-  validateSdkStatsOptions,
+  snapshotSdkStatsOptions,
   type CustomerSdkStats,
   type ItemType,
 } from "./exporter/customerSdkStats.js";
 import { detectBrowserResource } from "./resource/detectBrowserResource.js";
+import { CUSTOMER_SDK_STATS_ENABLED } from "./shared/buildFeatures.js";
 import { createKeyValueStorage } from "./storage/keyValueStorage.js";
 import { createSessionBufferStorage, sessionBufferStorage } from "./exporter/sessionBuffer.js";
 import type { LogRecordProcessor } from "@opentelemetry/sdk-logs";
@@ -178,7 +179,7 @@ function createOwnedInstrumentations(
 export async function useMicrosoftOpenTelemetry(
   options: MicrosoftOpenTelemetryBrowserOptions = {},
 ): Promise<MicrosoftOpenTelemetryBrowser> {
-  validateSdkStatsOptions(options.azureMonitor?.sdkStats);
+  const sdkStats = snapshotSdkStatsOptions(options.azureMonitor?.sdkStats);
   let stopping = false;
   let instrumentationRegistry: ReturnType<typeof createInstrumentationRegistry> | undefined;
   const sessionOptions = options.session;
@@ -189,7 +190,7 @@ export async function useMicrosoftOpenTelemetry(
   const azureMonitor = options.azureMonitor
     ? {
         ...options.azureMonitor,
-        sdkStats: options.azureMonitor.sdkStats && { ...options.azureMonitor.sdkStats },
+        sdkStats,
       }
     : undefined;
   const configuration = createRuntimeConfiguration(
@@ -256,7 +257,7 @@ export async function useMicrosoftOpenTelemetry(
   // Sampling can reject spans before a deferred destination creates its reporter.
   let pendingSampleDrops: Map<ItemType, number> | undefined;
   const onSampleDrop =
-    options.azureMonitor?.sdkStats?.enabled === true
+    CUSTOMER_SDK_STATS_ENABLED && azureMonitor?.sdkStats?.enabled === true
       ? (kind: SpanKind) => {
           if (stopping) return;
           const type = spanItemType(kind);
@@ -268,6 +269,15 @@ export async function useMicrosoftOpenTelemetry(
           }
         }
       : undefined;
+  const onSpanStats = CUSTOMER_SDK_STATS_ENABLED
+    ? (stats: CustomerSdkStats) => {
+        spanStats = stats;
+        for (const [type, count] of pendingSampleDrops ?? []) {
+          stats.countDrop(resourceItemDimensions(type, samplingResource), "SAMPLING", count);
+        }
+        pendingSampleDrops = undefined;
+      }
+    : undefined;
   const readSamplingPercentage = () => configuration.snapshot().samplingPercentage;
   const sampler = new RuntimeSampler(readSamplingPercentage, onSampleDrop);
   const userContext = createUserContext(
@@ -508,13 +518,7 @@ export async function useMicrosoftOpenTelemetry(
         readSamplingPercentage,
         azureMonitorExporters,
         () => configuration.snapshot().azureMonitor.disableBeacon,
-        (stats) => {
-          spanStats = stats;
-          for (const [type, count] of pendingSampleDrops ?? []) {
-            stats.countDrop(resourceItemDimensions(type, samplingResource), "SAMPLING", count);
-          }
-          pendingSampleDrops = undefined;
-        },
+        onSpanStats,
       );
       stopAzureMonitorStartup = stop;
       startAzureMonitorDiagnostics = startDiagnostics;

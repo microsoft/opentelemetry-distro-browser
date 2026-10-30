@@ -201,20 +201,10 @@ async function writeSnippetPage(
       instrumentationOptions: { errors: { enabled: true } },
       resourceAttributes: { "service.name": "cdn-snippet-service", "service.version": "1.2.3" },
     }),
-    ...(scenario === "stats" && {
-      azureMonitor: { sdkStats: { enabled: true, collectionIntervalMillis: 1234 } },
-      samplingPercentage: 0,
-      pageView: { enabled: false },
-      instrumentationOptions: { errors: { enabled: true } },
-      resourceAttributes: {
-        "service.name": "cdn-stats-service",
-        "service.instance.id": "cdn-stats-instance",
-      },
-    }),
   });
   // Reported only when the snippet enabled the opt-in errors instrumentation.
   const reportError =
-    scenario === "configured" || scenario === "stats"
+    scenario === "configured"
       ? `window.dispatchEvent(new ErrorEvent("error", { error: new Error("cdn snippet failure"), message: "cdn snippet failure" }));\n  `
       : "";
   // Application requests the snippet's default fetch and XHR instrumentations must report.

@@ -422,33 +422,19 @@ it("keeps the connection string when azureMonitor is configured", () => {
   expect(generated).toContain('"cfg":{"azureMonitor":{"connectionString":"connection"}}');
 });
 
-it("passes customer stats opt-in and interval through the generated loader", async () => {
-  const sdkStats = { enabled: true, collectionIntervalMillis: 1234 };
-  const { inlineScript, initialization } = executeLoader({
-    src: fixtureUrl,
-    connectionString: "InstrumentationKey=test",
-    azureMonitor: { sdkStats },
-  });
-  try {
-    await initialization;
-    expect(loaderWindow.snippetOptions).toMatchObject({
-      azureMonitor: { connectionString: "InstrumentationKey=test", sdkStats },
-    });
-  } finally {
-    inlineScript.remove();
-    removeLoadedScript(fixtureUrl);
-  }
-});
-
 it.each([
+  undefined,
   null,
   [],
+  {},
+  { enabled: false },
+  { enabled: true, collectionIntervalMillis: 1234 },
   { enabled: "yes" },
   { collectionIntervalMillis: 0 },
   { collectionIntervalMillis: -1 },
   { collectionIntervalMillis: 1.5 },
   { collectionIntervalMillis: 2_147_483_648 },
-])("rejects invalid loader customer stats %j", (sdkStats) => {
+])("rejects npm-only customer stats in the loader: %j", (sdkStats) => {
   expect(() =>
     getSdkLoaderScript({
       connectionString: "connection",

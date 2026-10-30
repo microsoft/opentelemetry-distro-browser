@@ -2,8 +2,6 @@
 // Licensed under the MIT License.
 
 import { OPENTELEMETRY_BROWSER_VERSION } from "./shared/constants.js";
-import type { AzureMonitorSdkStatsOptions } from "./exporter/customerSdkStats.js";
-export type { AzureMonitorSdkStatsOptions } from "./exporter/customerSdkStats.js";
 
 /**
  * Configuration for {@link getSdkLoaderScript}.
@@ -56,8 +54,6 @@ export interface SdkLoaderConfig {
   readonly azureMonitor?: {
     /** Same as `AzureMonitorOptions.disableBeacon`. */
     readonly disableBeacon?: boolean;
-    /** Same as `AzureMonitorOptions.sdkStats`. */
-    readonly sdkStats?: AzureMonitorSdkStatsOptions;
   };
   /** Same as `MicrosoftOpenTelemetryBrowserOptions.session`. */
   readonly session?: {
@@ -345,19 +341,10 @@ export function getSdkLoaderScript(config: SdkLoaderConfig): string {
       checkField(value?.[field], `${name}.${field}`, kind);
     }
   }
-  const stats = azureMonitor?.sdkStats;
   check(
-    stats === undefined || isObject(stats),
+    !azureMonitor || !("sdkStats" in azureMonitor),
     "azureMonitor.sdkStats",
-    `a JSON object ${optional}`,
-  );
-  checkField(stats?.enabled, "azureMonitor.sdkStats.enabled", "boolean");
-  const statsInterval = stats?.collectionIntervalMillis;
-  check(
-    statsInterval === undefined ||
-      (Number.isInteger(statsInterval) && statsInterval >= 1 && statsInterval <= 2_147_483_647),
-    "azureMonitor.sdkStats.collectionIntervalMillis",
-    `an integer from 1 through 2147483647 ${optional}`,
+    "omitted (npm-only)",
   );
   for (const [name, value] of Object.entries(instrumentationOptions ?? {})) {
     if (value === undefined) continue;
