@@ -77,10 +77,10 @@ comparison remains informational and does not replace the absolute gate.
 emits them, so it must run after a production build. Their budgets block in every release channel,
 including alpha:
 
-| Artifact                                                   |  Minified |     Gzip |  Brotli |
-| ---------------------------------------------------------- | --------: | -------: | ------: |
-| `opentelemetry-browser.{iife,umd}.min.js`                  | 181.25 kB | 57.75 kB | 50.5 kB |
-| `opentelemetry-browser-instrumentations.{iife,umd}.min.js` |     63 kB |    19 kB |   17 kB |
+| Artifact                                                   | Minified |     Gzip |   Brotli |
+| ---------------------------------------------------------- | -------: | -------: | -------: |
+| `opentelemetry-browser.{iife,umd}.min.js`                  |   189 kB | 60.25 kB | 52.75 kB |
+| `opentelemetry-browser-instrumentations.{iife,umd}.min.js` |    63 kB |    19 kB |    17 kB |
 
 These ceilings include opt-in Click Analytics parity. Against the pre-feature build with the same
 dependencies, it adds approximately 2.4 kB gzip to SDK browser bundles, 2.7 kB gzip to instrumentation
