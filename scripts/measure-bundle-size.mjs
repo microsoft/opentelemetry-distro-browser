@@ -34,6 +34,7 @@ export const entryPointBudgets = {
     gzipBytes: 2.75 * 1024,
     brotliBytes: 2.5 * 1024,
   },
+  "./react": { rawBytes: 12 * 1024, gzipBytes: 4 * 1024, brotliBytes: 3.5 * 1024 },
 };
 
 // The SDK browser bundle also carries every instrumentation, because CDN users cannot add them later.
@@ -201,6 +202,14 @@ export const scenarios = [
   publishedRootScenario,
   publishedInstrumentationsScenario,
   publishedSnippetScenario,
+  {
+    id: "published-react",
+    label: "Published react adapter (framework runtime external)",
+    group: "entry-point",
+    entryPoint: "./react",
+    external: ["react"],
+    code: `import * as adapter from "${packageName}/react";\n${sink("adapter")}`,
+  },
   ...instrumentationScenarios,
   everythingScenario,
 ];
@@ -262,6 +271,7 @@ async function measureScenario(scenario) {
   await writeFile(input, scenario.code, "utf8");
   const bundle = await rollup({
     input,
+    external: scenario.external ?? [],
     plugins: [nodeResolve({ browser: true }), commonjs()],
     onwarn(warning, defaultHandler) {
       if (warning.code === "UNRESOLVED_IMPORT") throw new Error(warning.message);

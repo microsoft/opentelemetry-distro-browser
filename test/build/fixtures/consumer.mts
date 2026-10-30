@@ -12,11 +12,59 @@ import {
   type MicrosoftOpenTelemetryBrowserSessionOptions,
 } from "@microsoft/opentelemetry-browser";
 import type { AzureMonitorSdkStatsOptions } from "@microsoft/opentelemetry-browser";
+import {
+  AppInsightsContext,
+  AppInsightsErrorBoundary,
+  ReactPlugin,
+  useAppInsightsContext,
+  useTrackEvent,
+  useTrackMetric,
+  withAITracking,
+  type AIReactCustomEvent,
+  type IAppInsightsErrorBoundaryFallbackProps,
+  type IReactExtensionConfig,
+} from "@microsoft/opentelemetry-browser/react";
+import { createElement, type ReactElement } from "react";
 import { OTLPLogExporter } from "@opentelemetry/exporter-logs-otlp-http";
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
 import { BatchLogRecordProcessor } from "@opentelemetry/sdk-logs";
 import { resourceFromAttributes } from "@opentelemetry/resources";
 import { BatchSpanProcessor } from "@opentelemetry/sdk-trace-base";
+
+const reactConfig: IReactExtensionConfig = { routeResolver: () => "/orders/:id" };
+export const reactPlugin: ReactPlugin = new ReactPlugin(reactConfig);
+export const reactOptions: MicrosoftOpenTelemetryBrowserOptions = {
+  instrumentations: [reactPlugin],
+  pageView: reactPlugin.pageView,
+};
+
+function Consumer(): ReactElement {
+  const plugin = useAppInsightsContext();
+  const setEvent: AIReactCustomEvent<{ count: number }> = useTrackEvent(plugin, "click", {
+    count: 0,
+  });
+  const activity: () => void = useTrackMetric(plugin, "Consumer");
+  return createElement("button", {
+    onClick: () => {
+      activity();
+      setEvent((previous) => ({ count: previous.count + 1 }));
+    },
+  });
+}
+
+function Fallback(props: IAppInsightsErrorBoundaryFallbackProps): ReactElement {
+  return createElement("p", null, props.error?.message);
+}
+
+export const TrackedConsumer = withAITracking(reactPlugin, Consumer, "Consumer");
+export const reactTree = createElement(AppInsightsContext.Provider, {
+  value: reactPlugin,
+  children: createElement(AppInsightsErrorBoundary, {
+    appInsights: reactPlugin,
+    onError: Fallback,
+    children: createElement(TrackedConsumer),
+  }),
+});
 
 export const version: string = OPENTELEMETRY_BROWSER_VERSION;
 export const session: MicrosoftOpenTelemetryBrowserSessionOptions = {

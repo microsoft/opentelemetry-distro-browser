@@ -81,6 +81,20 @@ const promotedPageVisitAttributes = /* @__PURE__ */ new Set([
   ATTR_PAGE_VIEW_ID,
   URL_FULL,
 ]);
+const promotedMetricAttributes = /* @__PURE__ */ new Set([
+  EXCEPTION_MESSAGE,
+  EXCEPTION_STACKTRACE,
+  EXCEPTION_TYPE,
+  NAVIGATION_DURATION,
+  ...USER_ATTRIBUTES,
+  AZURE_MONITOR_SAMPLE_RATE,
+  "metric.name",
+  "metric.value",
+  "metric.count",
+  "metric.min",
+  "metric.max",
+  "metric.stddev",
+]);
 const promotedPageViewAttributes = /* @__PURE__ */ new Set([
   EXCEPTION_MESSAGE,
   EXCEPTION_STACKTRACE,
@@ -409,6 +423,18 @@ export function logItemType(logRecord: ReadableLogRecord): ItemType {
     if (typeof duration === "number" && Number.isFinite(duration) && duration >= 0)
       return "CUSTOM_METRIC";
   }
+  if (
+    logRecord.eventName === "browser.custom_metric" &&
+    typeof logRecord.attributes["metric.name"] === "string" &&
+    logRecord.attributes["metric.name"].trim().length > 0 &&
+    typeof logRecord.attributes["metric.value"] === "number" &&
+    Number.isFinite(logRecord.attributes["metric.value"]) &&
+    (logRecord.attributes["metric.count"] === undefined ||
+      (typeof logRecord.attributes["metric.count"] === "number" &&
+        Number.isSafeInteger(logRecord.attributes["metric.count"]) &&
+        logRecord.attributes["metric.count"] > 0))
+  )
+    return "CUSTOM_METRIC";
   return logRecord.eventName && logRecord.eventName !== "browser.console"
     ? "CUSTOM_EVENT"
     : "TRACE";
@@ -424,7 +450,9 @@ export function logToEnvelope(
       ? promotedPageViewAttributes
       : logRecord.eventName === "browser.page_visit"
         ? promotedPageVisitAttributes
-        : promotedLogAttributes,
+        : logRecord.eventName === "browser.custom_metric"
+          ? promotedMetricAttributes
+          : promotedLogAttributes,
     true,
   );
   const sampleRate = getSampleRate(logRecord.attributes as Attributes);
@@ -507,7 +535,11 @@ export function logToEnvelope(
           ? customFields.properties
           : truncateCustomDimensions({ ...customFields.properties, refUri: referrerValue }),
     };
-  } else if (itemType === "CUSTOM_METRIC" && typeof visitDuration === "number") {
+  } else if (
+    itemType === "CUSTOM_METRIC" &&
+    logRecord.eventName === "browser.page_visit" &&
+    typeof visitDuration === "number"
+  ) {
     const pageUrl = logRecord.attributes[URL_FULL];
     baseType = "MetricData";
     baseData = {
@@ -528,6 +560,31 @@ export function logToEnvelope(
         PageName: serializeAttribute(logRecord.attributes[ATTR_PAGE_VIEW_NAME] ?? ""),
         ...(typeof pageUrl === "string" && pageUrl.length > 0 ? { PageUrl: pageUrl } : {}),
       }),
+    };
+  } else if (
+    itemType === "CUSTOM_METRIC" &&
+    typeof logRecord.attributes["metric.name"] === "string" &&
+    typeof logRecord.attributes["metric.value"] === "number"
+  ) {
+    const finite = (key: string): number | undefined => {
+      const value = logRecord.attributes[key];
+      return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+    };
+    baseType = "MetricData";
+    baseData = {
+      ver: 2,
+      metrics: [
+        {
+          name: truncateToLength(logRecord.attributes["metric.name"], MaxPropertyLengths.TEN_BIT),
+          kind: 0,
+          value: logRecord.attributes["metric.value"],
+          count: finite("metric.count"),
+          min: finite("metric.min"),
+          max: finite("metric.max"),
+          stdDev: finite("metric.stddev"),
+        },
+      ],
+      ...customFields,
     };
   } else if (itemType === "CUSTOM_EVENT" && logRecord.eventName) {
     baseType = "EventData";

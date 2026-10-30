@@ -122,6 +122,89 @@ afterEach(() => {
 });
 
 describe("PageViewInstrumentation", () => {
+  it.each([true, () => false])(
+    "ignores an unrelated route source isActive property: %s",
+    (isActive) => {
+      const source = {
+        getCurrentUrl: () => "/custom-source",
+        subscribe: () => () => {},
+        isActive,
+      };
+      const { instrumentation } = createInstrumentation({ routeSource: source });
+      expect(instrumentation.isActive()).toBe(false);
+      instrumentation.enable();
+      expect(instrumentation.isActive()).toBe(true);
+      expect(instrumentation.getOperationContext()?.traceId).toBeDefined();
+      instrumentation.disable();
+      expect(instrumentation.isActive()).toBe(false);
+    },
+  );
+
+  it("follows a committed route source without patching History and releases it on disable", async () => {
+    let url = "/framework-start";
+    let notify!: Parameters<
+      NonNullable<InternalPageViewInstrumentationConfig["routeSource"]>["subscribe"]
+    >[0];
+    const unsubscribe = vi.fn();
+    const pushState = history.pushState;
+    const { instrumentation, provider } = createInstrumentation({
+      routeSource: {
+        getCurrentUrl: () => url,
+        subscribe: (listener) => {
+          notify = listener;
+          return unsubscribe;
+        },
+      },
+      autoTrackPageVisitTime: true,
+      visitStorage: null,
+      routeResolver: () => (url === "/framework-start" ? "/start" : "/orders/:id"),
+    });
+    instrumentation.enable();
+    await settle();
+    expect(history.pushState).toBe(pushState);
+    const initialId = instrumentation.getOperationContext()?.traceId;
+    url = "/orders/42?token=secret";
+    notify({ url });
+    const routeId = instrumentation.getOperationContext()?.traceId;
+    expect(routeId).not.toBe(initialId);
+    await settle();
+    notify({ url });
+    await settle();
+    const pages = provider.records.filter((record) => record.eventName === "browser.page_view");
+    expect(pages).toHaveLength(2);
+    expect(pages[1].attributes).toMatchObject({
+      "browser.page_view.name": "/orders/:id",
+      "browser.page_view.name_source": "route",
+      "url.full": `${location.origin}/orders/42?token=REDACTED`,
+    });
+    expect(
+      provider.records.filter((record) => record.eventName === "browser.page_visit"),
+    ).toHaveLength(1);
+    instrumentation.disable();
+    instrumentation.disable();
+    expect(unsubscribe).toHaveBeenCalledTimes(1);
+    url = "/after-disable";
+    notify({ url });
+    await settle();
+    expect(
+      provider.records.filter((record) => record.eventName === "browser.page_view"),
+    ).toHaveLength(2);
+  });
+
+  it("cleans up a route source even when its unsubscribe throws", () => {
+    const unsubscribe = vi.fn(() => {
+      throw new Error("unsubscribe failed");
+    });
+    const { instrumentation } = createInstrumentation({
+      routeSource: { getCurrentUrl: () => "/", subscribe: () => unsubscribe },
+    });
+    instrumentation.enable();
+    expect(() => instrumentation.disable()).not.toThrow();
+    instrumentation.disable();
+    expect(unsubscribe).toHaveBeenCalledTimes(1);
+    expect(instrumentation.getOperationContext()).toBeUndefined();
+  });
+
   it.each(["first frame", "second frame", "idle"] as const)(
     "cancels pending %s work on disable",
     async (stage) => {

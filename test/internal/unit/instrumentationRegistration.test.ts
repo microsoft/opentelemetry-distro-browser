@@ -69,6 +69,7 @@ function createInstrumentation(enabled: boolean | undefined = false) {
   return {
     setTracerProvider: vi.fn<BrowserInstrumentation["setTracerProvider"]>(),
     setLoggerProvider: vi.fn<NonNullable<BrowserInstrumentation["setLoggerProvider"]>>(),
+    setUrlSanitizer: vi.fn<NonNullable<BrowserInstrumentation["setUrlSanitizer"]>>(),
     getConfig: vi.fn<BrowserInstrumentation["getConfig"]>(() => config),
     enable: vi.fn(),
     disable: vi.fn(),
@@ -100,6 +101,9 @@ it("binds the instance's own providers before enabling deferred instrumentation"
   expect(startTelemetryInstance).toHaveBeenCalledBefore(instrumentation.setTracerProvider);
   expect(instrumentation.setTracerProvider).toHaveBeenCalledBefore(instrumentation.enable);
   expect(instrumentation.setLoggerProvider).toHaveBeenCalledBefore(instrumentation.enable);
+  expect(instrumentation.setUrlSanitizer).toHaveBeenCalledOnce();
+  expect(instrumentation.setLoggerProvider).toHaveBeenCalledBefore(instrumentation.setUrlSanitizer);
+  expect(instrumentation.setUrlSanitizer).toHaveBeenCalledBefore(instrumentation.enable);
   expect(instrumentation.enable).toHaveBeenCalledOnce();
   expect(instrumentation.getConfig()).toEqual({ enabled: false });
   await handle.shutdown();
@@ -116,7 +120,11 @@ it("rebinds already-enabled instrumentation without enabling it twice", async ()
 
 it("supports trace-only instrumentation and an unspecified enabled state", async () => {
   const instrumentation = createInstrumentation();
-  const { setLoggerProvider: _setLoggerProvider, ...traceOnly } = instrumentation;
+  const {
+    setLoggerProvider: _setLoggerProvider,
+    setUrlSanitizer: _setUrlSanitizer,
+    ...traceOnly
+  } = instrumentation;
   traceOnly.getConfig.mockReturnValueOnce({});
   await initialize([traceOnly]);
   expect(traceOnly.setTracerProvider).toHaveBeenCalledOnce();
@@ -1180,28 +1188,36 @@ it("propagates an SDK shutdown failure after disabling instrumentation", async (
   expect(instrumentation.disable).toHaveBeenCalledBefore(sdk.shutdown);
 });
 
-it.each(["setTracerProvider", "setLoggerProvider", "getConfig", "enable"] as const)(
-  "rolls back all supplied instances and the SDK if %s fails",
-  async (method) => {
-    const first = createInstrumentation();
-    const failing = createInstrumentation();
-    const last = createInstrumentation(true);
-    const failure = new Error("registration failed");
-    failing[method].mockImplementation(() => {
-      throw failure;
-    });
-    const sdk = fakeInstance();
-    vi.mocked(startTelemetryInstance).mockResolvedValueOnce(sdk);
-    await expect(
-      useMicrosoftOpenTelemetry({ instrumentations: [first, failing, last] }),
-    ).rejects.toThrow(failure);
-    expect(last.disable).toHaveBeenCalledBefore(failing.disable);
-    expect(failing.disable).toHaveBeenCalledBefore(first.disable);
-    expect(first.disable).toHaveBeenCalledBefore(sdk.shutdown);
-    expect(last.setTracerProvider).not.toHaveBeenCalled();
-    await sdk.shutdown.mock.results[0].value;
-  },
-);
+it.each([
+  "setTracerProvider",
+  "setLoggerProvider",
+  "setUrlSanitizer",
+  "getConfig",
+  "enable",
+] as const)("rolls back all supplied instances and the SDK if %s fails", async (method) => {
+  const first = createInstrumentation();
+  const failing = createInstrumentation();
+  const last = createInstrumentation(true);
+  const failure = new Error("registration failed");
+  failing[method].mockImplementation(() => {
+    throw failure;
+  });
+  const sdk = fakeInstance();
+  vi.mocked(startTelemetryInstance).mockResolvedValueOnce(sdk);
+  await expect(
+    useMicrosoftOpenTelemetry({ instrumentations: [first, failing, last] }),
+  ).rejects.toThrow(failure);
+  expect(last.disable).toHaveBeenCalledBefore(failing.disable);
+  expect(failing.disable).toHaveBeenCalledBefore(first.disable);
+  expect(first.disable).toHaveBeenCalledBefore(sdk.shutdown);
+  expect(last.setTracerProvider).not.toHaveBeenCalled();
+  await sdk.shutdown.mock.results[0].value;
+  if (method === "setUrlSanitizer") {
+    failing.setUrlSanitizer.mockReset();
+    await initialize([first, failing, last]);
+    expect(failing.enable).toHaveBeenCalledOnce();
+  }
+});
 
 it.each([false, true])(
   "preserves initialization errors when cleanup fails and diagnostics throw=%s",

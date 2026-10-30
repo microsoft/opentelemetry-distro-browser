@@ -14,7 +14,7 @@ import {
 import { type LogRecord } from "@opentelemetry/api-logs";
 import { RandomIdGenerator } from "@opentelemetry/sdk-trace-base";
 import { InstrumentationBase, safeExecuteInTheMiddle } from "@opentelemetry/instrumentation";
-import { OPENTELEMETRY_BROWSER_VERSION } from "../../shared/constants.js";
+import { OPENTELEMETRY_BROWSER_VERSION, ROUTE_SOURCE_ACTIVE } from "../../shared/constants.js";
 import { markPageContext } from "../../shared/pageOperationContext.js";
 import { createPageViewContext, generatePageViewId } from "./pageViewContext.js";
 import { redactUrl } from "../../shared/urlRedaction.js";
@@ -182,6 +182,7 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
 
   /** Aborted by `disable()` to remove every listener added while enabled. */
   #listeners: AbortController | undefined;
+  #unsubscribeRoutes: (() => void) | undefined;
   #ownPushState: unknown;
   #ownReplaceState: unknown;
 
@@ -226,6 +227,11 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
     return this.enabledState ? this.#currentOperation() : undefined;
   }
 
+  /** Whether this source can advance the shared operation, rather than a paused route. @internal */
+  public isActive(): boolean {
+    return this.enabledState && (this.getConfig().routeSource?.[ROUTE_SOURCE_ACTIVE]?.() ?? true);
+  }
+
   /** Safe name resolved with the current operation before its page view is published. */
   public getOperationName(traceId: string): string | undefined {
     const operation = this.getOperationContext();
@@ -268,7 +274,7 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
   }
 
   #currentOperation(): SpanContext {
-    const url = this.#getNavigationApi()?.currentEntry?.url ?? location.href;
+    const url = this.#currentUrl();
     const shared = this.getConfig().sharedOperation?.();
     if (shared) {
       // Kept for this URL, so the page view in flight keeps its ID after the source shuts down.
@@ -340,7 +346,7 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
     this.initialContext = undefined;
     if (active && isSpanContextValid(active)) {
       this.#operation = active;
-      this.#operationUrl = this.#getNavigationApi()?.currentEntry?.url ?? location.href;
+      this.#operationUrl = this.#currentUrl();
     }
     this.enabledState = true;
     const config = this.getConfig();
@@ -380,15 +386,22 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
       );
       if (this.#startupPending) this.#visit.beginStartup();
     }
-    this.#lastUrl = location.href;
+    this.#lastUrl = this.#currentUrl();
     this.#historyLength = history.length;
 
     const listeners = (this.#listeners = new AbortController());
     const on = (target: EventTarget, type: string, listener: (event: Event) => void): void => {
       target.addEventListener(type, listener, { signal: listeners.signal });
     };
+    const routeSource = config.routeSource;
     const navigationApi = this.#getNavigationApi();
-    if (navigationApi) {
+    if (routeSource) {
+      this.#unsubscribeRoutes = routeSource.subscribe(({ url, type }) => {
+        this.#guard(() => {
+          this.#startSoftNavigation(new URL(url, location.href).href, type ?? PAGE_VIEW_TYPE_PUSH);
+        }, "Framework navigation failed");
+      });
+    } else if (navigationApi) {
       on(navigationApi, "currententrychange", (event) => {
         this.#handleSoftNavigation("currententrychange", event);
       });
@@ -441,6 +454,9 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
 
     this.#listeners?.abort();
     this.#listeners = undefined;
+    const unsubscribeRoutes = this.#unsubscribeRoutes;
+    this.#unsubscribeRoutes = undefined;
+    this.#guard(() => unsubscribeRoutes?.(), "Framework navigation cleanup failed");
     if (this.historyPatched) {
       // Unwrap only while this instance is still the outermost wrapper. `history` is global: if
       // another instance wrapped after this one, unwrapping here restores the function this
@@ -590,6 +606,18 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
     return (globalThis as { navigation?: NavigationApiLike }).navigation;
   }
 
+  #currentUrl(): string {
+    const source = this.getConfig().routeSource;
+    if (source) {
+      const url = this.#guard(
+        () => new URL(source.getCurrentUrl(), location.href).href,
+        "Framework URL resolution failed",
+      );
+      if (url) return url;
+    }
+    return this.#getNavigationApi()?.currentEntry?.url ?? location.href;
+  }
+
   #patchHistoryMethod(
     trigger: "pushState" | "replaceState",
   ): (original: History["pushState"]) => History["pushState"] {
@@ -622,7 +650,6 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
     if (!this.enabledState) {
       return;
     }
-    const previousUrl = this.#lastUrl;
     // Read before anything else: the count is only meaningful relative to the last navigation.
     const historyGrew = history.length > this.#historyLength;
     this.#historyLength = history.length;
@@ -630,6 +657,12 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
       trigger === "currententrychange"
         ? (this.#getNavigationApi()?.currentEntry?.url ?? location.href)
         : location.href;
+    this.#startSoftNavigation(currentUrl, this.#mapSoftNavigationType(trigger, historyGrew, event));
+  }
+
+  #startSoftNavigation(currentUrl: string, navigationType: PageViewNavigationType): void {
+    if (!this.enabledState) return;
+    const previousUrl = this.#lastUrl;
     if (currentUrl === previousUrl) {
       return;
     }
@@ -638,7 +671,7 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
     this.#settle(DURATION_SOURCE_SOFT_INTERRUPTED);
 
     this.#begin({
-      navigationType: this.#mapSoftNavigationType(trigger, historyGrew, event),
+      navigationType,
       sameDocument: true,
       referrer: previousUrl,
       url: currentUrl,
@@ -791,7 +824,7 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
     startTimeUnixMs: number;
     startedAt: number;
   }): PendingPageView {
-    const rawUrl = input.url ?? location.href;
+    const rawUrl = input.url ?? this.#currentUrl();
     const operation = this.#currentOperation();
     const resolved = this.#resolveName();
     this.#operationName = resolved;
@@ -870,7 +903,7 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
       return { name: title, source: NAME_SOURCE_DOCUMENT_TITLE };
     }
 
-    return { name: location.pathname, source: NAME_SOURCE_URL_PATH };
+    return { name: new URL(this.#currentUrl()).pathname, source: NAME_SOURCE_URL_PATH };
   }
 
   /**
@@ -931,7 +964,7 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
    */
   #finalizeName(pending: PendingPageView): PageView {
     const resolved =
-      location.href === pending.rawUrl
+      this.#currentUrl() === pending.rawUrl
         ? this.#resolveName()
         : this.#resolveInterruptedName(pending);
     if (

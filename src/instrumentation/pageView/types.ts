@@ -3,6 +3,7 @@
 
 import type { SpanContext } from "@opentelemetry/api";
 import { type LogRecord } from "@opentelemetry/api-logs";
+import type { ROUTE_SOURCE_ACTIVE } from "../../shared/constants.js";
 import type { KeyValueStorage } from "../../storage/keyValueStorage.js";
 
 /**
@@ -195,6 +196,22 @@ export interface PageViewInstrumentationConfig {
   readonly routeResolver?: () => string | undefined;
 
   /**
+   * Optional framework navigation source. When supplied, it replaces History/Navigation API
+   * observation, not document-load, pagehide or back/forward-cache observation. Register a source
+   * on every instance that should follow the same router. It must notify only committed routes;
+   * canceled navigations must not notify. URLs may be relative to the document.
+   * Subscriptions are removed when the owning telemetry instance shuts down.
+   */
+  readonly routeSource?: {
+    /** Current committed URL, including for routers that do not change the browser location. */
+    getCurrentUrl(): string;
+    /** Subscribe without replaying the initial route, which the document page view owns. */
+    subscribe(
+      listener: (navigation: { url: string; type?: "push" | "replace" | "traverse" }) => void,
+    ): () => void;
+  };
+
+  /**
    * Query-string and fragment parameter names whose values are replaced with `REDACTED`.
    *
    * @remarks
@@ -238,6 +255,10 @@ export interface PageViewInstrumentationConfig {
  * @internal
  */
 export interface InternalPageViewInstrumentationConfig extends PageViewInstrumentationConfig {
+  /** Internal adapter eligibility for realm-wide page-operation ownership. */
+  readonly routeSource?: NonNullable<PageViewInstrumentationConfig["routeSource"]> & {
+    [ROUTE_SOURCE_ACTIVE]?(): boolean;
+  };
   /** Null disables persistence; undefined uses the standalone sessionStorage default. */
   readonly visitStorage?: KeyValueStorage | null;
   /** Stable destination/instance-specific storage key supplied by the distribution. */
