@@ -10,6 +10,7 @@ import type {
 } from "../../src/index.js";
 import type {
   BrowserInstrumentation,
+  ClickAnalyticsInstrumentation,
   InstrumentationOptions,
 } from "../../src/instrumentation/browserInstrumentation/index.js";
 import { createInMemoryPipeline } from "../fixtures/telemetry.js";
@@ -104,6 +105,7 @@ async function exercise(bundle: BrowserBundle): Promise<void> {
     resourceTiming: { enabled: true },
     userAction: { enabled: true },
     webVitals: { enabled: true },
+    clickAnalytics: { enabled: true, autoCapture: false },
   });
   expect(
     instrumentations.map(
@@ -120,16 +122,20 @@ async function exercise(bundle: BrowserBundle): Promise<void> {
     "@opentelemetry/browser-instrumentation/resource-timing",
     "@opentelemetry/browser-instrumentation/user-action",
     "@opentelemetry/browser-instrumentation/web-vitals",
+    "@microsoft/opentelemetry-browser/click-analytics",
   ]);
 
+  const clicks = instrumentations.at(-1) as ClickAnalyticsInstrumentation;
   const pipeline = createInMemoryPipeline();
   const telemetry = await bundle.useMicrosoftOpenTelemetry({
     ...pipeline.options,
     pageView: { enabled: false },
+    instrumentations: [clicks],
   });
   try {
     bundle.trace.getTracer("module-format-test").startSpan("module-format").end();
     bundle.logs.getLogger("module-format-test").emit({ eventName: "module-format" });
+    clicks.trackPageAction({ name: "module-format-click" });
     await telemetry.forceFlush();
 
     expect(pipeline.spanExporter.getFinishedSpans().map((span) => span.name)).toEqual([
@@ -137,6 +143,7 @@ async function exercise(bundle: BrowserBundle): Promise<void> {
     ]);
     expect(pipeline.logExporter.getFinishedLogRecords().map((record) => record.eventName)).toEqual([
       "module-format",
+      "browser.click",
     ]);
   } finally {
     try {
@@ -212,6 +219,7 @@ it("records dependencies from the minified instrumentation bundle in the minifie
       pageView: { enabled: false },
       instrumentations: await instrumentationBundle.getInstrumentations({
         xhr: { enabled: false },
+        clickAnalytics: { enabled: true },
       }),
     });
     try {
@@ -524,6 +532,17 @@ it.each([
         xhr: { enabled: false },
       }),
     ).toEqual([]);
+    const clicks = await bundle?.getInstrumentations({
+      fetch: { enabled: false },
+      xhr: { enabled: false },
+      clickAnalytics: { enabled: true },
+    });
+    expect(clicks).toHaveLength(1);
+    expect(clicks?.[0]).toMatchObject({
+      instrumentationName: "@microsoft/opentelemetry-browser/click-analytics",
+      capturePageAction: expect.any(Function),
+      trackPageAction: expect.any(Function),
+    });
   } finally {
     script?.remove();
     delete window.Microsoft;
@@ -548,6 +567,17 @@ it.each([
         xhr: { enabled: false },
       }),
     ).toEqual([]);
+    const clicks = await getRegistration(file).getInstrumentations({
+      fetch: { enabled: false },
+      xhr: { enabled: false },
+      clickAnalytics: { enabled: true },
+    });
+    expect(clicks).toHaveLength(1);
+    expect(clicks[0]).toMatchObject({
+      instrumentationName: "@microsoft/opentelemetry-browser/click-analytics",
+      capturePageAction: expect.any(Function),
+      trackPageAction: expect.any(Function),
+    });
   } finally {
     script?.remove();
     restoreDefine();

@@ -103,6 +103,7 @@ export interface SdkLoaderConfig {
  * @public
  */
 export type SdkLoaderInstrumentationName =
+  | "clickAnalytics"
   | "console"
   | "errors"
   | "fetch"
@@ -114,6 +115,7 @@ export type SdkLoaderInstrumentationName =
   | "xhr";
 
 const instrumentationNames: readonly string[] = [
+  "clickAnalytics",
   "console",
   "errors",
   "fetch",
