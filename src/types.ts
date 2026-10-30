@@ -322,11 +322,29 @@ export interface MicrosoftOpenTelemetryBrowserUserContext {
  * Runtime pause/resume supports upstream 0.8.1 fetch, XHR, console, errors, user-action and
  * the same Web Vitals object only. Page views, navigation, timing and custom modules are
  * startup/shutdown-only. Web Vitals callbacks remain registered while emission is paused.
+ * Runtime add/remove/replace supports only fetch, XHR, console, errors and user-action.
  * @public
  */
 export interface MicrosoftOpenTelemetryBrowserInstrumentations {
   /** Returns an owned object, or undefined. Do not call its lifecycle or setConfig directly. */
   get(id: string): BrowserInstrumentation | undefined;
+  /**
+   * Registers a disabled, unowned supported object under an explicit non-empty, unused ID.
+   * Binds this instance's providers, then enables collection subject to its network gate.
+   * Fetch/XHR require an enabled trace pipeline. No modules are imported or constructed.
+   */
+  add(id: string, instrumentation: BrowserInstrumentation): Promise<void>;
+  /**
+   * Disables and removes a supported entry, releasing ownership only after successful cleanup.
+   * In-flight requests can still complete; removing Web Vitals or startup-only modules rejects.
+   */
+  remove(id: string): Promise<void>;
+  /**
+   * Replaces a supported entry with a disabled, unowned supported object, keeping its ID and
+   * requested enablement. The candidate's kind determines its gate. Lifecycle failures attempt
+   * rollback; uncertain objects remain owned for shutdown. Web Vitals replacement rejects.
+   */
+  replace(id: string, instrumentation: BrowserInstrumentation): Promise<void>;
   /**
    * Pauses/resumes collection for this instance. Serialized with updateCfg. Rejects unknown IDs,
    * unsupported modules and operations after shutdown. Resuming never opens a closed network

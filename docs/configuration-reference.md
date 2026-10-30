@@ -228,8 +228,8 @@ await telemetry.updateCfg({}, false); // Reset runtime policies, including both 
 updates cannot enable a disabled session or change persistence; `storage.enabled` and
 `storage.namePrefix` remain unchanged. Only sampling, session lifetimes and Azure Monitor beacon
 fallback policy, plus the two fetch/XHR collection gates, are supported by `updateCfg`.
-Instrumentation pause/resume uses the separate handle controls below; runtime addition, removal,
-replacement and configuration synchronization are not supported. The runtime `azureMonitor` subset
+Instrumentation pause/resume and supported add/remove/replace operations use the separate handle
+controls below; configuration synchronization is not supported. The runtime `azureMonitor` subset
 does not accept `connectionString`, `initTimeOut` or `initInMemoMaxSize`, and cannot replace or
 disable a destination. There is no root `connectionString` alias.
 
@@ -444,7 +444,7 @@ object or loader configuration.
 
 Normal automatic startup is unchanged: the distribution binds providers and enables eligible
 registered instrumentations without an extra handle call. The returned handle exposes
-`instrumentations` for instance-local lookup and supported pause/resume:
+`instrumentations` for instance-local lookup, pause/resume and supported registration changes:
 
 - `instrumentations.get(id: string): BrowserInstrumentation | undefined` returns the registered
   object, or `undefined` for an unknown ID. Inspection only: do not call its lifecycle methods or
@@ -453,6 +453,13 @@ registered instrumentations without an extra handle call. The returned handle ex
   requested enabled state. It rejects unknown IDs, unsupported runtime lifecycle operations and
   invalid arguments. Calls serialize with this handle's `updateCfg` and are subject to the
   collection-gate, rollback and shutdown rules above.
+- `instrumentations.add(id: string, instrumentation: BrowserInstrumentation): Promise<void>`
+  registers a supported object under an explicit, non-empty, unused ID.
+- `instrumentations.remove(id: string): Promise<void>` disables and removes a supported entry,
+  releasing ownership only after cleanup succeeds.
+- `instrumentations.replace(id: string, instrumentation: BrowserInstrumentation): Promise<void>`
+  replaces a supported entry while preserving its ID, registration position and requested enabled
+  state. The candidate's own kind determines which network gate applies.
 
 IDs use the upstream module suffix: `fetch`, `xhr`, `console`, `errors`, `user-action` and
 `web-vitals` for supported modules. Other upstream modules also use their suffix. Custom modules
@@ -471,7 +478,32 @@ Requested enablement is separate from effective collection. `setEnabled(id, true
 closed fetch/XHR gate nor revives a disabled trace pipeline. Reopening a gate preserves manual
 pauses, including when a replacement `updateCfg` resets the gates. The object's `getConfig().enabled`
 is not a runtime collection-status API. Controls affect only this handle, even when browser patches
-are shared with other instances; they operate only on objects registered at startup.
+are shared with other instances.
+
+Runtime add/remove/replace supports only pinned **0.8.1** fetch, XHR, console, errors and user-action
+objects. Construct candidates with `enabled: false`; they must be inactive and not owned by any
+handle. Fetch/XHR candidates require an enabled trace pipeline, even when a collection gate is
+closed. No modules are imported or constructed by these methods. Added entries request collection
+immediately, subject to the gate; replacements preserve a manual pause. A replacement can use a
+different supported kind. Existing IDs are never renumbered after removal or replacement.
+
+Web Vitals remains startup registration and same-object pause/resume only: its observer callbacks
+cannot be unregistered, so runtime add/remove/replace rejects it. Page views, navigation, timing,
+custom modules and other versions also reject registration changes.
+
+All mutation methods serialize with `updateCfg`. Candidates are claimed before provider binding;
+the new object becomes visible through `get` only after successful activation. The old object stays
+visible during replacement, and is released only after the new registration succeeds. Failed
+mutations attempt candidate cleanup and restoration of the previous registration. Objects whose
+cleanup fails remain privately owned and are included in shutdown cleanup; subsequent mutations
+reject when lifecycle state is uncertain. This cannot undo observed events, sent requests or injected
+headers. A removed object may be registered on another handle after successful cleanup. Shutdown
+attempts every remaining object, including unpublished candidates, in reverse ownership order.
+Errors-instrumentation cleanup failures receive one bounded retry using the retained listener
+references. The shutdown promise still reports the original error. Other failed cleanup, or a failed
+errors retry, retains ownership: upstream enabled flags can hide incomplete removal, so those
+objects cannot be reused on another handle. Calling `shutdown` again returns the same promise
+rather than retrying indefinitely.
 
 ```typescript
 const fetchInstrumentation = telemetry.instrumentations.get("fetch"); // Inspect only.
@@ -479,6 +511,19 @@ await telemetry.instrumentations.setEnabled("fetch", false);
 await telemetry.updateCfg({ disableFetchTracking: true });
 await telemetry.updateCfg({ disableFetchTracking: false }); // Manual pause remains.
 await telemetry.instrumentations.setEnabled("fetch", true); // Resume the registered entry.
+
+// Construct explicitly; the root package never imports optional instrumentation modules.
+const { ErrorsInstrumentation } =
+  await import("@opentelemetry/browser-instrumentation/experimental/errors");
+await telemetry.instrumentations.add(
+  "application-errors",
+  new ErrorsInstrumentation({ enabled: false }),
+);
+await telemetry.instrumentations.replace(
+  "application-errors",
+  new ErrorsInstrumentation({ enabled: false }),
+);
+await telemetry.instrumentations.remove("application-errors");
 ```
 
 ## Enrichment and filtering

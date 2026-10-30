@@ -453,10 +453,68 @@ it("preserves startup errors when restoring a partially installed patch also fai
     "Browser patch rollback failed",
     expect.any(AggregateError),
   );
-  expect(stop).not.toThrow();
+  expect(stop).toThrow("Browser patch cleanup failed");
   target.method("after rollback");
   expect(native).toHaveBeenCalledExactlyOnceWith("after rollback");
   expect(instrumentation.observe).not.toHaveBeenCalled();
+});
+
+it("retries a failed browser method restoration instead of dropping its removal callback", () => {
+  const native = vi.fn();
+  let locked = false;
+  const target = new Proxy(
+    { method: native },
+    {
+      defineProperty(object, name, descriptor) {
+        return locked ? false : Reflect.defineProperty(object, name, descriptor);
+      },
+    },
+  );
+  const instrumentation = new PatchProbe(target);
+  const stop = claim(instrumentation);
+  instrumentation.enable();
+  locked = true;
+  expect(() => instrumentation.disable()).toThrow("Browser patch cleanup failed");
+  expect(target.method).not.toBe(native);
+  locked = false;
+  expect(stop).not.toThrow();
+  expect(target.method).toBe(native);
+});
+
+it("does not let a stale removal callback delete a newer owner's patch", () => {
+  const native = vi.fn();
+  let locked = false;
+  const target = new Proxy(
+    { method: native },
+    {
+      defineProperty(object, name, descriptor) {
+        return locked ? false : Reflect.defineProperty(object, name, descriptor);
+      },
+    },
+  );
+  const first = new PatchProbe(target);
+  const stopFirst = claim(first);
+  first.enable();
+  locked = true;
+  expect(() => first.disable()).toThrow("Browser patch cleanup failed");
+  locked = false;
+  const second = new PatchProbe(target);
+  const stopSecond = claim(second);
+  second.enable();
+  second.disable();
+  second.enable();
+  const patched = target.method;
+  stopFirst();
+  const third = new PatchProbe(target);
+  const stopThird = claim(third);
+  third.enable();
+  expect(target.method).toBe(patched);
+  stopSecond();
+  target.method("survivor");
+  expect(second.observe).not.toHaveBeenCalled();
+  expect(third.observe).toHaveBeenCalledOnce();
+  stopThird();
+  expect(target.method).toBe(native);
 });
 
 it.each(["version", "wrap", "unwrap"] as const)("rejects an unsupported %s contract", (field) => {
@@ -488,6 +546,14 @@ it("rejects duplicate objects and live owners before rebinding them", () => {
   expect(() => claim(instrumentation)).toThrow("browser-instrumentation-owned");
   expect(target.method).toBe(patched);
   stop();
+  expect(() => claim(instrumentation)).not.toThrow();
+});
+
+it("does not strand earlier ownership when a later startup input is invalid", () => {
+  const instrumentation = new PatchProbe({ method: vi.fn() });
+  expect(() => claim(instrumentation, null as unknown as BrowserInstrumentation)).toThrow(
+    "Instrumentation must be an object",
+  );
   expect(() => claim(instrumentation)).not.toThrow();
 });
 

@@ -223,6 +223,9 @@ function subscribe(target: object, name: PropertyKey, subscriber: Subscription):
   }
   patch.subscribers.add(subscriber);
   return () => {
+    // A failed restoration can be retried after another owner installed a newer patch.
+    // The stale subscription must never delete that newer patch's registry entry.
+    if (methods.get(name) !== patch) return;
     patch.subscribers.delete(subscriber);
     if (patch.subscribers.size) return;
     if (target === globalThis.XMLHttpRequest?.prototype && name === "setRequestHeader") {
@@ -363,10 +366,9 @@ function adapt(instrumentation: Patchable): void {
     for (const entry of entries) {
       try {
         entry.remove?.();
+        entry.remove = undefined;
       } catch (error) {
         errors.push(error);
-      } finally {
-        entry.remove = undefined;
       }
     }
     if (errors.length) throw new AggregateError(errors, "Browser patch cleanup failed");
@@ -407,11 +409,19 @@ export function isNetworkInstrumentation(instrumentation: BrowserInstrumentation
   return isPatchable(instrumentation) && /\/(fetch|xhr)$/.test(instrumentation.instrumentationName);
 }
 
-/** Claims all inputs before binding any provider, including rollback of not-yet-enabled inputs. */
-export function claimInstrumentations(
+/** Reserves every object before callbacks; each returned release only relinquishes its own claim. */
+export function claimInstrumentationOwnership(
   instrumentations: readonly BrowserInstrumentation[],
-): () => void {
+  validate?: () => void,
+) {
   const owners = state().owners;
+  if (
+    instrumentations.some(
+      (item) => !item || (typeof item !== "object" && typeof item !== "function"),
+    )
+  ) {
+    throw new TypeError("Instrumentation must be an object.");
+  }
   const unique = new Set(instrumentations);
   if (
     unique.size !== instrumentations.length ||
@@ -422,16 +432,44 @@ export function claimInstrumentations(
       "Do not share instrumentation objects between instances",
     );
   }
-  for (const instrumentation of instrumentations) {
-    if (isPatchable(instrumentation)) adapt(instrumentation);
-  }
   for (const instrumentation of instrumentations) owners.add(instrumentation);
+  const claims = new Map(
+    instrumentations.map((instrumentation) => {
+      let held = true;
+      return [
+        instrumentation,
+        () => {
+          if (!held) return;
+          held = false;
+          owners.delete(instrumentation);
+        },
+      ] as const;
+    }),
+  );
+  try {
+    validate?.();
+    for (const instrumentation of instrumentations) {
+      if (isPatchable(instrumentation)) adapt(instrumentation);
+    }
+  } catch (error) {
+    for (const release of claims.values()) release();
+    throw error;
+  }
+  return claims;
+}
+
+/** Claims all inputs before binding any provider, including rollback of not-yet-enabled inputs. */
+export function claimInstrumentations(
+  instrumentations: readonly BrowserInstrumentation[],
+): () => void {
+  const claims = claimInstrumentationOwnership(instrumentations);
   return () => {
     const errors: unknown[] = [];
-    for (const instrumentation of [...instrumentations].reverse()) {
-      owners.delete(instrumentation);
+    for (const [instrumentation, release] of [...claims].reverse()) {
       try {
         instrumentation.disable();
+        release();
+        claims.delete(instrumentation);
       } catch (error) {
         errors.push(error);
       }

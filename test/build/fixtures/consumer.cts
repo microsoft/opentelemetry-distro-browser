@@ -84,10 +84,14 @@ export async function controlInstrumentations(
   const found = controls.get("fetch");
   await controls.setEnabled("fetch", false);
   await controls.setEnabled("fetch", true);
-  // @ts-expect-error Instrumentation controls do not add instrumentations at runtime.
+  const [instrumentation] = await getInstrumentations({ errors: { enabled: true } });
+  await controls.add("additional", instrumentation);
+  await controls.replace("additional", instrumentation);
+  await controls.remove("additional");
+  // @ts-expect-error Runtime additions require an explicit ID and instrumentation object.
   controls.add({});
-  // @ts-expect-error Instrumentation controls do not remove instrumentations at runtime.
-  controls.remove("fetch");
+  // @ts-expect-error Runtime replacement requires an instrumentation object.
+  controls.replace("fetch", {});
   // @ts-expect-error The handle instrumentation controls cannot be replaced.
   handle.instrumentations = controls;
   return found;
