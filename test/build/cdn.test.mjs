@@ -213,11 +213,20 @@ test("the default CDN bundle carries every instrumentation without loading other
       "resourceTiming",
       "userAction",
       "webVitals",
+      "clickAnalytics",
     ].map((name) => [name, { enabled: true }]),
   );
   const instrumentations = await getInstrumentations(all);
   assert.equal(instrumentations.length, Object.keys(all).length);
-  assert.equal(new Set(instrumentations.map((i) => i.instrumentationName)).size, 9);
+  assert.equal(
+    new Set(instrumentations.map((i) => i.instrumentationName)).size,
+    Object.keys(all).length,
+  );
+  assert.ok(
+    instrumentations.some(
+      (i) => i.instrumentationName === "@microsoft/opentelemetry-browser/click-analytics",
+    ),
+  );
   assert.equal((await getInstrumentations()).length, 2, "fetch and xhr are on by default");
 });
 

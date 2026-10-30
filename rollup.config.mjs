@@ -118,10 +118,12 @@ export default [
     // split out the instrumentations they enable.
     input: "src/instrumentation/browserInstrumentation/index.ts",
     external: externalOpenTelemetry,
-    plugins: [compile()],
+    plugins: [typescript({ tsconfig: "./tsconfig.src.json", outDir: "dist/esm" })],
     output: {
       ...esmOutput,
-      file: "dist/esm/instrumentations.js",
+      dir: "dist/esm",
+      entryFileNames: "instrumentations.js",
+      chunkFileNames: "click-analytics.js",
     },
   },
   {
@@ -138,9 +140,11 @@ export default [
   {
     input: "src/instrumentation/browserInstrumentation/index.ts",
     external: externalOpenTelemetry,
-    plugins: [compile()],
+    plugins: [typescript({ tsconfig: "./tsconfig.src.json", outDir: "dist/commonjs" })],
     output: {
-      file: "dist/commonjs/instrumentations.cjs",
+      dir: "dist/commonjs",
+      entryFileNames: "instrumentations.cjs",
+      chunkFileNames: "click-analytics.cjs",
       format: "cjs",
       exports: "named",
       sourcemap: true,

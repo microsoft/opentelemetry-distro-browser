@@ -82,6 +82,13 @@ including alpha:
 | `opentelemetry-browser.{iife,umd}.min.js`                  | 181.25 kB | 57.75 kB | 50.5 kB |
 | `opentelemetry-browser-instrumentations.{iife,umd}.min.js` |     63 kB |    19 kB |   17 kB |
 
+These ceilings include opt-in Click Analytics parity. Against the pre-feature build with the same
+dependencies, it adds approximately 2.4 kB gzip to SDK browser bundles, 2.7 kB gzip to instrumentation
+browser bundles, and 3.4 kB gzip to the complete npm instrumentations entry and its async chunks.
+The root and snippet budgets are unchanged. The npm instrumentation implementation is a lazy chunk;
+the root SDK does not import it. The size report also measures the Click Analytics factory and its
+async implementation independently of the other instrumentation factories.
+
 SWC minifies the browser bundles and shortens `_`-prefixed properties, the TypeScript `private`
 convention used by OpenTelemetry, so source code keeps descriptive names. Members that
 `sharedBrowserPatches.ts` reads on instrumentations from another bundle keep their names; add any
