@@ -237,7 +237,7 @@ it("reports customer metrics without identifiers, enrichment, application sampli
     expect(envelope.iKey).toBe(TEST_INSTRUMENTATION_KEY);
     expect(envelope.sampleRate).toBeUndefined();
     expect(Object.keys(envelope.tags)).toEqual(["ai.internal.sdkVersion"]);
-    expect(envelope.data.baseData.properties?.language).toBe("javascript");
+    expect(envelope.data.baseData.properties?.language).toBe("JavaScript");
   }
   expect(fetch.mock.calls[0]).toEqual([
     `${endpoint}/v2/track`,

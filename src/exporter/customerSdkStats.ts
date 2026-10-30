@@ -221,7 +221,7 @@ export function createCustomerSdkStats(
           value,
           {
             telemetryType,
-            language: "javascript",
+            language: "JavaScript",
             version: getSdkVersion(),
             computeType: "unknown",
             ...(code ? { [outcome === "Retry" ? "retryCode" : "dropCode"]: code } : {}),
