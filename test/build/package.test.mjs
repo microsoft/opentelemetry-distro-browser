@@ -195,12 +195,8 @@ test("click analytics exposes a type-only capture interface and matching factory
   }
 });
 
-test("SDK stats have no public exports or configuration declarations", async () => {
-  for (const file of [
-    "dist/esm/index.d.ts",
-    "dist/commonjs/index.d.cts",
-    "dist/esm/snippet.d.ts",
-  ]) {
+test("SDK stats expose root configuration without runtime exports or snippet configuration", async () => {
+  for (const file of ["dist/esm/index.d.ts", "dist/commonjs/index.d.cts"]) {
     const declarations = await readFile(new URL(file, root), "utf8");
     assert.match(declarations, /sdkStats\?: AzureMonitorSdkStatsOptions/);
     assert.doesNotMatch(declarations, /InternalSdkStats|createCustomerSdkStats|CustomerSdkStats/);
