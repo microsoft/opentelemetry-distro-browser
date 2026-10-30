@@ -61,7 +61,10 @@ function omitCustomFields(envelope: AzureMonitorEnvelope): AzureMonitorEnvelope 
   return { ...envelope, data: { ...envelope.data, baseData } };
 }
 
-function spanSucceeded(span: ReadableSpan, statusCode: number): boolean {
+export function spanSucceeded(
+  span: ReadableSpan,
+  statusCode = Number(span.attributes[HTTP_STATUS_CODE]) || 0,
+): boolean {
   if (span.status.code !== SpanStatusCode.UNSET) {
     return span.status.code === SpanStatusCode.OK;
   }
@@ -155,7 +158,6 @@ function spanEventToEnvelope(
   event: ReadableSpan["events"][number],
   instrumentationKey: string,
   unloadPrecedingEnvelopes: readonly AzureMonitorEnvelope[] | undefined,
-  spanEnvelopes: readonly AzureMonitorEnvelope[],
 ): AzureMonitorEnvelope<MessageData | ExceptionData> {
   const spanContext = span.spanContext();
   const attributes = event.attributes ?? {};
@@ -194,9 +196,7 @@ function spanEventToEnvelope(
     const budgetedEnvelopes =
       unloadPrecedingEnvelopes === undefined
         ? [envelopeWithoutException]
-        : [...unloadPrecedingEnvelopes, ...spanEnvelopes, envelopeWithoutException].map(
-            omitCustomFields,
-          );
+        : [...unloadPrecedingEnvelopes, envelopeWithoutException].map(omitCustomFields);
     const maxExceptionSize = MAX_BEACON_BODY_SIZE - getUtf8Size(JSON.stringify(budgetedEnvelopes));
     const baseData: ExceptionData = {
       ...baseDataWithoutException,
@@ -219,11 +219,22 @@ export function spanToEnvelopes(
   instrumentationKey: string,
   unloadPrecedingEnvelopes?: readonly AzureMonitorEnvelope[],
 ): readonly AzureMonitorEnvelope[] {
-  const envelopes: AzureMonitorEnvelope[] = [spanToEnvelope(span, instrumentationKey)];
+  const envelopes = [...(unloadPrecedingEnvelopes ?? [])];
+  const start = envelopes.length;
+  appendSpanEnvelopes(span, instrumentationKey, envelopes, unloadPrecedingEnvelopes !== undefined);
+  return envelopes.slice(start);
+}
+
+export function appendSpanEnvelopes(
+  span: ReadableSpan,
+  instrumentationKey: string,
+  envelopes: AzureMonitorEnvelope[],
+  unloading: boolean,
+): void {
+  envelopes.push(spanToEnvelope(span, instrumentationKey));
   for (const event of span.events) {
     envelopes.push(
-      spanEventToEnvelope(span, event, instrumentationKey, unloadPrecedingEnvelopes, envelopes),
+      spanEventToEnvelope(span, event, instrumentationKey, unloading ? envelopes : undefined),
     );
   }
-  return envelopes;
 }

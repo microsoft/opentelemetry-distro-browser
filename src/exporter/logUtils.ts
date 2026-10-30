@@ -59,6 +59,7 @@ import type {
 import { USER_ATTRIBUTES } from "../user/constants.js";
 import { AZURE_MONITOR_SAMPLE_RATE } from "../sampling.js";
 import { getManagedOperationName } from "../context/operationName.js";
+import type { ItemType } from "./customerSdkStats.js";
 
 const promotedLogAttributes = /* @__PURE__ */ new Set([
   EXCEPTION_MESSAGE,
@@ -399,6 +400,20 @@ export function createExceptionDetails(
   return { ...exception, parsedStack };
 }
 
+export function logItemType(logRecord: ReadableLogRecord): ItemType {
+  if (logRecord.eventName === "exception" || logRecord.attributes[EXCEPTION_TYPE])
+    return "EXCEPTION";
+  if (isPageView(logRecord.eventName)) return "PAGE_VIEW";
+  if (logRecord.eventName === "browser.page_visit") {
+    const duration = logRecord.attributes["browser.page_visit.duration"];
+    if (typeof duration === "number" && Number.isFinite(duration) && duration >= 0)
+      return "CUSTOM_METRIC";
+  }
+  return logRecord.eventName && logRecord.eventName !== "browser.console"
+    ? "CUSTOM_EVENT"
+    : "TRACE";
+}
+
 export function logToEnvelope(
   logRecord: ReadableLogRecord,
   instrumentationKey: string,
@@ -426,8 +441,9 @@ export function logToEnvelope(
   const visitDuration = logRecord.attributes["browser.page_visit.duration"];
   let baseType: AzureMonitorEnvelope["data"]["baseType"];
   let baseData: MessageData | ExceptionData | PageViewData | CustomEventData | MetricData;
+  const itemType = logItemType(logRecord);
 
-  if (logRecord.eventName === "exception" || logRecord.attributes[EXCEPTION_TYPE]) {
+  if (itemType === "EXCEPTION") {
     baseType = "ExceptionData";
     const baseDataWithoutException: ExceptionData = {
       ver: 2,
@@ -451,7 +467,7 @@ export function logToEnvelope(
       exceptions: [createExceptionDetails(logRecord.attributes, logRecord.body, maxExceptionSize)],
       ...customFields,
     };
-  } else if (isPageView(logRecord.eventName)) {
+  } else if (itemType === "PAGE_VIEW") {
     const duration =
       logRecord.attributes[ATTR_PAGE_VIEW_DURATION] ?? logRecord.attributes[NAVIGATION_DURATION];
     const explicitId = logRecord.attributes[ATTR_PAGE_VIEW_ID];
@@ -491,12 +507,7 @@ export function logToEnvelope(
           ? customFields.properties
           : truncateCustomDimensions({ ...customFields.properties, refUri: referrerValue }),
     };
-  } else if (
-    logRecord.eventName === "browser.page_visit" &&
-    typeof visitDuration === "number" &&
-    Number.isFinite(visitDuration) &&
-    visitDuration >= 0
-  ) {
+  } else if (itemType === "CUSTOM_METRIC" && typeof visitDuration === "number") {
     const pageUrl = logRecord.attributes[URL_FULL];
     baseType = "MetricData";
     baseData = {
@@ -518,7 +529,7 @@ export function logToEnvelope(
         ...(typeof pageUrl === "string" && pageUrl.length > 0 ? { PageUrl: pageUrl } : {}),
       }),
     };
-  } else if (logRecord.eventName && logRecord.eventName !== "browser.console") {
+  } else if (itemType === "CUSTOM_EVENT" && logRecord.eventName) {
     baseType = "EventData";
     baseData = {
       ver: 2,
@@ -546,19 +557,30 @@ export function logToEnvelopes(
   logRecord: ReadableLogRecord,
   instrumentationKey: string,
 ): readonly AzureMonitorEnvelope[] {
+  const envelopes: AzureMonitorEnvelope[] = [];
+  appendLogEnvelopes(logRecord, instrumentationKey, envelopes);
+  return envelopes;
+}
+
+export function appendLogEnvelopes(
+  logRecord: ReadableLogRecord,
+  instrumentationKey: string,
+  envelopes: AzureMonitorEnvelope[],
+): void {
   const pageViewEnvelope = logToEnvelope(logRecord, instrumentationKey);
+  envelopes.push(pageViewEnvelope);
   if (
     logRecord.eventName !== EVENT_BROWSER_PAGE_VIEW ||
     pageViewEnvelope.data.baseType !== "PageViewData"
   ) {
-    return [pageViewEnvelope];
+    return;
   }
 
   const durations = pageViewPerformanceAttributes.map(
     (attribute) => logRecord.attributes[attribute],
   );
   if (!durations.every((duration) => typeof duration === "number" && Number.isFinite(duration))) {
-    return [pageViewEnvelope];
+    return;
   }
 
   const pageView = pageViewEnvelope.data.baseData as PageViewData;
@@ -586,5 +608,5 @@ export function logToEnvelopes(
     performanceData,
     pageViewEnvelope.sampleRate,
   );
-  return [pageViewEnvelope, performanceEnvelope];
+  envelopes.push(performanceEnvelope);
 }

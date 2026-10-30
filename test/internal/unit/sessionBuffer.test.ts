@@ -15,7 +15,7 @@ import {
   sessionBufferStorage,
 } from "../../../src/exporter/sessionBuffer.js";
 import { spanToEnvelope } from "../../../src/exporter/spanUtils.js";
-import type { AzureMonitorEnvelope } from "../../../src/exporter/telemetryModels.js";
+import type { AzureMonitorEnvelope, MetricData } from "../../../src/exporter/telemetryModels.js";
 import { TEST_INSTRUMENTATION_KEY } from "../../fixtures/azureMonitor.js";
 import {
   MemoryStorage,
@@ -59,11 +59,15 @@ function restorePage(): void {
   window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true }));
 }
 
-function breezeResponse(errors: Array<{ index: number; statusCode: number }>, headers = {}) {
+function breezeResponse(
+  errors: Array<{ index: number; statusCode: number }>,
+  headers = {},
+  itemsReceived = 3,
+) {
   return new Response(
     JSON.stringify({
-      itemsReceived: 3,
-      itemsAccepted: 3 - errors.length,
+      itemsReceived,
+      itemsAccepted: itemsReceived - errors.length,
       errors: errors.map((error) => ({ ...error, message: "error" })),
     }),
     { status: 206, headers },
@@ -110,6 +114,28 @@ function bufferKeys(): string[] {
   ).filter((key): key is string => key?.startsWith(SESSION_BUFFER_KEY_PREFIX) === true);
 }
 
+async function reportedCounts(
+  fetch: ReturnType<typeof stubFetch>,
+): Promise<Record<string, number>> {
+  const [url, init] = fetch.mock.calls.at(-1)!;
+  const metrics: AzureMonitorEnvelope<MetricData>[] = await new Request(url, init).json();
+  const entries = metrics.map(
+    ({ data: { baseData } }) =>
+      [
+        [
+          baseData.metrics[0].name,
+          baseData.properties?.telemetryType,
+          baseData.properties?.dropCode,
+        ]
+          .filter(Boolean)
+          .join(":"),
+        baseData.metrics[0].value,
+      ] as const,
+  );
+  expect(new Set(entries.map(([key]) => key)).size).toBe(entries.length);
+  return Object.fromEntries(entries);
+}
+
 beforeEach(() => {
   loadPage();
 });
@@ -123,6 +149,57 @@ afterEach(async () => {
 });
 
 describe("Azure Monitor sessionStorage buffer", () => {
+  it("recovers an unpersisted oversized batch without stats after storage becomes writable", async () => {
+    vi.spyOn(diag, "warn").mockImplementation(() => {});
+    const write = vi.spyOn(testSessionStorage, "setItem").mockImplementation(() => {
+      throw new DOMException("Quota exceeded", "QuotaExceededError");
+    });
+    const client = createClient({ sdkStats: { enabled: false } });
+    const item = { ...envelope("recoverable"), tags: { large: "x".repeat(MAX_BEACON_BODY_SIZE) } };
+    beginUnloading();
+    try {
+      await expect(exportAsync(client, [item])).resolves.toMatchObject({
+        code: ExportResultCode.FAILED,
+      });
+    } finally {
+      endUnloading();
+    }
+    expect(bufferKeys()).toEqual([]);
+    write.mockRestore();
+    vi.spyOn(Date, "now").mockReturnValue(Date.now() + 61_000);
+    hidePage();
+    loadPage();
+    const fetch = stubFetch();
+    await createClient().forceFlush();
+    expect(sentNames(fetch)).toEqual([["recoverable"]]);
+  });
+
+  it.each(["expiry", "shutdown", "replay"] as const)(
+    "keeps retained telemetry out of drop counters when its later outcome is %s",
+    async (outcome) => {
+      const originalFetch = stubFetch(
+        () => new Response(null, { status: 503, headers: { "retry-after": "86400" } }),
+      );
+      const original = createClient({ sdkStats: { enabled: true } });
+      await exportAsync(original, [envelope("deferred")]);
+      await original.forceFlush();
+      expect(originalFetch).toHaveBeenCalledOnce();
+      const record: unknown[][] = JSON.parse(testSessionStorage.getItem(bufferKeys()[0])!);
+      expect(record.slice(1).every((entry) => entry.length === 2)).toBe(true);
+      if (outcome === "shutdown") await original.shutdown();
+      else hidePage();
+      if (outcome === "expiry")
+        vi.spyOn(Date, "now").mockReturnValue(Date.now() + MAX_SESSION_BUFFER_AGE_MS + 1);
+      loadPage();
+      const fetch = stubFetch();
+      await createClient({ sdkStats: { enabled: true } }).forceFlush();
+      if (outcome === "replay") {
+        expect(sentNames(fetch)[0]).toEqual(["deferred"]);
+        expect(await reportedCounts(fetch)).toEqual({ "Item_Success_Count:DEPENDENCY": 1 });
+      } else expect(fetch).not.toHaveBeenCalled();
+    },
+  );
+
   it("sends telemetry left unsent by the previous page first, exactly once", async () => {
     stubFetch(hang);
     void exportAsync(createClient(), [envelope("left behind")]);
@@ -168,15 +245,39 @@ describe("Azure Monitor sessionStorage buffer", () => {
   it("keeps telemetry that failed with a retriable error for the next page", async () => {
     // Retry-After beyond the retry-wait budget fails the export without waiting.
     stubFetch(() => new Response("", { status: 503, headers: { "retry-after": "86400" } }));
-    await expect(exportAsync(createClient(), [envelope("throttled")])).resolves.toMatchObject({
+    const client = createClient({ sdkStats: { enabled: true } });
+    const count = vi.spyOn(client.itemStats!, "countEnvelopes");
+    await expect(exportAsync(client, [envelope("throttled")])).resolves.toMatchObject({
       code: ExportResultCode.FAILED,
     });
+    expect(count).not.toHaveBeenCalled();
     hidePage();
 
     loadPage();
     const fetch = stubFetch();
     await createClient().forceFlush();
     expect(sentNames(fetch)).toEqual([["throttled"]]);
+  });
+
+  it("retains a failed dispatched unload before deciding whether to count a drop", async () => {
+    const firstFetch = stubFetch(() => Promise.reject(new TypeError("offline")));
+    const client = createClient({ sdkStats: { enabled: true }, disableBeacon: true });
+    const count = vi.spyOn(client.itemStats!, "countEnvelopes");
+    beginUnloading();
+    try {
+      await expect(exportAsync(client, [envelope("deferred")])).resolves.toMatchObject({
+        code: ExportResultCode.FAILED,
+      });
+    } finally {
+      endUnloading();
+    }
+    expect(firstFetch).toHaveBeenCalledOnce();
+    expect(count).not.toHaveBeenCalled();
+    hidePage();
+    loadPage();
+    const fetch = stubFetch();
+    await createClient().forceFlush();
+    expect(sentNames(fetch)).toEqual([["deferred"]]);
   });
 
   it("does not resend unload requests the browser accepted", async () => {
@@ -245,6 +346,36 @@ describe("Azure Monitor sessionStorage buffer", () => {
     expect(sentNames(fetch)).toEqual([["oversized"]]);
   });
 
+  it.each([false, true])(
+    "does not rewrite an oversized unload batch just to attach stats (%s)",
+    async (enabled) => {
+      const client = createClient({ sdkStats: { enabled } });
+      const original = testSessionStorage.setItem.bind(testSessionStorage);
+      const write = vi
+        .spyOn(testSessionStorage, "setItem")
+        .mockImplementationOnce(original)
+        .mockImplementationOnce(() => {
+          throw new DOMException("Quota exceeded", "QuotaExceededError");
+        });
+      const oversized = { ...envelope("kept"), tags: { large: "x".repeat(MAX_BEACON_BODY_SIZE) } };
+      beginUnloading();
+      try {
+        await expect(exportAsync(client, [oversized])).resolves.toMatchObject({
+          code: ExportResultCode.FAILED,
+        });
+      } finally {
+        endUnloading();
+      }
+      expect(write).toHaveBeenCalledOnce();
+      expect(testSessionStorage.getItem(bufferKeys()[0])).toContain("kept");
+      write.mockRestore();
+      hidePage();
+      loadPage();
+      const fetch = stubFetch();
+      await createClient().forceFlush();
+      expect(sentNames(fetch)).toEqual([["kept"]]);
+    },
+  );
   it("does not adopt telemetry from live documents or the same document", async () => {
     stubFetch(hang);
     void exportAsync(createClient(), [envelope("live")]);
@@ -299,7 +430,9 @@ describe("Azure Monitor sessionStorage buffer", () => {
     const firstFetch = stubFetch(
       () => new Response("", { status: 503, headers: { "retry-after": "1" } }),
     );
-    const original = exportAsync(createClient(), [envelope("handed off")]);
+    const client = createClient({ sdkStats: { enabled: true } });
+    const count = vi.spyOn(client.itemStats!, "countEnvelopes");
+    const original = exportAsync(client, [envelope("handed off")]);
     await vi.waitFor(() => expect(firstFetch).toHaveBeenCalledOnce());
     hidePage();
 
@@ -314,6 +447,7 @@ describe("Azure Monitor sessionStorage buffer", () => {
       error: { message: "Telemetry was handed off to another page." },
     });
     expect(firstFetch).toHaveBeenCalledOnce();
+    expect(count.mock.calls.filter(([outcome]) => outcome !== "Success")).toEqual([]);
     expect(bufferKeys()).toEqual([]);
   });
 
@@ -397,11 +531,18 @@ describe("Azure Monitor sessionStorage buffer", () => {
     body.close();
   });
 
-  it.each([false, true])(
-    "keeps the whole batch after an unreadable partial response (unloading: %s)",
-    async (unloading) => {
-      stubFetch(() => new Response("not json", { status: 206 }));
-      const client = createClient();
+  it.each(
+    [false, true].flatMap((unloading) =>
+      ["not json", JSON.stringify({ itemsReceived: 1, itemsAccepted: 1, errors: [] })].map(
+        (body) => ({ unloading, body }),
+      ),
+    ),
+  )(
+    "fails and retains an invalid partial response $body (unloading: $unloading)",
+    async ({ unloading, body }) => {
+      stubFetch(() => new Response(body, { status: 206 }));
+      const client = createClient({ sdkStats: { enabled: true } });
+      const count = vi.spyOn(client.itemStats!, "countEnvelopes");
       let result: Promise<ExportResult>;
       if (unloading) beginUnloading();
       try {
@@ -409,7 +550,11 @@ describe("Azure Monitor sessionStorage buffer", () => {
       } finally {
         if (unloading) endUnloading();
       }
-      await expect(result).resolves.toMatchObject({ code: ExportResultCode.FAILED });
+      await expect(result).resolves.toMatchObject({
+        code: ExportResultCode.FAILED,
+        error: { message: "Azure Monitor export failed with HTTP 206." },
+      });
+      expect(count).not.toHaveBeenCalled();
       hidePage();
 
       loadPage();
@@ -422,15 +567,22 @@ describe("Azure Monitor sessionStorage buffer", () => {
   it.each([200, 400])(
     "does not resend telemetry after HTTP %i when its body cannot be read",
     async (status) => {
-      stubFetch(
+      const firstFetch = stubFetch(
         () =>
           new Response(
             new ReadableStream({ start: (controller) => controller.error(new TypeError("reset")) }),
             { status },
           ),
       );
-      await expect(exportAsync(createClient(), [envelope("settled")])).resolves.toMatchObject({
+      const client = createClient({ sdkStats: { enabled: true } });
+      await expect(exportAsync(client, [envelope("settled")])).resolves.toMatchObject({
         code: ExportResultCode.FAILED,
+      });
+      firstFetch.mockResolvedValue(new Response(null));
+      await client.forceFlush();
+      expect(firstFetch).toHaveBeenCalledTimes(2);
+      expect(await reportedCounts(firstFetch)).toEqual({
+        [status === 200 ? "Item_Success_Count:DEPENDENCY" : "Item_Dropped_Count:DEPENDENCY:400"]: 1,
       });
       hidePage();
       expect(bufferKeys()).toEqual([]);
@@ -551,7 +703,7 @@ describe("Azure Monitor sessionStorage buffer", () => {
   it("removes a partially accepted batch once its retry succeeds", async () => {
     const fetch = stubFetch();
     fetch.mockResolvedValueOnce(
-      breezeResponse([{ index: 1, statusCode: 503 }], { "retry-after": "0" }),
+      breezeResponse([{ index: 1, statusCode: 503 }], { "retry-after": "0" }, 2),
     );
     await expect(
       exportAsync(createClient(), [envelope("accepted"), envelope("retried")]),
@@ -617,6 +769,7 @@ describe("Azure Monitor sessionStorage buffer", () => {
     const buffer = new SessionBuffer("destination");
     const first = buffer.add('[{"name":"first"}]');
     expect(storage.length).toBe(1);
+    expect(buffer.retain(first)).toBe(true);
 
     vi.spyOn(storage, "setItem").mockImplementation(() => {
       throw new DOMException("Quota exceeded", "QuotaExceededError");
@@ -626,6 +779,7 @@ describe("Azure Monitor sessionStorage buffer", () => {
     });
     expect(() => buffer.add('[{"name":"second"}]')).not.toThrow();
     expect(storage.length).toBe(0);
+    expect(buffer.retain(first)).toBe(true);
     expect(() => buffer.settle(first, "", false)).not.toThrow();
     // Later batches back off instead of retrying the failing write each time.
     buffer.add('[{"name":"third"}]');
@@ -639,10 +793,12 @@ describe("Azure Monitor sessionStorage buffer", () => {
     const buffer = new SessionBuffer("destination");
     const body = (name: string): string =>
       `[{"name":"${name}","pad":"${"x".repeat(MAX_SESSION_BUFFER_LENGTH / 3)}"}]`;
-    buffer.add(body("oldest"));
+    const oldest = buffer.add(body("oldest"));
     buffer.add(body("middle"));
-    buffer.add(body("newest"));
+    const newest = buffer.add(body("newest"));
 
+    expect(buffer.retain(oldest)).toBe(false);
+    expect(buffer.retain(newest)).toBe(true);
     const stored = testSessionStorage.getItem(bufferKeys()[0]) ?? "";
     expect(stored.length).toBeLessThanOrEqual(MAX_SESSION_BUFFER_LENGTH + 4);
     expect(stored).not.toContain("oldest");
@@ -650,6 +806,45 @@ describe("Azure Monitor sessionStorage buffer", () => {
     expect(stored).toContain("newest");
     buffer.dispose();
   });
+
+  it.each([false, true])(
+    "bounds new batches when writes fail and removal fails: %s",
+    (removeFails) => {
+      const buffer = new SessionBuffer("destination");
+      const original = buffer.add('[{"name":"original"}]');
+      const write = vi.spyOn(testSessionStorage, "setItem").mockImplementation(() => {
+        throw new DOMException("Storage blocked", "SecurityError");
+      });
+      const remove = vi.spyOn(testSessionStorage, "removeItem");
+      if (removeFails)
+        remove.mockImplementation(() => {
+          throw new DOMException("Storage blocked", "SecurityError");
+        });
+      const bodies = Array.from({ length: 25 }, (_, index) =>
+        JSON.stringify([{ name: `batch-${index}`, pad: "x".repeat(80_000) }]),
+      );
+      const ids = bodies.map((body) => buffer.add(body));
+      const kept = ids.filter((id) => buffer.retain(id));
+      expect(kept).toEqual(ids.slice(-6));
+      expect(kept.reduce((sum, id) => sum + bodies[ids.indexOf(id)].length, 0)).toBeLessThanOrEqual(
+        MAX_SESSION_BUFFER_LENGTH,
+      );
+      expect(buffer.retain(original)).toBe(removeFails);
+      const oversized = buffer.add(
+        JSON.stringify([{ pad: "x".repeat(MAX_SESSION_BUFFER_LENGTH) }]),
+      );
+      expect(buffer.retain(oversized)).toBe(false);
+      write.mockRestore();
+      remove.mockRestore();
+      vi.spyOn(Date, "now").mockReturnValue(Date.now() + 61_000);
+      hidePage();
+      expect(buffer.retain(original)).toBe(false);
+      const stored = testSessionStorage.getItem(bufferKeys()[0])!;
+      expect(stored.length).toBeLessThanOrEqual(MAX_SESSION_BUFFER_LENGTH + 4);
+      expect(stored).not.toContain('"original"');
+      buffer.dispose();
+    },
+  );
 
   it("evicts the oldest batches by timestamp, not insertion order", () => {
     const buffer = new SessionBuffer("destination");
@@ -755,6 +950,61 @@ describe("Azure Monitor sessionStorage buffer", () => {
 
     await client.shutdown();
     expect(bufferKeys()).toEqual([]);
+  });
+
+  it.each(["payload", "partial", "retry"] as const)(
+    "keeps recoverable %s telemetry with stats enabled after a transient storage failure",
+    async (mode) => {
+      vi.spyOn(diag, "warn").mockImplementation(() => {});
+      const write = vi.spyOn(testSessionStorage, "setItem").mockImplementation(() => {
+        throw new DOMException("Quota exceeded", "QuotaExceededError");
+      });
+      stubFetch(() =>
+        mode === "partial"
+          ? breezeResponse([{ index: 0, statusCode: 503 }], {}, 1)
+          : new Response(null, { status: 503, headers: { "retry-after": "86400" } }),
+      );
+      const client = createClient({ sdkStats: { enabled: true } });
+      const count = vi.spyOn(client.itemStats!, "countEnvelopes");
+      const item =
+        mode === "payload"
+          ? { ...envelope("recoverable"), tags: { large: "x".repeat(MAX_BEACON_BODY_SIZE) } }
+          : envelope("recoverable");
+      if (mode !== "retry") beginUnloading();
+      try {
+        await expect(exportAsync(client, [item])).resolves.toMatchObject({
+          code: ExportResultCode.FAILED,
+        });
+      } finally {
+        if (mode !== "retry") endUnloading();
+      }
+      expect(count.mock.calls.filter(([outcome]) => outcome === "Dropped")).toHaveLength(0);
+      write.mockRestore();
+      vi.spyOn(Date, "now").mockReturnValue(Date.now() + 61_000);
+      hidePage();
+      expect(bufferKeys()).toHaveLength(1);
+      loadPage();
+      const fetch = stubFetch();
+      await createClient().forceFlush();
+      expect(sentNames(fetch)).toEqual([["recoverable"]]);
+      expect(count.mock.calls.filter(([outcome]) => outcome === "Dropped")).toHaveLength(0);
+    },
+  );
+
+  it("counts a handed-off retained batch only on its adopting page", async () => {
+    const firstFetch = stubFetch(
+      () => new Response(null, { status: 503, headers: { "retry-after": "86400" } }),
+    );
+    const client = createClient({ sdkStats: { enabled: true } });
+    const count = vi.spyOn(client.itemStats!, "countEnvelopes");
+    await exportAsync(client, [envelope("handed off")]);
+    hidePage();
+    loadPage();
+    stubFetch();
+    await createClient().forceFlush();
+    firstFetch.mockResolvedValue(new Response(null));
+    await client.shutdown();
+    expect(count.mock.calls.filter(([outcome]) => outcome === "Dropped")).toEqual([]);
   });
 
   it("does not recreate its record when a request settles after disposal", () => {

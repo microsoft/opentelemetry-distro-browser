@@ -2,20 +2,31 @@
 // Licensed under the MIT License.
 
 import type { ExportResult } from "@opentelemetry/core";
-import { ExportResultCode } from "@opentelemetry/core";
-import { isRetriable, isSamplingRejection, parseBreezeResponse } from "./breezeUtils.js";
-import { isUnloading } from "./common.js";
+import type { ReadableLogRecord } from "@opentelemetry/sdk-logs";
+import type { ReadableSpan } from "@opentelemetry/sdk-trace-base";
+import { callWithTimeout, ExportResultCode } from "@opentelemetry/core";
+import { isRetriable, isSamplingRejection } from "./breezeUtils.js";
+import { createEnvelopeBatches, isUnloading, type EnvelopeBatch } from "./common.js";
 import { isValidInstrumentationKey, parseConnectionString } from "./connectionStringParser.js";
 import {
   MAX_BATCH_SIZE_IN_BYTES,
   MAX_BEACON_BODY_SIZE,
+  MAX_FLUSH_WAIT_MS,
   MAX_PENDING_KEEPALIVE_BODY_SIZE,
+  MAX_SHUTDOWN_WAIT_MS,
 } from "./constants.js";
 import { Sender, type SenderResultType } from "./sender.js";
-import { createInternalSdkStats, type InternalSdkStats } from "./sdkStats.js";
+import { createInternalSdkStats, reportFailure, type InternalSdkStats } from "./sdkStats.js";
 import { getInternalSdkStatsConfiguration } from "./sdkStatsConfiguration.js";
 import { SessionBuffer, sessionBufferStorage } from "./sessionBuffer.js";
+import { throwErrors, waitForAll } from "../shared/lifecycle.js";
 import type { AzureMonitorBaseData, AzureMonitorEnvelope } from "./telemetryModels.js";
+import {
+  createCustomerSdkStats,
+  type CustomerSdkStats,
+  type AzureMonitorSdkStatsOptions,
+  type ItemType,
+} from "./customerSdkStats.js";
 
 const CONTENT_TYPE = "application/json";
 const noop = (): void => {};
@@ -46,6 +57,8 @@ export interface AzureMonitorOptions<TConnectionString extends string | Promise<
    * This can prevent pending telemetry from being delivered when the page closes.
    */
   readonly disableBeacon?: boolean;
+  /** Opt-in customer SDK Stats for this destination. Disabled by default. */
+  readonly sdkStats?: AzureMonitorSdkStatsOptions;
 }
 
 export class AzureMonitorExportClient {
@@ -54,6 +67,8 @@ export class AzureMonitorExportClient {
   #stopped = false;
   readonly #stats: InternalSdkStats;
   readonly #buffer: SessionBuffer | undefined;
+  readonly #controller = new AbortController();
+  #shutdown: Promise<void> | undefined;
 
   public constructor(options: AzureMonitorOptions) {
     const { instrumentationKey, ingestionEndpoint } = parseConnectionString(
@@ -65,10 +80,16 @@ export class AzureMonitorExportClient {
     this.instrumentationKey = instrumentationKey;
     const statsConfiguration = getInternalSdkStatsConfiguration(ingestionEndpoint);
     this.#stats = createInternalSdkStats(statsConfiguration, instrumentationKey, ingestionEndpoint);
+    this.itemStats = createCustomerSdkStats(
+      options.sdkStats,
+      instrumentationKey,
+      ingestionEndpoint,
+    );
     this.#sender = new Sender({
       endpoint: `${ingestionEndpoint}/v2/track`,
       disableBeacon: unloadBeaconPolicies.get(options) ?? options.disableBeacon,
       stats: this.#stats,
+      itemStats: this.itemStats,
     });
     // Unsent telemetry is mirrored in sessionStorage unless `storage.enabled` is false; leftovers
     // from the previous page load in this tab go out before any new telemetry. Storage failures
@@ -86,6 +107,42 @@ export class AzureMonitorExportClient {
   }
 
   public readonly instrumentationKey: string;
+  public readonly itemStats: CustomerSdkStats | undefined;
+
+  public exportRecords<T extends ReadableSpan | ReadableLogRecord>(
+    records: readonly T[],
+    convert: (record: T, envelopes: AzureMonitorEnvelope[]) => void,
+    itemType: (record: T) => ItemType,
+    callback: (result: ExportResult) => void,
+    shouldCollect?: (record: T) => boolean,
+  ): void {
+    const envelopes: AzureMonitorEnvelope[] = [];
+    let converted = 0;
+    let recordStart = 0;
+    try {
+      for (const record of records) {
+        recordStart = envelopes.length;
+        if (!shouldCollect || shouldCollect(record)) convert(record, envelopes);
+        converted++;
+      }
+    } catch (error) {
+      if (this.itemStats) {
+        this.itemStats.countEnvelopes("Dropped", envelopes, "CLIENT_EXCEPTION");
+        // A partially converted record already contributed its primary envelope.
+        for (const record of records.slice(converted + (envelopes.length > recordStart ? 1 : 0))) {
+          try {
+            if (!shouldCollect || shouldCollect(record))
+              this.itemStats.countFailedRecord(record, itemType(record));
+          } catch (classificationError) {
+            reportFailure(classificationError, "SDK stats item classification failed");
+          }
+        }
+      }
+      callback(toFailedExportResult(error));
+      return;
+    }
+    this.export(envelopes, callback);
+  }
 
   public export(
     envelopes: readonly AzureMonitorEnvelope[],
@@ -105,15 +162,21 @@ export class AzureMonitorExportClient {
         unloading,
       );
     } catch (error) {
-      callback({
-        code: ExportResultCode.FAILED,
-        error: error instanceof Error ? error : new Error(String(error)),
-      });
+      this.itemStats?.countEnvelopes(
+        "Dropped",
+        envelopes,
+        error instanceof RangeError ? "PAYLOAD_TOO_LARGE" : "CLIENT_EXCEPTION",
+      );
+      callback(toFailedExportResult(error));
       return;
     }
     const { requests, dropped, error } = batchResult;
     // Envelopes that cannot fit the unload beacon wait for the next page load.
-    if (dropped.length > 0) this.#buffer?.add(JSON.stringify(dropped));
+    if (dropped.length > 0) {
+      const id = this.#buffer?.add(JSON.stringify(dropped));
+      if (this.itemStats && (id === undefined || !this.#buffer?.retain(id)))
+        this.itemStats.countEnvelopes("Dropped", dropped, "PAYLOAD_TOO_LARGE");
+    }
     if (error) {
       callback({ code: ExportResultCode.FAILED, error });
       return;
@@ -140,12 +203,11 @@ export class AzureMonitorExportClient {
           ),
         };
       })
-      .catch((error: unknown): ExportResult => ({
-        code: ExportResultCode.FAILED,
-        error: error instanceof Error ? error : new Error(String(error)),
-      }))
+      .catch(toFailedExportResult)
       // Callback errors must not be reported back to the same callback as export failures.
-      .then(callback);
+      .then((result) => {
+        callback(result);
+      });
     this.#track(operation);
   }
 
@@ -177,6 +239,7 @@ export class AzureMonitorExportClient {
         contentType: CONTENT_TYPE,
         envelopes,
         unloading,
+        signal: this.#controller.signal,
         onDispatch: () => {
           if (id !== undefined) this.#buffer?.dispatch(id);
         },
@@ -192,6 +255,10 @@ export class AzureMonitorExportClient {
         },
         // Stop retrying a batch another document adopted and delivered.
         active: () => id === undefined || this.#buffer?.owns(id) !== false,
+        retain: () => {
+          settle(true);
+          return id !== undefined && this.#buffer?.retain(id) === true;
+        },
       })
       .then(
         (result) => {
@@ -213,21 +280,61 @@ export class AzureMonitorExportClient {
     this.#pending.add(tracked);
   }
 
-  public async forceFlush(): Promise<void> {
-    // Customer exports get keepalive capacity before stats.
-    await Promise.all([...this.#pending]);
-    await this.#stats.forceFlush();
+  async #drain(): Promise<unknown[]> {
+    const pending = Promise.allSettled([...this.#pending]);
+    try {
+      // A flush timeout stops waiting, not delivery. Only shutdown cancels application exports.
+      const results = await (this.#stopped ? pending : callWithTimeout(pending, MAX_FLUSH_WAIT_MS));
+      const errors = results.flatMap((result) =>
+        result.status === "rejected" ? [result.reason as unknown] : [],
+      );
+      if (this.#controller.signal.aborted) errors.push(new Error("Exporter shutdown timed out."));
+      return errors;
+    } catch (error) {
+      return [error];
+    }
   }
 
-  public async shutdown(): Promise<void> {
-    if (this.#stopped) return;
+  public forceFlush(): Promise<void> {
+    if (this.#stopped) return this.#shutdown ?? Promise.resolve();
+    const report = () =>
+      waitForAll(
+        [this.itemStats?.forceFlush(), this.#stats.forceFlush()],
+        "SDK stats flush failed",
+      );
+    // Already-collected counts must not wait behind a different hung export.
+    const pending = this.#drain();
+    return waitForAll(
+      [
+        report(),
+        pending.then((errors) => {
+          if (!this.#shutdown) throwErrors(errors, "Pending exports failed");
+        }),
+        pending.then(() => this.#shutdown ?? report()),
+      ],
+      "Exporter flush failed",
+    );
+  }
+
+  public shutdown(): Promise<void> {
+    if (this.#shutdown) return this.#shutdown;
+    if (this.#stopped) return Promise.resolve();
     this.#stopped = true;
-    const pending = Promise.all([...this.#pending]);
-    try {
-      await this.#stats.shutdown(pending);
-    } finally {
-      this.#buffer?.dispose();
-    }
+    const timer = setTimeout(() => this.#controller.abort(), MAX_SHUTDOWN_WAIT_MS);
+    const pending = this.#drain().finally(() => this.#buffer?.dispose());
+    this.#shutdown = waitForAll(
+      [
+        pending.then((errors) => throwErrors(errors, "Pending exports failed")),
+        this.#stats.shutdown(pending),
+        this.itemStats?.shutdown(pending),
+      ],
+      "Exporter shutdown failed",
+    ).finally(() => {
+      this.#shutdown = undefined;
+      clearTimeout(timer);
+      this.#sender.dispose();
+    });
+    return this.#shutdown;
   }
 }
 
@@ -236,13 +343,13 @@ function createBatchRequests(
   maxBatchSize: number,
   enforceMaxBatchSize: boolean,
 ): {
-  requests: BatchRequest[];
+  requests: EnvelopeBatch[];
   /** Original envelopes left out of an unload request. */
   dropped: readonly AzureMonitorEnvelope[];
   error?: RangeError;
 } {
-  const encoder = new TextEncoder();
   if (enforceMaxBatchSize) {
+    const encoder = new TextEncoder();
     if (envelopes.length === 0) return { requests: [], dropped: [] };
     const original = serializeBatch(envelopes, encoder);
     const fitted =
@@ -276,39 +383,7 @@ function createBatchRequests(
     };
   }
 
-  const requests: BatchRequest[] = [];
-  let batch: AzureMonitorEnvelope[] = [];
-  let serializedBatch: string[] = [];
-  let batchSize = 2;
-
-  const flush = (): void => {
-    if (batch.length === 0) return;
-    requests.push({ body: `[${serializedBatch.join(",")}]`, envelopes: batch });
-    batch = [];
-    serializedBatch = [];
-    batchSize = 2;
-  };
-
-  for (const envelope of envelopes) {
-    // Normal exports treat maxBatchSize as a split threshold only. A single oversized envelope is
-    // still sent on its own so ingestion can report a per-item failure; rejecting it locally would
-    // hide that diagnostic.
-    const separatorSize = batch.length === 0 ? 0 : 1;
-    const { serialized, size: serializedSize } = serializeEnvelope(envelope, encoder);
-    if (batch.length > 0 && batchSize + separatorSize + serializedSize > maxBatchSize) {
-      flush();
-    }
-    batch.push(envelope);
-    serializedBatch.push(serialized);
-    batchSize += (batch.length === 1 ? 0 : 1) + serializedSize;
-  }
-  flush();
-  return { requests, dropped: [] };
-}
-
-interface BatchRequest {
-  body: string;
-  envelopes: readonly AzureMonitorEnvelope[];
+  return { requests: createEnvelopeBatches(envelopes, maxBatchSize), dropped: [] };
 }
 
 interface SerializedEnvelope {
@@ -431,6 +506,13 @@ function fitBatchCustomFields(
   return fitted;
 }
 
+function toFailedExportResult(error: unknown): ExportResult {
+  return {
+    code: ExportResultCode.FAILED,
+    error: error instanceof Error ? error : new Error(String(error)),
+  };
+}
+
 function toExportResult(results: readonly SenderResultType[]): ExportResult {
   for (const result of results) {
     const exportResult = toSingleExportResult(result);
@@ -455,7 +537,7 @@ function toSingleExportResult(result: SenderResultType): ExportResult {
     return { code: ExportResultCode.SUCCESS };
   }
   if (result.statusCode === 206) {
-    const response = parseBreezeResponse(result.result);
+    const response = result.response;
     if (response && response.errors.every(isSamplingRejection)) {
       return { code: ExportResultCode.SUCCESS };
     }

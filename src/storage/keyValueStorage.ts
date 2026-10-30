@@ -65,7 +65,11 @@ export function createKeyValueStorage(
     }
     if (!warned) {
       warned = true;
-      diag.warn(unavailableMessage);
+      try {
+        diag.warn(unavailableMessage);
+      } catch {
+        // A diagnostic hook must not turn a storage failure into a delivery failure.
+      }
     }
     return fallback;
   }

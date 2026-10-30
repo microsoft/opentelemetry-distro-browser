@@ -8,6 +8,7 @@ import { createInternalSdkStats } from "../../../src/exporter/sdkStats.js";
 import * as configuration from "../../../src/exporter/sdkStatsConfiguration.js";
 import * as actual from "../../../src/exporter/sdkStatsDestination.js";
 import { Sender } from "../../../src/exporter/sender.js";
+import { isSdkIngestionUrl, rememberSdkIngestionUrl } from "../../../src/shared/globalOwnership.js";
 import type { AzureMonitorEnvelope, MetricData } from "../../../src/exporter/telemetryModels.js";
 import { TEST_INSTRUMENTATION_KEY } from "../../fixtures/azureMonitor.js";
 import { installFakeClock } from "../../fixtures/clock.js";
@@ -69,6 +70,39 @@ function successCount(): number {
       0,
     );
 }
+
+it.each([false, true])(
+  "releases replaced internal stats destinations after their final report (in flight: %s)",
+  async (inFlight) => {
+    const url = `https://retired-stats-${inFlight}.example.test/v2/track`;
+    const stats = createInternalSdkStats(
+      { instrumentationKey: TEST_INSTRUMENTATION_KEY, endpoint: url },
+      TEST_INSTRUMENTATION_KEY,
+      westEndpoint,
+    );
+    let finish!: (response: Response) => void;
+    if (inFlight)
+      fetch.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finish = resolve;
+          }),
+      );
+    stats.countResponse(200, 1);
+    const flushing = stats.forceFlush();
+    if (!inFlight) await flushing;
+    stats.updateEndpoint(euEndpoint);
+    for (let index = 0; index < 300; index++)
+      rememberSdkIngestionUrl(`https://stats-history.example.test/track?request=${index}`);
+    expect(isSdkIngestionUrl(url)).toBe(inFlight);
+    if (inFlight) finish(new Response(null));
+    await flushing;
+    await stats.shutdown();
+    for (let index = 0; index < 300; index++)
+      rememberSdkIngestionUrl(`https://stats-history.example.test/track?request=${index}`);
+    expect(isSdkIngestionUrl(url)).toBe(false);
+  },
+);
 
 it.each([
   { signal: "spans", excluded: euEndpoint },

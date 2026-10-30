@@ -89,6 +89,27 @@ function metrics(envelopes = payloads.flat()) {
   );
 }
 
+it("flushes response counts collected behind an active internal report", async () => {
+  const stats = createStats();
+  const normal = transport.getMockImplementation()!;
+  let finish!: () => void;
+  transport.mockImplementationOnce(
+    (...args) =>
+      new Promise((resolve) => {
+        finish = () => resolve(normal(...args));
+      }),
+  );
+  stats.countResponse(200, 10);
+  const first = stats.forceFlush();
+  stats.countResponse(200, 20);
+  const followup = stats.forceFlush();
+  finish();
+  await Promise.all([first, followup]);
+  expect(payloads).toHaveLength(2);
+  expect(metrics(payloads[0])).toEqual({ Request_Duration: 10, Request_Success_Count: 1 });
+  expect(metrics(payloads[1])).toEqual({ Request_Duration: 20, Request_Success_Count: 1 });
+});
+
 it("sends the reference metric names, status buckets, average duration and separate destination key", async () => {
   const stats = createStats({}, `${CUSTOMER_ENDPOINT}/private-path?secret=value`);
   const statuses = [200, 201, 206, 400, 401, 403, 408, 429, 500, 502, 503, 504, 402, 439, 307, 308];
@@ -456,14 +477,14 @@ it.each([true, false])(
   },
 );
 
-it("sends stats using keepalive without disclosing the page referrer", async () => {
+it("sends large unload reports without taking application keepalive space or disclosing referrers", async () => {
   const stats = createStats();
   stats.countResponse(200, 10);
   beginUnloading();
   try {
     await stats.forceFlush();
     expect(transport.mock.calls[0][1]).toMatchObject({
-      keepalive: true,
+      keepalive: false,
       credentials: "omit",
       referrerPolicy: "no-referrer",
     });
@@ -479,17 +500,19 @@ it("does not fall back to beacon because beacon cannot suppress private page ref
   stats.countResponse(200, 10);
   await stats.forceFlush();
   stats.countResponse(200, 10);
-  transport.mockRejectedValueOnce(new TypeError("keepalive unavailable"));
+  const failure = new TypeError("transport unavailable");
+  transport.mockRejectedValueOnce(failure);
   beginUnloading();
   try {
     await stats.forceFlush();
     const [, init] = transport.mock.calls.at(-1)!;
-    expect(init?.keepalive).toBe(true);
+    expect(init?.keepalive).toBe(false);
     expect(beacon).not.toHaveBeenCalled();
     expect(diag.warn).toHaveBeenCalledWith(
       "SDK stats export failed",
       expect.objectContaining({
-        message: "sendBeacon fallback is unavailable for the unload request.",
+        message: "Browser transport failed",
+        cause: failure,
       }),
     );
   } finally {
@@ -508,6 +531,7 @@ it.each(["spans", "logs"] as const)(
     const exporterOptions = {
       connectionString: `InstrumentationKey=${TEST_INSTRUMENTATION_KEY};IngestionEndpoint=${CUSTOMER_ENDPOINT}`,
       sdkStats: {
+        enabled: false,
         instrumentationKey: "22222222-2222-2222-2222-222222222222",
         endpoint: "https://unexpected.example.test/v2/track",
       },

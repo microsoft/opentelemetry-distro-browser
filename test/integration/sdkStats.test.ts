@@ -5,17 +5,80 @@ import { context, diag, propagation, trace } from "@opentelemetry/api";
 import { logs } from "@opentelemetry/api-logs";
 import { FetchInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/fetch";
 import { ConsoleInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/console";
+import { ExportResultCode, type ExportResult } from "@opentelemetry/core";
 import { afterEach, expect, inject, it, vi } from "vitest";
 import type { BrowserInstrumentation, MicrosoftOpenTelemetryBrowser } from "../../src/types.js";
 import type { AzureMonitorEnvelope } from "../../src/exporter/telemetryModels.js";
 import { assertAzureMonitorEnvelope, TEST_INSTRUMENTATION_KEY } from "../fixtures/azureMonitor.js";
-import { createConsolePipeline, createInMemoryPipeline } from "../fixtures/telemetry.js";
+import {
+  createConsolePipeline,
+  createInMemoryPipeline,
+  createReadableLogRecord,
+} from "../fixtures/telemetry.js";
+import { AzureMonitorSpanExporter } from "../../src/exporter/trace.js";
+import { Sender } from "../../src/exporter/sender.js";
+import { rememberSdkIngestionUrl } from "../../src/shared/globalOwnership.js";
 import { SDK_STATS_ENDPOINT } from "../fixtures/sdkStats.js";
 import { loadBrowserScript } from "../fixtures/browserBundle.js";
 
 const SECOND_KEY = "22222222-2222-2222-2222-222222222222";
 const handles: MicrosoftOpenTelemetryBrowser[] = [];
 let referrerPolicy: HTMLMetaElement | undefined;
+
+it.each(["index.js", "index.min.js"])(
+  "shares unload reservations with the separately bundled %s",
+  async (file) => {
+    const modulePath = `../../dist/esm/${file}`;
+    const moduleUrl = new URL(modulePath, import.meta.url);
+    const distro: typeof import("../../src/index.js") = await import(
+      /* @vite-ignore */ moduleUrl.href
+    );
+    let release!: () => void;
+    const transport = vi.fn<typeof fetch>().mockResolvedValue(new Response(null));
+    transport.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = () => resolve(new Response(null));
+        }),
+    );
+    vi.stubGlobal("fetch", transport);
+    const sender = new Sender({
+      endpoint: "https://customer.example.test/v2/track",
+      disableBeacon: true,
+    });
+    const request = { contentType: "application/json", unloading: true };
+    const pending = sender.send({ ...request, body: new Uint8Array(60 * 1024) });
+    let handle: MicrosoftOpenTelemetryBrowser | undefined;
+    try {
+      handle = await distro.useMicrosoftOpenTelemetry({
+        azureMonitor: {
+          connectionString: `InstrumentationKey=${TEST_INSTRUMENTATION_KEY};IngestionEndpoint=https://customer.example.test`,
+          sdkStats: { enabled: true },
+          disableBeacon: true,
+        },
+        pageView: { enabled: false },
+        session: { enabled: false },
+        storage: { enabled: false },
+      });
+      trace.getTracer("cross-copy-quota").startSpan("application").end();
+      window.dispatchEvent(new PageTransitionEvent("pagehide", { persisted: true }));
+      await handle.forceFlush();
+      const reports = transport.mock.calls
+        .slice(1)
+        .filter(([, init]) => init?.credentials === "omit");
+      expect(reports.length).toBeGreaterThan(0);
+      expect(reports.every(([, init]) => init?.keepalive === false)).toBe(true);
+      expect(transport.mock.calls.slice(1).every(([, init]) => init?.credentials === "omit")).toBe(
+        true,
+      );
+    } finally {
+      release();
+      await pending;
+      sender.dispose();
+      await handle?.shutdown();
+    }
+  },
+);
 
 afterEach(async () => {
   try {
@@ -34,13 +97,82 @@ afterEach(async () => {
 });
 
 it.each(
+  ["index.js", "index.min.js"].flatMap((file) => [false, true].map((active) => ({ file, active }))),
+)(
+  "shares ingestion URL protection with $file despite an incompatible registry (active: $active)",
+  async ({ file, active }) => {
+    const modulePath = `../../dist/esm/${file}`;
+    const moduleUrl = new URL(modulePath, import.meta.url);
+    const distro: typeof import("../../src/index.js") = await import(
+      /* @vite-ignore */ moduleUrl.href
+    );
+    const key = Symbol.for("@microsoft/opentelemetry-browser");
+    const realm = globalThis as typeof globalThis & { [key: symbol]: unknown };
+    const previous = Object.getOwnPropertyDescriptor(realm, key);
+    const incompatible = { version: 2 };
+    realm[key] = incompatible;
+    const transport = vi.fn<typeof fetch>(async () => new Response(null));
+    vi.stubGlobal("fetch", transport);
+    let exporter: InstanceType<typeof distro.AzureMonitorLogRecordExporter> | undefined;
+    let peer: AzureMonitorSpanExporter | undefined;
+    try {
+      const peerEndpoint = "https://cross-copy-sdk.example.test";
+      peer = new AzureMonitorSpanExporter({
+        connectionString: `InstrumentationKey=${TEST_INSTRUMENTATION_KEY};IngestionEndpoint=${peerEndpoint}`,
+      });
+      if (active) {
+        for (let index = 0; index < 300; index++)
+          rememberSdkIngestionUrl(`https://cross-copy-churn.example.test/track?request=${index}`);
+      } else {
+        await peer.shutdown();
+      }
+      exporter = new distro.AzureMonitorLogRecordExporter({
+        connectionString: `InstrumentationKey=${TEST_INSTRUMENTATION_KEY};IngestionEndpoint=https://customer.example.test`,
+        sdkStats: { enabled: true },
+      });
+      const timing = (url: string) =>
+        createReadableLogRecord({
+          eventName: "browser.resource_timing",
+          instrumentationScope: {
+            name: "@opentelemetry/browser-instrumentation/resource-timing",
+          },
+          attributes: { "url.full": url },
+        });
+      const callback = vi.fn<(result: ExportResult) => void>();
+      exporter.export(
+        [timing(`${peerEndpoint}/v2/track`), timing(`${peerEndpoint}/v2/track?application=true`)],
+        callback,
+      );
+      await vi.waitFor(() =>
+        expect(callback).toHaveBeenCalledExactlyOnceWith({ code: ExportResultCode.SUCCESS }),
+      );
+      const [url, init] = transport.mock.calls[0];
+      const envelopes: AzureMonitorEnvelope[] = await new Request(url, init).json();
+      expect(envelopes).toHaveLength(1);
+      expect(envelopes[0].data.baseData.properties?.["url.full"]).toBe(
+        `${peerEndpoint}/v2/track?application=true`,
+      );
+      expect(realm[key]).toBe(incompatible);
+    } finally {
+      await exporter?.shutdown();
+      await peer?.shutdown();
+      if (previous) Object.defineProperty(realm, key, previous);
+      else delete realm[key];
+    }
+  },
+);
+
+it.each(
   (["index.js", "index.min.js", "iife.min"] as const).flatMap((file) =>
-    [false, true].map((restartDuringReport) => ({ file, restartDuringReport })),
+    [false, true].flatMap((restartDuringReport) =>
+      [false, true].map((outerStandalone) => ({ file, restartDuringReport, outerStandalone })),
+    ),
   ),
 )(
-  "keeps stats diagnostics out of standalone-first console pipelines through $file with in-callback restart $restartDuringReport",
-  async ({ file, restartDuringReport }) => {
+  "keeps stats diagnostics out of console pipelines through $file with in-callback restart $restartDuringReport and outer standalone $outerStandalone",
+  async ({ file, restartDuringReport, outerStandalone }) => {
     context.disable();
+    vi.spyOn(console, "warn").mockImplementation(() => {});
     const transport = vi.fn<typeof fetch>(
       async (url) => new Response(null, { status: url === SDK_STATS_ENDPOINT ? 503 : 200 }),
     );
@@ -49,6 +181,7 @@ it.each(
     const standaloneWarn = console.warn;
     const scripts: HTMLScriptElement[] = [];
     let handle: MicrosoftOpenTelemetryBrowser | undefined;
+    let outer: ReturnType<typeof createConsolePipeline> | undefined;
     try {
       let initialize: typeof import("../../src/index.js").useMicrosoftOpenTelemetry;
       let diagnostics = diag;
@@ -88,6 +221,8 @@ it.each(
         instrumentations,
       });
       handles.push(handle);
+      if (outerStandalone) outer = createConsolePipeline();
+      const standaloneTop = outer ? console.warn : standaloneWarn;
       let sharedWarn = console.warn;
       expect(sharedWarn).not.toBe(standaloneWarn);
       vi.spyOn(diagnostics, "warn")
@@ -103,17 +238,23 @@ it.each(
         console.warn("application warning");
         await handle.forceFlush();
         await provider.forceFlush();
+        await outer?.provider.forceFlush();
         expect(transport).toHaveBeenCalledTimes(index * 2);
         expect(diagnostics.warn).toHaveBeenCalledTimes(index);
         expect(exporter.getFinishedLogRecords().map((record) => record.body)).toEqual(
           Array<string>(index).fill("application warning"),
         );
+        if (outer) {
+          expect(outer.exporter.getFinishedLogRecords().map((record) => record.body)).toEqual(
+            Array<string>(index).fill("application warning"),
+          );
+        }
         expect(pipeline.logExporter.getFinishedLogRecords().map((record) => record.body)).toEqual(
           Array<string>(index).fill("application warning"),
         );
         if (index === 1) {
           if (!restartDuringReport) {
-            expect(console.warn).toBe(standaloneWarn);
+            expect(console.warn).toBe(standaloneTop);
             for (const instrumentation of instrumentations) instrumentation.enable();
           }
           expect(console.warn).not.toBe(sharedWarn);
@@ -123,16 +264,26 @@ it.each(
         }
       }
       await handle.shutdown();
-      expect(console.warn).toBe(standaloneWarn);
+      expect(console.warn).toBe(standaloneTop);
       console.warn("standalone after shutdown");
       await provider.forceFlush();
+      await outer?.provider.forceFlush();
       expect(exporter.getFinishedLogRecords().map((record) => record.body)).toEqual([
         "application warning",
         "application warning",
         "standalone after shutdown",
       ]);
+      if (outer) {
+        expect(outer.exporter.getFinishedLogRecords().map((record) => record.body)).toEqual([
+          "application warning",
+          "application warning",
+          "standalone after shutdown",
+        ]);
+      }
     } finally {
       await handle?.shutdown();
+      outer?.instrumentation.disable();
+      await outer?.provider.shutdown();
       standalone.disable();
       await provider.shutdown();
       for (const script of scripts) script.remove();

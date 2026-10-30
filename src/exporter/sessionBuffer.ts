@@ -55,8 +55,8 @@ function subscribeToPageTransitions(listener: () => void): () => void {
  * another document are adopted, so live same-origin frames, including hidden ones, never send each
  * other's telemetry. Adoption removes the record. Before each use, a page whose released record is
  * gone drops its copy, ignores later outcomes of requests started before the handoff and stops
- * their retries. Any failed write removes the record, so a stale copy cannot resend delivered
- * telemetry.
+ * their retries. Failed writes attempt to invalidate the record. SDK Stats do not persist
+ * accounting metadata or track losses after a batch has been retained.
  */
 export class SessionBuffer {
   readonly #entries = new Map<number, Entry>();
@@ -68,9 +68,10 @@ export class SessionBuffer {
   #nextId = 0;
   /** IDs with a request in progress that this document still owns. */
   readonly #live = new Set<number>();
-  #stored = false;
   /** The stored record is marked released for adoption. */
   #released = false;
+  #persisted = new Set<number>();
+  #disposed = false;
 
   public constructor(destination: string, storage = createSessionBufferStorage()) {
     this.#storage = storage;
@@ -100,6 +101,13 @@ export class SessionBuffer {
   public owns(id: number): boolean {
     this.#reconcile();
     return this.#live.has(id);
+  }
+
+  /** Whether a batch remains buffered in memory or storage, rather than discarded. */
+  public retain(id: number): boolean {
+    this.#reconcile();
+    const entry = this.#entries.get(id);
+    return (!!entry && !entry[2]) || this.#persisted.has(id);
   }
 
   /** Buffers a serialized envelope array and returns its ID. */
@@ -159,16 +167,16 @@ export class SessionBuffer {
               (entry): entry is [number, unknown[]] =>
                 Array.isArray(entry) &&
                 typeof entry[0] === "number" &&
-                now - entry[0] <= MAX_SESSION_BUFFER_AGE_MS &&
+                Number.isFinite(entry[0]) &&
                 Array.isArray(entry[1]) &&
                 entry[1].length > 0,
             )
         : [];
       // Live records belong to another open document; leave them until they expire.
-      if (!released && entries.length > 0) continue;
-      this.#storage.removeItem(key);
-      if (!released) continue;
+      if (!released && entries.some(([time]) => now - time <= MAX_SESSION_BUFFER_AGE_MS)) continue;
+      if (!this.#invalidate(key) || !released) continue;
       for (const [time, envelopes] of entries) {
+        if (now - time > MAX_SESSION_BUFFER_AGE_MS) continue;
         const body = JSON.stringify(envelopes);
         const id = this.#nextId++;
         this.#entries.set(id, [time, body]);
@@ -181,32 +189,41 @@ export class SessionBuffer {
 
   /** Removes this exporter's record and stops tracking page transitions. */
   public dispose(): void {
+    if (this.#disposed) return;
+    this.#disposed = true;
     this.#unsubscribe();
+    this.#invalidate(this.#key);
+    this.#persisted.clear();
     this.#entries.clear();
     // Requests that settle later must not recreate the record.
     this.#live.clear();
-    this.#storage.removeItem(this.#key);
+  }
+
+  #invalidate(key: string): boolean {
+    return this.#storage.removeItem(key) || this.#storage.setItem(key, "[0]");
   }
 
   /**
-   * Drops entries handed off to a document that adopted this page's released record. Dispatched
-   * entries were not in the record, so they stay owned.
+   * Drops IDs handed off with this page's released snapshot. Dispatched requests stay owned only
+   * when their stored copies were successfully invalidated before the handoff.
    */
   #reconcile(): void {
     if (!this.#released) return;
     const read = this.#storage.getItem(this.#key);
-    if (!read.success || read.value !== null) return;
-    for (const [id, [, , dispatched]] of this.#entries) {
-      if (dispatched) continue;
+    if (!read.success || (read.value !== null && read.value !== "[0]")) return;
+    for (const id of this.#persisted) {
       this.#entries.delete(id);
       this.#live.delete(id);
     }
-    this.#stored = this.#released = false;
+    this.#released = false;
+    this.#persisted.clear();
   }
 
   #write(): void {
     const now = Date.now();
     const parts: string[] = [];
+    const persisted = new Set<number>();
+    const dropped: number[] = [];
     let length = 0;
     // Newest first, so the oldest batches are evicted even when adopted records interleave.
     const entries = [...this.#entries].sort(([, [left]], [, [right]]) => left - right).reverse();
@@ -222,19 +239,21 @@ export class SessionBuffer {
         part.length > MAX_SESSION_BUFFER_LENGTH ||
         (full = length + part.length > MAX_SESSION_BUFFER_LENGTH)
       ) {
-        this.#entries.delete(id);
+        dropped.push(id);
         continue;
       }
       length += part.length + 1;
       parts.unshift(part);
+      persisted.add(id);
     }
-    const stored = this.#stored;
-    if (parts.length === 0 && !stored) return;
-    this.#stored =
+    const stored =
       parts.length > 0 &&
       this.#storage.setItem(this.#key, `[${pageHidden ? 1 : 0},${parts.join(",")}]`);
-    this.#released = this.#stored && pageHidden;
-    // Only remove a record that exists, since a removal ends the storage write backoff.
-    if (stored && !this.#stored) this.#storage.removeItem(this.#key);
+    // Bound memory even when an older stored snapshot cannot be invalidated.
+    for (const id of dropped) this.#entries.delete(id);
+    // A failed write is not terminal while an older record may still be adopted.
+    if (!stored && this.#persisted.size && !this.#invalidate(this.#key)) return;
+    this.#released = stored && pageHidden;
+    this.#persisted = stored ? persisted : new Set<number>();
   }
 }

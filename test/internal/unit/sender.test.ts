@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { MAX_RETRY_WAIT_MS } from "../../../src/exporter/constants.js";
+import { MAX_BEACON_BODY_SIZE, MAX_RETRY_WAIT_MS } from "../../../src/exporter/constants.js";
 import { Sender } from "../../../src/exporter/sender.js";
 import type { AzureMonitorEnvelope } from "../../../src/exporter/telemetryModels.js";
 import { installFakeClock } from "../../fixtures/clock.js";
@@ -13,6 +13,88 @@ afterEach(() => {
 });
 
 describe("Sender", () => {
+  it.each([536, 537, 3000])(
+    "keeps the application unload allowance when a %i-byte stats report starts first",
+    async (size) => {
+      const releases: Array<() => void> = [];
+      let pendingBytes = 0;
+      const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response(null));
+      const hold: typeof globalThis.fetch = (_url, init) => {
+        const bytes = init?.keepalive && init.body instanceof Uint8Array ? init.body.byteLength : 0;
+        pendingBytes += bytes;
+        return new Promise((resolve) =>
+          releases.push(() => {
+            pendingBytes -= bytes;
+            resolve(new Response(null));
+          }),
+        );
+      };
+      fetch.mockImplementationOnce(hold).mockImplementationOnce(hold);
+      const beacon = vi.fn(
+        (_url: string | URL, body?: BodyInit | null) =>
+          body instanceof Blob && pendingBytes + body.size <= 65536,
+      );
+      const sender = new Sender({
+        endpoint: "https://example.test/v2/track",
+        fetch,
+        sendBeacon: beacon,
+      });
+      const request = { contentType: "application/json", unloading: true };
+      const stats = sender.send({ ...request, sdkStats: true, body: new Uint8Array(size) });
+      const application = sender.send({ ...request, body: new Uint8Array(300) });
+      try {
+        await sender.send({ ...request, sdkStats: true, body: new Uint8Array(size) });
+        expect(fetch.mock.calls.map(([, init]) => init?.keepalive)).toEqual([false, true, false]);
+        await expect(
+          sender.send({ ...request, body: new Uint8Array(MAX_BEACON_BODY_SIZE) }),
+        ).resolves.toEqual({ transport: "beacon" });
+        expect(beacon).toHaveBeenCalledOnce();
+      } finally {
+        for (const release of releases) release();
+        await Promise.all([stats, application]);
+        sender.dispose();
+      }
+    },
+  );
+
+  it("keeps a cancelled wait's reservation until the underlying request settles", async () => {
+    let release!: () => void;
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response(null));
+    fetch.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = () => resolve(new Response(null));
+        }),
+    );
+    const sender = new Sender({
+      endpoint: "https://example.test/v2/track",
+      fetch,
+      disableBeacon: true,
+    });
+    const controller = new AbortController();
+    const request = {
+      contentType: "application/json",
+      unloading: true,
+      body: new Uint8Array(60 * 1024),
+    };
+    const pending = expect(
+      sender.send({ ...request, signal: controller.signal }),
+    ).rejects.toThrow();
+    try {
+      controller.abort();
+      await pending;
+      await expect(sender.send(request)).rejects.toThrow("sendBeacon fallback is unavailable");
+      expect(fetch).toHaveBeenCalledOnce();
+      release();
+      await Promise.resolve();
+      await sender.send(request);
+      expect(fetch.mock.calls[1][1]?.keepalive).toBe(true);
+    } finally {
+      release();
+      sender.dispose();
+    }
+  });
+
   it.each([
     ["Wed, 01 Jan 2025 00:00:02 GMT", 2_000],
     ["Fri, 03 Jan 2025 00:00:00 GMT", 86_400_000],

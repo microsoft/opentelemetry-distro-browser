@@ -5,7 +5,7 @@ export type SeverityLevel = 0 | 1 | 2 | 3 | 4;
 
 interface EnvelopeData {
   readonly ver: 2;
-  readonly properties?: Readonly<Record<string, string>>;
+  readonly properties?: Readonly<Record<string, string | boolean>>;
   readonly measurements?: Readonly<Record<string, number>>;
 }
 

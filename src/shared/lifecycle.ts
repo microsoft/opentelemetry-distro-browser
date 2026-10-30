@@ -30,14 +30,29 @@ export async function runLifecycleTasks(
 
 /** Waits for every already-bounded operation without imposing a second deadline. */
 export async function waitForAll(
-  operations: readonly Promise<void>[],
+  operations: readonly (Promise<void> | undefined)[],
   message: string,
 ): Promise<void> {
+  // eslint-disable-next-line @typescript-eslint/await-thenable -- Absent optional stages are fulfilled no-ops.
   const results = await Promise.allSettled(operations);
   const errors = results.flatMap((result) =>
     result.status === "rejected" ? [result.reason as unknown] : [],
   );
   throwErrors(errors, message);
+}
+
+/** Also settles when a transport or application wrapper ignores cancellation. */
+export function withAbort<T>(operation: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return operation;
+  let onAbort: (() => void) | undefined;
+  const cancelled = new Promise<never>((_resolve, reject) => {
+    onAbort = () => reject(new DOMException("Request aborted", "AbortError"));
+    signal.addEventListener("abort", onAbort, { once: true });
+    if (signal.aborted) onAbort();
+  });
+  return Promise.race([operation, cancelled]).finally(() => {
+    if (onAbort) signal.removeEventListener("abort", onAbort);
+  });
 }
 
 /** Installs one pair of unload listeners for all active instances in this realm. */

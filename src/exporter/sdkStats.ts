@@ -77,6 +77,7 @@ export function createInternalSdkStats(
     const next = resolveRoute(getInternalSdkStatsConfiguration(endpoint));
     properties.host = new URL(endpoint).hostname.split(".")[0];
     route = next;
+    if (!sending) sender?.dispose();
     sender = undefined;
     if (!route) sending?.abort();
   }
@@ -112,6 +113,10 @@ export function createInternalSdkStats(
   }
 
   function forceFlush(): Promise<void> {
+    return flushing && (counts.size || requests) ? flushing.then(startReport) : startReport();
+  }
+
+  function startReport(): Promise<void> {
     if (!flushing) {
       clearTimer();
       flushing = flush(isUnloading())
@@ -137,6 +142,7 @@ export function createInternalSdkStats(
         disabled = true;
         counts.clear();
         requests = duration = 0;
+        sender?.dispose();
       }
     }
   }
@@ -151,7 +157,7 @@ export function createInternalSdkStats(
   }
 
   function schedule(): void {
-    if (stopped || disabled || timer !== undefined) return;
+    if (stopped || disabled || flushing || timer !== undefined) return;
     timer = setTimeout(() => {
       void forceFlush();
     }, interval);
@@ -195,6 +201,7 @@ export function createInternalSdkStats(
       await sendSdkStats(statsSender, envelopes, controller, unloading);
     } finally {
       sending = undefined;
+      if (statsSender !== sender) statsSender.dispose();
     }
   }
 
@@ -206,13 +213,14 @@ export function createSdkStatsEnvelope(
   time: string,
   name: string,
   value: number,
-  properties: Record<string, string>,
+  properties: Record<string, string | boolean>,
   sampleRate?: number,
+  tags?: Readonly<Record<string, string>>,
 ): AzureMonitorEnvelope<MetricData> {
   return createEnvelope(
     instrumentationKey,
     time,
-    { "ai.internal.sdkVersion": getSdkVersion() },
+    { "ai.internal.sdkVersion": getSdkVersion(), ...tags },
     "MetricData",
     { ver: 2, metrics: [{ name, kind: 0, value }], properties },
     sampleRate,
@@ -236,6 +244,7 @@ export async function sendSdkStats(
         envelopes,
         unloading,
         signal: controller.signal,
+        sdkStats: true,
         retry: false,
       }),
       10_000,

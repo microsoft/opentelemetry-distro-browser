@@ -19,6 +19,23 @@ const connectionString =
   "InstrumentationKey=00000000-0000-0000-0000-000000000000;IngestionEndpoint=https://customer.example.test";
 const handles: MicrosoftOpenTelemetryBrowser[] = [];
 
+it.each([false, true])(
+  "rejects invalid SDK Stats before deferred startup (enabled: %s)",
+  async (enabled) => {
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    vi.stubGlobal("fetch", fetch);
+    await expect(
+      useMicrosoftOpenTelemetry({
+        azureMonitor: {
+          connectionString: Promise.resolve(connectionString),
+          sdkStats: { enabled, collectionIntervalMillis: 0 },
+        },
+      }),
+    ).rejects.toThrow(RangeError);
+    expect(fetch).not.toHaveBeenCalled();
+  },
+);
+
 afterEach(async () => {
   await Promise.all(handles.splice(0).map((handle) => handle.shutdown()));
   trace.disable();

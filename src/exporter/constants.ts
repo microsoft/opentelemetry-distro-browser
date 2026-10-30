@@ -4,6 +4,10 @@
 export const MAX_RETRY_AFTER_MS: number = 24 * 60 * 60 * 1000;
 /** Total retry-wait budget per send, independent of the server's throttle deadline. */
 export const MAX_RETRY_WAIT_MS: number = 30_000;
+/** Shutdown grace for this exporter's outstanding application sends. */
+export const MAX_SHUTDOWN_WAIT_MS: number = 15_000;
+/** Maximum time a flush waits for application sends; expiry does not cancel delivery. */
+export const MAX_FLUSH_WAIT_MS: number = 30_000;
 export const MAX_SEND_ATTEMPTS: number = 4;
 export const RETRY_DELAY_MS: number = 1_000;
 export const MAX_RETRY_DELAY_MS: number = 64_000;

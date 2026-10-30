@@ -4,7 +4,7 @@
 import { SDK_INFO } from "@opentelemetry/core";
 import { resourceFromAttributes } from "@opentelemetry/resources";
 import { ATTR_TELEMETRY_SDK_VERSION } from "@opentelemetry/semantic-conventions";
-import { describe, expect, it } from "vitest";
+import { assert, describe, expect, it } from "vitest";
 import { setManagedOperationName } from "../../../src/context/operationName.js";
 import { MaxPropertyLengths, MAX_BEACON_BODY_SIZE } from "../../../src/exporter/constants.js";
 import type { ExceptionData, PageViewData } from "../../../src/exporter/telemetryModels.js";
@@ -350,6 +350,7 @@ describe("Azure Monitor log envelope mapping", () => {
     const baseData = envelope.data.baseData as PageViewData;
     const refUri = baseData.properties?.refUri;
 
+    assert(typeof refUri === "string");
     expect(baseData.referredUri).toBe(referrer);
     expect(refUri).not.toContain("�");
     expect(new TextEncoder().encode(refUri).byteLength).toBeLessThanOrEqual(
@@ -1266,6 +1267,7 @@ describe("Azure Monitor log envelope mapping", () => {
     );
     const detail = envelope.data.baseData.properties?.detail;
 
+    assert(typeof detail === "string");
     expect(detail).toBe("\u20ac".repeat(2_730));
     expect(detail).not.toContain("\ufffd");
     expect(new TextEncoder().encode(detail).byteLength).toBeLessThanOrEqual(8_192);

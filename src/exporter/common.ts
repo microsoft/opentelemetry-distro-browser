@@ -172,6 +172,8 @@ export function createTags(
     tags["ai.operation.parentId"] = parentContext.spanId;
   }
   if (serviceName) tags["ai.cloud.role"] = serializeAttribute(serviceName);
+  const serviceInstance = resourceAttributes["service.instance.id"];
+  if (serviceInstance) tags["ai.cloud.roleInstance"] = serializeAttribute(serviceInstance);
   const serviceVersion = resourceAttributes[ATTR_SERVICE_VERSION];
   if (serviceVersion) {
     tags["ai.application.ver"] = truncateToLength(
@@ -239,6 +241,40 @@ export function createEnvelope<T extends AzureMonitorBaseData>(
     tags,
     data: { baseType, baseData },
   };
+}
+
+export interface EnvelopeBatch<T extends AzureMonitorBaseData = AzureMonitorBaseData> {
+  body: string;
+  envelopes: readonly AzureMonitorEnvelope<T>[];
+}
+
+export function createEnvelopeBatches<T extends AzureMonitorBaseData>(
+  envelopes: readonly AzureMonitorEnvelope<T>[],
+  maxBatchSize: number,
+): EnvelopeBatch<T>[] {
+  const encoder = new TextEncoder();
+  const requests: EnvelopeBatch<T>[] = [];
+  let batch: AzureMonitorEnvelope<T>[] = [];
+  let serializedBatch: string[] = [];
+  let batchSize = 2;
+  const flush = (): void => {
+    if (batch.length === 0) return;
+    requests.push({ body: `[${serializedBatch.join(",")}]`, envelopes: batch });
+    batch = [];
+    serializedBatch = [];
+    batchSize = 2;
+  };
+  for (const envelope of envelopes) {
+    // Send an oversized individual envelope alone so ingestion can report its failure.
+    const serialized = JSON.stringify(envelope);
+    const size = encoder.encode(serialized).byteLength;
+    if (batch.length > 0 && batchSize + 1 + size > maxBatchSize) flush();
+    batch.push(envelope);
+    serializedBatch.push(serialized);
+    batchSize += (batch.length === 1 ? 0 : 1) + size;
+  }
+  flush();
+  return requests;
 }
 
 export function getSampleRate(attributes: Attributes): number {
