@@ -208,6 +208,45 @@ for (const file of ["index.js", "index.min.js"]) {
     expect(disable).toHaveBeenCalledOnce();
   });
 
+  it(`preserves a newer registered click activation when an older restart throws through ${file}`, async () => {
+    const distro = await loadDistro();
+    const { createClickAnalyticsInstrumentation } = await loadInstrumentations();
+    const pipeline = createInMemoryPipeline();
+    const onLog = vi.spyOn(pipeline.logProcessor, "onEmit");
+    const click = await createClickAnalyticsInstrumentation();
+    const handle = await distro.useMicrosoftOpenTelemetry({
+      ...pipeline.options,
+      pageView: { enabled: false },
+      instrumentations: [click],
+    });
+    handles.add(handle);
+    const originalAdd = window.addEventListener.bind(window);
+    const failure = new Error("old registration failed");
+    let reentered = false;
+    vi.spyOn(window, "addEventListener").mockImplementation((type, listener, options) => {
+      if (!reentered && type === "mousedown") {
+        reentered = true;
+        click.disable();
+        click.enable();
+        originalAdd(type, listener, options);
+        throw failure;
+      }
+      originalAdd(type, listener, options);
+    });
+    expect(() => click.setConfig({ enabled: true })).toThrow(failure);
+    const target = mountClickTarget('<button data-id="restart">Click</button>');
+    target.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+    target.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true, key: "Enter" }));
+    await handle.forceFlush();
+    expect(pipeline.logExporter.getFinishedLogRecords()).toHaveLength(2);
+    expect(onLog).toHaveBeenCalledTimes(2);
+    await handle.shutdown();
+    handles.delete(handle);
+    target.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+    click.trackPageAction({ name: "after-shutdown" });
+    expect(onLog).toHaveBeenCalledTimes(2);
+  });
+
   it(`isolates emitted click analytics helper configurations and shutdown across instances through ${file}`, async () => {
     const distro = await loadDistro();
     const { getInstrumentations, BehaviorMapValidator } = await loadInstrumentations();
