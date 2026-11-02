@@ -56,6 +56,7 @@ export function createConfigurationSync(
   let listening = false;
   let changing = false;
   let uncertainRemoval = false;
+  let pendingShutdown = false;
   const report = (error: unknown): void => {
     try {
       void Promise.resolve(options.onError?.(error)).catch(() => {});
@@ -113,7 +114,16 @@ export function createConfigurationSync(
       }
     } finally {
       changing = false;
-      if (uncertainRemoval && !paused && !stopped && options.mode === 2) {
+      if (pendingShutdown) {
+        pendingShutdown = false;
+        // Reentrant shutdown could not remove a listener while this transition was active.
+        // Complete one deferred attempt without replacing the outer transition's error.
+        try {
+          reconcile();
+        } catch {
+          /* The adapter is terminal; preserve the original cleanup failure. */
+        }
+      } else if (uncertainRemoval && !paused && !stopped && options.mode === 2) {
         listening = false;
         try {
           reconcile();
@@ -151,6 +161,7 @@ export function createConfigurationSync(
       }
     },
     shutdown(): void {
+      if (changing && !stopped) pendingShutdown = true;
       stopped = true;
       generation++;
       try {

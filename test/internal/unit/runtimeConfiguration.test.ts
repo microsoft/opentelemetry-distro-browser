@@ -1759,6 +1759,68 @@ describe("configuration synchronization", () => {
     }
   });
 
+  it.each([false, true])(
+    "finishes reentrant shutdown after pause removal throws (native removal first=%s)",
+    async (removedFirst) => {
+      const { controller } = create();
+      const name = "part7-pause-reentrant-shutdown";
+      const add = vi.spyOn(globalThis, "addEventListener");
+      const sync = adapter(controller, { customEvtName: name });
+      const listener = add.mock.calls.find(([type]) => type === name)?.[1];
+      expect(listener).toBeTypeOf("function");
+      const nativeRemove = globalThis.removeEventListener.bind(globalThis);
+      const failure = new Error("reentrant removal failed");
+      let attempts = 0;
+      let attached = true;
+      const remove = vi.spyOn(globalThis, "removeEventListener").mockImplementation((...args) => {
+        if (args[0] !== name || args[1] !== listener) return nativeRemove(...args);
+        attempts++;
+        sync.shutdown();
+        if (attempts === 1 && !removedFirst) throw failure;
+        nativeRemove(...args);
+        attached = false;
+        if (attempts === 1) throw failure;
+      });
+      try {
+        expect(() => sync.pause()).toThrow(failure);
+        expect(attempts).toBe(2);
+        expect(attached).toBe(false);
+        sync.resume();
+        dispatch(name, { cfg: { samplingPercentage: 25 } });
+        await barrier(controller);
+        expect(controller.snapshot().samplingPercentage).toBeUndefined();
+        expect(add.mock.calls.filter(([type]) => type === name)).toHaveLength(1);
+      } finally {
+        remove.mockRestore();
+        if (listener) nativeRemove(name, listener);
+      }
+    },
+  );
+
+  it("bounds deferred shutdown cleanup when every reentrant removal fails", () => {
+    const { controller } = create();
+    const name = "part7-persistent-reentrant-shutdown";
+    const add = vi.spyOn(globalThis, "addEventListener");
+    const sync = adapter(controller, { customEvtName: name });
+    const listener = add.mock.calls.find(([type]) => type === name)?.[1];
+    const nativeRemove = globalThis.removeEventListener.bind(globalThis);
+    const failure = new Error("persistent reentrant removal failed");
+    let attempts = 0;
+    const remove = vi.spyOn(globalThis, "removeEventListener").mockImplementation((...args) => {
+      if (args[0] !== name || args[1] !== listener) return nativeRemove(...args);
+      attempts++;
+      sync.shutdown();
+      throw failure;
+    });
+    try {
+      expect(() => sync.pause()).toThrow(failure);
+      expect(attempts).toBe(2);
+    } finally {
+      remove.mockRestore();
+      if (listener) nativeRemove(name, listener);
+    }
+  });
+
   it("resumes after a removal wrapper removes the listener and then throws", async () => {
     const { controller } = create();
     const name = "part7-removed-then-thrown";
