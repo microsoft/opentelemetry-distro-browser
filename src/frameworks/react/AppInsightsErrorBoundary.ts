@@ -10,6 +10,31 @@ import {
 } from "react";
 import type { ReactPlugin } from "./ReactPlugin.js";
 
+function normalizeError(error: unknown): Error {
+  try {
+    // Snapshot even Error instances: proxies can expose safe descriptors but throw on reads.
+    if (error !== null && typeof error === "object") {
+      const source = error as { message?: unknown; name?: unknown; stack?: unknown };
+      const message = source.message;
+      if (typeof message === "string") {
+        const normalized = new Error(message);
+        for (const key of ["name", "stack"] as const) {
+          try {
+            const value = source[key];
+            if (typeof value === "string") normalized[key] = value;
+          } catch {
+            // Optional metadata must not replace a safe recovery message.
+          }
+        }
+        return normalized;
+      }
+    }
+    return new Error(String(error));
+  } catch {
+    return new Error("Unknown error");
+  }
+}
+
 /**
  * Props passed to an error boundary's fallback component. React supplies component information
  * after the first recovery render, so `errorInfo` can initially be null.
@@ -51,11 +76,12 @@ export class AppInsightsErrorBoundary extends Component<
     errorInfo: null,
   };
 
-  public static getDerivedStateFromError(error: Error): IAppInsightsErrorBoundaryState {
-    return { hasError: true, error, errorInfo: null };
+  public static getDerivedStateFromError(error: unknown): IAppInsightsErrorBoundaryState {
+    return { hasError: true, error: normalizeError(error), errorInfo: null };
   }
 
-  public componentDidCatch(error: Error, errorInfo: ErrorInfo): void {
+  public componentDidCatch(thrown: unknown, errorInfo: ErrorInfo): void {
+    const error = this.state.error ?? normalizeError(thrown);
     this.setState({ hasError: true, error, errorInfo });
     this.props.appInsights.trackException({
       error,

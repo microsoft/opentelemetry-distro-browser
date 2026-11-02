@@ -16,6 +16,7 @@ import {
 } from "@opentelemetry/api-logs";
 import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from "vitest";
 import type { BrowserInstrumentation } from "../../../src/types.js";
+import { ROUTE_SOURCE_ACTIVE } from "../../../src/shared/constants.js";
 import { BROWSER_ASYNC_TIMEOUT_MS } from "../../fixtures/timeouts.js";
 import {
   createPageViewContext,
@@ -190,6 +191,49 @@ describe("PageViewInstrumentation", () => {
       provider.records.filter((record) => record.eventName === "browser.page_view"),
     ).toHaveLength(2);
   });
+
+  it.each(["route", "document_title"] as const)(
+    "keeps the captured %s name when a route source pauses before settling",
+    async (nameSource) => {
+      let url = "/home";
+      let route = "/home";
+      let observing = true;
+      let notify!: Parameters<
+        NonNullable<InternalPageViewInstrumentationConfig["routeSource"]>["subscribe"]
+      >[0];
+      const resolver = vi.fn(() => route);
+      const { instrumentation, provider } = createInstrumentation({
+        routeSource: {
+          getCurrentUrl: () => url,
+          [ROUTE_SOURCE_ACTIVE]: () => observing,
+          subscribe: (listener) => {
+            notify = listener;
+            return () => {};
+          },
+        },
+        ...(nameSource === "route" ? { routeResolver: resolver } : {}),
+      });
+      instrumentation.enable();
+      await settle();
+      url = "/orders/42";
+      route = "/orders/:id";
+      document.title = "Orders";
+      notify({ url });
+      resolver.mockClear();
+      observing = false;
+      route = "/cart";
+      document.title = "Cart";
+      instrumentation.settleForUnload();
+
+      expect(provider.records).toHaveLength(2);
+      expect(provider.records[1].attributes).toMatchObject({
+        "browser.page_view.name": nameSource === "route" ? "/orders/:id" : "Orders",
+        "browser.page_view.name_source": nameSource,
+        "url.full": `${location.origin}/orders/42`,
+      });
+      expect(resolver).not.toHaveBeenCalled();
+    },
+  );
 
   it("cleans up a route source even when its unsubscribe throws", () => {
     const unsubscribe = vi.fn(() => {

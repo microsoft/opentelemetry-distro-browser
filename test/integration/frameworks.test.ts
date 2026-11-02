@@ -3,7 +3,7 @@
 
 import { ROOT_CONTEXT, context, propagation, trace } from "@opentelemetry/api";
 import { createMemoryHistory } from "history";
-import { StrictMode, createElement, useEffect, type ReactNode } from "react";
+import { StrictMode, createElement, useEffect, type ErrorInfo, type ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   cleanupFrameworks,
@@ -195,6 +195,33 @@ describe("built React integration", () => {
     expect(trace.getSpanContext(context.active())?.traceId).toBe(
       resumed.attributes["browser.page_view.id"],
     );
+  });
+
+  it("keeps a settling page's name when its plugin pauses before an unobserved navigation", async () => {
+    const history = createMemoryHistory({ initialEntries: ["/home"] });
+    const plugin = new frameworks.react.ReactPlugin({
+      history,
+      routeResolver: () => history.location.pathname,
+    });
+    const fixture = await startFrameworkTelemetry(plugin);
+    await fixture.waitForPages(1);
+    history.push("/orders/42");
+    plugin.disable();
+    history.push("/cart");
+    const [, page] = await fixture.waitForPages(2);
+    expect(page.attributes).toMatchObject({
+      "browser.page_view.name": "/orders/42",
+      "browser.page_view.name_source": "route",
+      "url.full": `${location.origin}/orders/42`,
+    });
+    plugin.enable();
+    history.go(0);
+    history.push("/checkout");
+    const [, , resumed] = await fixture.waitForPages(3);
+    expect(resumed.attributes).toMatchObject({
+      "browser.page_view.name": "/checkout",
+      "url.full": `${location.origin}/checkout`,
+    });
   });
 
   it("correlates routed callbacks while preserving explicit span context", async () => {
@@ -558,16 +585,66 @@ describe("built React integration", () => {
     });
   });
 
-  it("recovers and reports a null-prototype value thrown by a descendant", async () => {
+  it.each<[string, () => unknown, string]>([
+    ["string", () => "render failed", "render failed"],
+    ["null", () => null, "null"],
+    ["null-prototype object", () => Object.create(null) as unknown, "Unknown error"],
+    [
+      "throwing conversion",
+      () => ({
+        [Symbol.toPrimitive]: () => {
+          throw new Error("conversion failed");
+        },
+      }),
+      "Unknown error",
+    ],
+    [
+      "cross-realm Error",
+      () => {
+        const frame = document.createElement("iframe");
+        document.body.append(frame);
+        try {
+          const ForeignError = (frame.contentWindow as unknown as { TypeError: typeof TypeError })
+            .TypeError;
+          return new ForeignError("render failed");
+        } finally {
+          frame.remove();
+        }
+      },
+      "render failed",
+    ],
+    [
+      "proxied Error",
+      () =>
+        new Proxy(new Error("render failed"), {
+          get(target, key, receiver) {
+            if (key === "message") throw new Error("message trap failed");
+            return Reflect.get(target, key, receiver) as unknown;
+          },
+        }),
+      "Unknown error",
+    ],
+    [
+      "throwing message",
+      () =>
+        Object.defineProperty(new Error(), "message", {
+          get() {
+            throw new Error("message getter failed");
+          },
+        }),
+      "Unknown error",
+    ],
+    ["Error", () => new TypeError("render failed"), "render failed"],
+  ])("recovers and reports a %s thrown by a descendant", async (name, create, message) => {
     const plugin = new frameworks.react.ReactPlugin();
     const fixture = await startFrameworkTelemetry(plugin, { enabled: false });
-    const thrown: unknown = Object.create(null);
+    const thrown = create();
     function Broken(): never {
       throw thrown;
     }
-    function Fallback() {
-      return createElement("p", null, "Recovered");
-    }
+    const Fallback = vi.fn(({ error }: { error: Error | null; errorInfo: ErrorInfo | null }) =>
+      createElement("p", null, error?.message.toUpperCase()),
+    );
     const app = mountReact(
       createElement(frameworks.react.AppInsightsErrorBoundary, {
         appInsights: plugin,
@@ -575,19 +652,72 @@ describe("built React integration", () => {
         children: createElement(Broken),
       }),
     );
-    expect(app.host.textContent).toBe("Recovered");
+    expect(app.host.textContent).toBe(message.toUpperCase());
+    for (const [props] of Fallback.mock.calls) {
+      expect(props.error).toBeInstanceOf(Error);
+      expect(props.error?.message).toBe(message);
+    }
+    const fallback = Fallback.mock.calls.at(-1)![0];
+    if (name === "Error" || name === "cross-realm Error") {
+      expect(fallback.error?.name).toBe("TypeError");
+      expect(fallback.error?.stack).toBe((thrown as Error).stack);
+    }
+    expect(fallback.errorInfo?.componentStack).toContain("AppInsightsErrorBoundary");
     await fixture.telemetry.forceFlush();
     expect(fixture.records()).toHaveLength(1);
     expect(fixture.records()[0]).toMatchObject({
       eventName: "exception",
       severityNumber: 17,
       attributes: {
-        "exception.type": "Error",
-        "exception.message": "Unknown error",
-        componentStack: expect.stringContaining("Broken"),
+        "exception.type": name === "Error" || name === "cross-realm Error" ? "TypeError" : "Error",
+        "exception.message": message,
+        componentStack: fallback.errorInfo?.componentStack,
       },
     });
   });
+
+  it.each(["message", "conversion", "proxy"] as const)(
+    "snapshots a stateful %s once across the recovery callbacks",
+    async (source) => {
+      const plugin = new frameworks.react.ReactPlugin();
+      const fixture = await startFrameworkTelemetry(plugin, { enabled: false });
+      const read = vi.fn(() => {
+        if (read.mock.calls.length > 1) throw new Error("read again");
+        return "render failed";
+      });
+      const thrown =
+        source === "proxy"
+          ? new Proxy(new Error("render failed"), {
+              get(target, key, receiver) {
+                return key === "message" ? read() : (Reflect.get(target, key, receiver) as unknown);
+              },
+            })
+          : source === "message"
+            ? Object.defineProperties(new Error(), {
+                message: { get: read },
+                stack: { value: "safe stack" },
+              })
+            : { toString: read };
+      const Boundary = frameworks.react.AppInsightsErrorBoundary;
+      const boundary = new Boundary({ appInsights: plugin, onError: () => null, children: null });
+      // Exercise one recovery pair directly: React may retry the whole failed render in development.
+      boundary.state = Boundary.getDerivedStateFromError(thrown);
+      const error = boundary.state.error;
+      expect(error).toBeInstanceOf(Error);
+      expect(error?.message.toUpperCase()).toBe("RENDER FAILED");
+      const setState = vi.spyOn(boundary, "setState").mockImplementation(() => {});
+      const errorInfo = { componentStack: "Broken" };
+      boundary.componentDidCatch(thrown, errorInfo);
+      expect(setState).toHaveBeenCalledExactlyOnceWith({ hasError: true, error, errorInfo });
+      expect(read).toHaveBeenCalledTimes(1);
+      await fixture.telemetry.forceFlush();
+      expect(fixture.records()).toHaveLength(1);
+      expect(fixture.records()[0].attributes).toMatchObject({
+        "exception.message": "render failed",
+        componentStack: "Broken",
+      });
+    },
+  );
 
   it("excludes idle gaps and emits engagement on real unmount with the latest props", async () => {
     const plugin = new frameworks.react.ReactPlugin();
@@ -861,4 +991,36 @@ describe("built React integration", () => {
     await b.telemetry.shutdown();
     expect(unlisten).toHaveBeenCalledTimes(2);
   });
+
+  it.each([false, true])(
+    "starts a reused plugin at the current route after shutdown (paused first: %s)",
+    async (paused) => {
+      const history = createMemoryHistory({ initialEntries: ["/home"] });
+      const plugin = new frameworks.react.ReactPlugin({
+        history,
+        routeResolver: () => history.location.pathname,
+      });
+      const first = await startFrameworkTelemetry(plugin);
+      const [initial] = await first.waitForPages(1);
+      if (paused) plugin.disable();
+      await first.telemetry.shutdown();
+      history.push("/orders/42");
+
+      const second = await startFrameworkTelemetry(plugin);
+      const [restarted] = await second.waitForPages(1);
+      expect(restarted.attributes).toMatchObject({
+        "browser.page_view.index": 0,
+        "browser.page_view.name": "/orders/42",
+        "browser.page_view.name_source": "route",
+        "url.full": `${location.origin}/orders/42`,
+      });
+      expect(restarted.spanContext?.traceId).not.toBe(initial.spanContext?.traceId);
+      expect(trace.getSpanContext(context.active())?.traceId).toBe(restarted.spanContext?.traceId);
+      history.go(0);
+      history.push("/cart");
+      const [, next] = await second.waitForPages(2);
+      expect(next.attributes["url.full"]).toBe(`${location.origin}/cart`);
+      expect(next.spanContext?.traceId).not.toBe(restarted.spanContext?.traceId);
+    },
+  );
 });

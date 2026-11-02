@@ -85,9 +85,16 @@ export class ReactPlugin extends FrameworkPlugin {
               [ROUTE_SOURCE_ACTIVE]: () =>
                 this.#routesEnabled && (!awaitingRoute || history.location !== ignoredLocation),
               getCurrentUrl: () => {
+                // With no page-view subscriber, this read starts a new SDK lifetime, not a
+                // paused subscription. Discard its predecessor's frozen route before startup.
+                if (!this.#routes.size) {
+                  ignoredLocation = undefined;
+                  awaitingRoute = false;
+                  url = urlOf(history.location);
+                }
                 // History commits before invoking listeners. Read it even from earlier listeners,
                 // but do not replay the location reached while observation was paused.
-                if (this.#routesEnabled && history.location !== ignoredLocation) {
+                else if (this.#routesEnabled && history.location !== ignoredLocation) {
                   url = urlOf(history.location);
                 }
                 return url;

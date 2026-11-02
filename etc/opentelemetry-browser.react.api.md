@@ -42,9 +42,9 @@ export const AppInsightsContext: react.Context<ReactPlugin | undefined>;
 // @public
 export class AppInsightsErrorBoundary extends Component<IAppInsightsErrorBoundaryProps, IAppInsightsErrorBoundaryState> {
     // (undocumented)
-    componentDidCatch(error: Error, errorInfo: ErrorInfo): void;
+    componentDidCatch(thrown: unknown, errorInfo: ErrorInfo): void;
     // (undocumented)
-    static getDerivedStateFromError(error: Error): IAppInsightsErrorBoundaryState;
+    static getDerivedStateFromError(error: unknown): IAppInsightsErrorBoundaryState;
     // (undocumented)
     render(): ReactNode;
     // (undocumented)

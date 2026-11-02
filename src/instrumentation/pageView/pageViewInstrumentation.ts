@@ -963,6 +963,9 @@ export class PageViewInstrumentation extends InstrumentationBase<InternalPageVie
    * page view sees the same name that is about to be emitted rather than the provisional one.
    */
   #finalizeName(pending: PendingPageView): PageView {
+    // An inactive source freezes its URL, not the application's route resolver or title.
+    // Neither can safely rename the captured page after an unobserved navigation.
+    if (!this.isActive()) return pending.pageView;
     const resolved =
       this.#currentUrl() === pending.rawUrl
         ? this.#resolveName()
