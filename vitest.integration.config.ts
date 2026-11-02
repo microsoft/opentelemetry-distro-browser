@@ -1,4 +1,4 @@
-import { defineConfig } from "vitest/config";
+import { defineConfig, type TestUserConfig } from "vitest/config";
 import config, { browserInstances } from "./vitest.config.js";
 import {
   inspectCrossSiteCookieCleanup,
@@ -6,6 +6,9 @@ import {
 } from "./test/integration/snippetPageCommand.js";
 import { inspectPageVisitNamespaces } from "./test/integration/pageVisitNamespaceCommand.js";
 import { verifyReloadDelivery, verifyUnloadDelivery } from "./test/integration/unloadCommand.js";
+
+const sharedPatchesSuite = "test/integration/sharedBrowserPatches.test.ts";
+type BrowserInstance = NonNullable<NonNullable<TestUserConfig["browser"]>["instances"]>[number];
 
 export default defineConfig({
   ...config,
@@ -26,7 +29,15 @@ export default defineConfig({
         verifyReloadDelivery,
         verifyUnloadDelivery,
       },
-      instances: browserInstances,
+      // Sequential files still share a runner page and WebKit's History API quota.
+      instances: browserInstances.flatMap<BrowserInstance>((instance) =>
+        instance.browser === "webkit"
+          ? [
+              { ...instance, exclude: [sharedPatchesSuite] },
+              { ...instance, name: "webkit-shared-patches", include: [sharedPatchesSuite] },
+            ]
+          : [instance],
+      ),
     },
     globalSetup: ["./test/integration/redirectServer.ts", "./test/integration/cdnServer.ts"],
     include: ["test/integration/**/*.test.ts"],
