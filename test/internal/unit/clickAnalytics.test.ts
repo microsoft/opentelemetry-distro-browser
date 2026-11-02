@@ -862,6 +862,33 @@ describe("ClickAnalyticsInstrumentation", () => {
     },
   );
 
+  it("redacts frozen hook attributes without mutating the hook-owned object", async () => {
+    const attributes = Object.freeze({
+      "url.full": "https://user:password@example.test/page?token=secret&keep=yes",
+      "url.referrer": "https://example.test/ref?access_token=secret",
+      "browser.click.target_url": "https://example.test/target?token=secret",
+      custom: "kept",
+    });
+    const { instrumentation, records } = createInstrumentation({
+      applyCustomLogRecordData: (record) => {
+        record.attributes = attributes;
+      },
+    });
+    instrumentation.enable();
+    instrumentation.trackPageAction({ name: "frozen" });
+    const exported = await records();
+    expect(exported).toHaveLength(1);
+    expect(exported[0].attributes).toMatchObject({
+      "url.full": "https://REDACTED:REDACTED@example.test/page?token=REDACTED&keep=yes",
+      "url.referrer": "https://example.test/ref?access_token=REDACTED",
+      "browser.click.target_url": "https://example.test/target?token=REDACTED",
+      custom: "kept",
+    });
+    expect(attributes["url.full"]).toContain("token=secret");
+    expect(attributes["url.referrer"]).toContain("access_token=secret");
+    expect(attributes["browser.click.target_url"]).toContain("token=secret");
+  });
+
   it("isolates throwing callbacks from browser events and subsequent captures", async () => {
     const applyCustomLogRecordData = vi.fn(() => {
       throw new Error("callback failed");
@@ -887,6 +914,42 @@ describe("ClickAnalyticsInstrumentation", () => {
   });
 
   describe("automatic actions", () => {
+    it.each(["href", "xlink:href"])(
+      "preserves SVG clicks with invalid %s destinations",
+      async (attribute) => {
+        const { instrumentation, records } = createInstrumentation();
+        instrumentation.enable();
+        mouse(
+          element(
+            `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"><a data-id="invalid-svg" ${attribute}="http://["><text>Link</text></a></svg>`,
+            "text",
+          ),
+        );
+        const exported = await records();
+        expect(exported).toHaveLength(1);
+        expect(exported[0].attributes["browser.click.name"]).toBe("invalid-svg");
+        expect(exported[0].attributes["browser.click.target_url"]).toBeUndefined();
+      },
+    );
+
+    it.each(["href", "xlink:href"])(
+      "resolves SVG %s links against their base URI",
+      async (attribute) => {
+        const { instrumentation, records } = createInstrumentation();
+        instrumentation.enable();
+        const target = element(
+          `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"><a data-id="svg" ${attribute}="../target?token=secret"><text>Link</text></a></svg>`,
+          "text",
+        );
+        const anchor = target.parentElement!;
+        mouse(target);
+        const exported = await records();
+        const expected = new URL("../target?token=REDACTED", anchor.baseURI).href;
+        expect(exported).toHaveLength(1);
+        expect(exported[0].attributes["browser.click.target_url"]).toBe(expected);
+      },
+    );
+
     it.each([
       [0, "CL"],
       [1, "CM"],
@@ -1096,6 +1159,70 @@ describe("ClickAnalyticsInstrumentation", () => {
   });
 
   describe("lifecycle and isolation", () => {
+    it.each(["mousedown", "keyup"])(
+      "cancels %s registration after reentrant disable",
+      async (failedEvent) => {
+        const { instrumentation, records } = createInstrumentation();
+        const originalAdd = window.addEventListener.bind(window);
+        const originalRemove = window.removeEventListener.bind(window);
+        const installed = new Set<EventListenerOrEventListenerObject | null>();
+        const remove = vi
+          .spyOn(window, "removeEventListener")
+          .mockImplementation((type, listener, options) => {
+            originalRemove(type, listener, options);
+            if (type === failedEvent) installed.delete(listener);
+          });
+        const add = vi
+          .spyOn(window, "addEventListener")
+          .mockImplementation((type, listener, options) => {
+            if (type === failedEvent) instrumentation.disable();
+            originalAdd(type, listener, options);
+            if (type === failedEvent) installed.add(listener);
+          });
+        instrumentation.enable();
+        const listener = add.mock.calls[0][1];
+        expect(remove).toHaveBeenLastCalledWith("keyup", listener);
+        expect(installed.size).toBe(0);
+        const target = element('<button data-id="cancelled"></button>');
+        mouse(target);
+        keyboard(target, "Enter");
+        expect(await records()).toEqual([]);
+        add.mockRestore();
+        instrumentation.enable();
+        mouse(target);
+        expect(await records()).toHaveLength(1);
+      },
+    );
+
+    it.each([false, true])(
+      "preserves a newer activation when old registration is cancelled (throws: %s)",
+      async (throws) => {
+        const { instrumentation, records } = createInstrumentation();
+        const originalAdd = window.addEventListener.bind(window);
+        let reentered = false;
+        const failure = new Error("old registration failed");
+        vi.spyOn(window, "addEventListener").mockImplementation((type, listener, options) => {
+          if (!reentered) {
+            reentered = true;
+            instrumentation.disable();
+            instrumentation.enable();
+            originalAdd(type, listener, options);
+            if (throws) throw failure;
+          } else originalAdd(type, listener, options);
+        });
+        if (throws) expect(() => instrumentation.enable()).toThrow(failure);
+        else instrumentation.enable();
+        const target = element('<button data-id="new-activation"></button>');
+        mouse(target);
+        keyboard(target, "Enter");
+        expect(await records()).toHaveLength(2);
+        instrumentation.disable();
+        mouse(target);
+        keyboard(target, "Enter");
+        expect(await records()).toHaveLength(2);
+      },
+    );
+
     it.each([
       ["mousedown", false],
       ["mousedown", true],
