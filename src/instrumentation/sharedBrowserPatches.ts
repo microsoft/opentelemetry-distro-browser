@@ -290,7 +290,12 @@ function adapt(instrumentation: Patchable): void {
       "Construct shared instrumentations with enabled: false",
     );
   }
-  if (adapted) return;
+  // Click Analytics owns event listeners, not shared method patches. Keep its activation-aware rollback.
+  if (
+    adapted ||
+    instrumentation.instrumentationName === "@microsoft/opentelemetry-browser/click-analytics"
+  )
+    return;
   const entries: {
     target: object;
     name: PropertyKey;

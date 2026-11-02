@@ -23,7 +23,7 @@ export const entryPointBudgets = {
     brotliBytes: 44.75 * 1024,
   },
   "./instrumentations": {
-    rawBytes: 70 * 1024,
+    rawBytes: 70.25 * 1024,
     gzipBytes: 26.25 * 1024,
     brotliBytes: 23.25 * 1024,
   },
@@ -39,7 +39,7 @@ export const entryPointBudgets = {
 // The SDK browser bundle also carries every instrumentation, because CDN users cannot add them later.
 // Click Analytics parity adds about 2.4 KiB gzip to the SDK and 2.7 KiB to instrumentation globals.
 const sdkBrowserBundleBudget = {
-  rawBytes: 189 * 1024,
+  rawBytes: 189.25 * 1024,
   gzipBytes: 60.25 * 1024,
   brotliBytes: 52.75 * 1024,
 };

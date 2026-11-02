@@ -30,23 +30,28 @@ function contentName(value: unknown): string {
 
 function targetUri(element: Element): string {
   const tagName = element.tagName.toUpperCase();
+  let value: string | null;
   if (tagName === "A" || tagName === "AREA") {
     const href = (element as HTMLAnchorElement).href;
-    if (typeof href === "string") return href;
-    const value =
-      element.getAttribute("href") ??
-      element.getAttributeNS("http://www.w3.org/1999/xlink", "href");
-    if (value === null) return "";
-    try {
-      return new URL(value, element.baseURI).href;
-    } catch {
-      return "";
-    }
+    if (typeof href === "string" && !href) return "";
+    value =
+      typeof href === "string"
+        ? href
+        : (element.getAttribute("href") ??
+          element.getAttributeNS("http://www.w3.org/1999/xlink", "href"));
+  } else if (tagName === "INPUT" && INPUT_TYPES.has((element as HTMLInputElement).type)) {
+    value = (element as HTMLInputElement).form?.action ?? null;
+    if (!value) return location.pathname;
+  } else {
+    return "";
   }
-  if (tagName === "INPUT" && INPUT_TYPES.has((element as HTMLInputElement).type)) {
-    return (element as HTMLInputElement).form?.action || location.pathname;
+  if (value === null) return "";
+  try {
+    return new URL(value, element.baseURI).href;
+  } catch {
+    // Invalid DOM destinations must not bypass URL redaction or discard the click.
+    return "";
   }
-  return "";
 }
 
 /**
@@ -309,6 +314,7 @@ export class ClickAnalyticsInstrumentation extends InstrumentationBase<ClickAnal
         .map((tag) => tag.trim()),
     );
     let element = event.target as Element | null;
+    if (element?.tagName && isDoNotTrack(element, config)) return;
     while (element?.tagName) {
       const control = (element as HTMLLabelElement).control;
       if (control && elements.has(control.tagName.toUpperCase())) element = control;
