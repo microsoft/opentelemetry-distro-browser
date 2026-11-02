@@ -9,6 +9,9 @@ export default defineConfig({
   resolve: { ...config.resolve, alias: [] },
   test: {
     ...config.test,
+    // Commands create extra contexts and popups outside Vitest's managed-page budget.
+    // Avoid resource contention between files without changing within-test concurrency.
+    fileParallelism: false,
     // Keep unit mocks out of integration tests.
     setupFiles: [],
     browser: {
