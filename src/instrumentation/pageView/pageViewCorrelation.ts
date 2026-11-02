@@ -27,6 +27,7 @@ export class PageViewCorrelation implements LogRecordProcessor {
     private getOperation: (() => SpanContext | undefined) | undefined,
     pageViews?: PageViewSource,
     private getUnpublishedOperationName?: (traceId: string) => string | undefined,
+    private sourceIsActive?: () => boolean,
   ) {
     const track = (pageView: PageView): void => {
       const name =
@@ -58,6 +59,11 @@ export class PageViewCorrelation implements LogRecordProcessor {
   /** The current page operation, until shutdown. */
   operation(): SpanContext | undefined {
     return this.getOperation?.();
+  }
+
+  /** Whether the source is observing routes; a sole paused owner can still supply its frozen ID. */
+  isActive(): boolean {
+    return !!this.getOperation && (this.sourceIsActive?.() ?? true);
   }
 
   /** The safe page name for an operation, until shutdown. */
@@ -92,6 +98,7 @@ export class PageViewCorrelation implements LogRecordProcessor {
   shutdown(): Promise<void> {
     this.getOperation = undefined;
     this.getUnpublishedOperationName = undefined;
+    this.sourceIsActive = undefined;
     this.releasePageViews?.();
     this.operationNames.clear();
     return Promise.resolve();

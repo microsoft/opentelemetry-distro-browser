@@ -4,20 +4,22 @@ The [M0 planning document](../planning/M0_PLANNING.md) started with ES2022 ESM o
 `npm run build` now also emits CommonJS for npm bundlers and self-contained UMD and IIFE artifacts
 for the browser:
 
-| Artifact                             | Purpose                                                                       |
-| ------------------------------------ | ----------------------------------------------------------------------------- |
-| `dist/esm/index.js`                  | ESM package entry point                                                       |
-| `dist/commonjs/index.cjs`            | CommonJS package entry point                                                  |
-| `dist/esm/instrumentations.js`       | Tree-shakeable ESM instrumentation loader                                     |
-| `dist/commonjs/instrumentations.cjs` | CommonJS instrumentation loader                                               |
-| `dist/esm/index.min.js`              | Minified ESM bundle for browser size checks                                   |
-| `dist/browser/*umd*.js`              | UMD SDK and instrumentation bundles for CommonJS, AMD, RequireJS, and globals |
-| `dist/browser/*iife*.js`             | IIFE SDK and instrumentation bundles for direct classic-script loading        |
-| `dist/esm/*.d.ts`                    | Public TypeScript declarations for ESM consumers                              |
-| `dist/commonjs/*.d.cts`              | Public TypeScript declarations for CommonJS consumers                         |
-| `dist/**/*.map`                      | Source maps with embedded source content                                      |
-| `dist/esm/snippet.js`                | Configurable SDK loader snippet generator                                     |
-| `dist/esm/snippet.d.ts`              | Loader snippet TypeScript declarations                                        |
+| Artifact                                           | Purpose                                                                       |
+| -------------------------------------------------- | ----------------------------------------------------------------------------- |
+| `dist/esm/index.js`                                | ESM package entry point                                                       |
+| `dist/commonjs/index.cjs`                          | CommonJS package entry point                                                  |
+| `dist/esm/instrumentations.js`                     | Tree-shakeable ESM instrumentation loader                                     |
+| `dist/commonjs/instrumentations.cjs`               | CommonJS instrumentation loader                                               |
+| `dist/esm/index.min.js`                            | Minified ESM bundle for browser size checks                                   |
+| `dist/browser/*umd*.js`                            | UMD SDK and instrumentation bundles for CommonJS, AMD, RequireJS, and globals |
+| `dist/browser/*iife*.js`                           | IIFE SDK and instrumentation bundles for direct classic-script loading        |
+| `dist/esm/*.d.ts`                                  | Public TypeScript declarations for ESM consumers                              |
+| `dist/commonjs/*.d.cts`                            | Public TypeScript declarations for CommonJS consumers                         |
+| `dist/**/*.map`                                    | Source maps with embedded source content                                      |
+| `dist/esm/snippet.js`                              | Configurable SDK loader snippet generator                                     |
+| `dist/esm/snippet.d.ts`                            | Loader snippet TypeScript declarations                                        |
+| `dist/esm/react.js`, `dist/commonjs/react.cjs`     | Optional React adapter (ESM and CommonJS)                                     |
+| `dist/esm/react.d.ts`, `dist/commonjs/react.d.cts` | React adapter declarations                                                    |
 
 Import the package through its `exports` map. The `main` and `module` fields support older bundlers
 and point to the same files selected by the explicit `require` and `import` conditions. The
@@ -47,12 +49,40 @@ JavaScript SDK end-to-end tests use and needs network access.
 The `sideEffects: false` contract remains in place; importing the package does not initialize
 telemetry.
 
+## Optional framework entry points
+
+`@microsoft/opentelemetry-browser/react` ships in this package, not a separate framework package.
+Import it through the export map; React supports ESM and CommonJS. Its framework runtime remains
+an external optional peer. Applications not importing this subpath need no React installation.
+See [peer ranges](dependency-policy.md#optional-framework-peers)
+and [usage and compatibility](configuration-reference.md#optional-framework-integrations).
+
+Neither core entry points/declarations nor the instrumentation loader, snippet or UMD/IIFE global
+bundles include framework adapter code or framework runtimes. Adapters do not embed another core
+SDK, initialize telemetry at import time or register a global instance. Bare or unused adapter
+imports remain tree-shakeable under `sideEffects: false`. Use the npm subpaths for framework
+integration; the CDN loader has no framework-plugin configuration.
+
+Package tests cover React ESM/CommonJS consumers and server rendering, framework-free core
+dependency graphs and declarations. The framework integration suite covers real React rendering,
+compatible history inputs, correlation, helper telemetry and ownership/cleanup in Chromium,
+Firefox and WebKit. These describe test coverage, not a claim that a particular checkout has
+passed validation. API Extractor and generated TSDoc include the React subpath.
+
+## Bundle-size measurements
+
 `npm run size` bundles real consumers of every published JavaScript entry point with Rollup,
 tree-shakes and minifies each scenario, and reports gzip and Brotli transfer sizes. It measures the
 API, SDK, distribution, Azure Monitor exporters, instrumentation loader, each selectable
 instrumentation, and the complete combined configuration. Marginal deltas are always shown beside
 independently measured totals. Do not add deltas because combined bundles count shared dependencies
 once.
+
+The `published-react` scenario is explicitly labeled
+`Published react adapter (framework runtime external)`. It measures complete adapter exports
+with React excluded, not total application bytes or core-plus-framework totals.
+These adapter-only results are not directly comparable to core/runtime-inclusive scenarios;
+compare like-for-like production builds and measure the application for its actual combined cost.
 
 Every run regenerates `reports/bundle-size.json` and `reports/bundle-size.md`. The production build
 also generates `reports/bundle-stats.html` for dependency analysis. CI renders the Markdown report
@@ -61,14 +91,16 @@ in each Node job's check summary and uploads all three files as build artifacts.
 
 Every executable published entry point has absolute minified, gzip and Brotli budgets:
 
-| Entry point          | Minified |     Gzip |  Brotli |
-| -------------------- | -------: | -------: | ------: |
-| `.`                  |   154 kB | 48.25 kB | 42.5 kB |
-| `./instrumentations` |    64 kB |    24 kB |   22 kB |
-| `./snippet`          |  6.25 kB |  2.75 kB |  2.5 kB |
+| Entry point                           |  Minified |    Gzip |   Brotli |
+| ------------------------------------- | --------: | ------: | -------: |
+| `.`                                   | 152.75 kB |   48 kB | 42.25 kB |
+| `./instrumentations`                  |     64 kB |   24 kB |    22 kB |
+| `./snippet`                           |   6.25 kB | 2.75 kB |   2.5 kB |
+| `./react` (framework runtime exernal) |    12 KiB |   4 KiB |  3.5 KiB |
 
 The generated JSON and Markdown reports show the measured values, ceilings and result for each
-entry point. During alpha releases, violations are report-only so the baselines can stabilize.
+entry point. The framework row gives **ceilings**, not measured sizes; 1 KiB is 1024 bytes. During
+alpha releases, violations are report-only so the baselines can stabilize.
 Starting with beta, `npm run size` exits unsuccessfully when any absolute budget is exceeded; the
 same gate therefore blocks CI for beta, release-candidate and stable versions. The separate PR-base
 comparison remains informational and does not replace the absolute gate.

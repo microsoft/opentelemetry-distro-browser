@@ -25,6 +25,7 @@ export interface BrowserInstrumentation {
     };
     setLoggerProvider?(provider: LoggerProvider): void;
     setTracerProvider(provider: TracerProvider): void;
+    setUrlSanitizer?(sanitize: (url: string) => string): void;
 }
 
 // @public

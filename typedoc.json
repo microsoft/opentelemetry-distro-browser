@@ -4,7 +4,8 @@
   "entryPoints": [
     "src/index.ts",
     "src/instrumentation/browserInstrumentation/index.ts",
-    "src/snippet.ts"
+    "src/snippet.ts",
+    "src/frameworks/react/index.ts"
   ],
   "entryPointStrategy": "resolve",
   "tsconfig": "tsconfig.src.json",
@@ -15,6 +16,13 @@
   "excludePrivate": true,
   "excludeProtected": true,
   "externalSymbolLinkMappings": {
+    "@types/react": {
+      "React.Component.render": "https://react.dev/reference/react/Component#render",
+      "React.Component.setState": "https://react.dev/reference/react/Component#setstate",
+      "React.NewLifecycle.getSnapshotBeforeUpdate": "https://react.dev/reference/react/Component#getsnapshotbeforeupdate",
+      "React.StaticLifecycle.getDerivedStateFromProps": "https://react.dev/reference/react/Component#static-getderivedstatefromprops",
+      "React.ComponentLifecycle.componentDidMount": "https://react.dev/reference/react/Component#componentdidmount"
+    },
     "@opentelemetry/sdk-logs": {
       "ReadableLogRecord": "https://open-telemetry.github.io/opentelemetry-js/interfaces/_opentelemetry_sdk-logs.ReadableLogRecord.html"
     },

@@ -82,6 +82,8 @@ export interface BrowserInstrumentation {
   setTracerProvider(provider: TracerProvider): void;
   /** Binds log-producing instrumentations to the active logger provider. */
   setLoggerProvider?(provider: LoggerProvider): void;
+  /** Applies this instance's URL privacy policy to manual telemetry from an adapter. */
+  setUrlSanitizer?(sanitize: (url: string) => string): void;
   /** Returns the instrumentation's configuration without modifying it. */
   getConfig(): { enabled?: boolean };
   /** Starts observing when construction was deferred with `enabled: false`. */

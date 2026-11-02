@@ -28,7 +28,7 @@ only in client-side code, before importing application code to instrument.
 | `traces`              | `MicrosoftOpenTelemetryBrowserTraceOptions`   | Synchronous context tracking, W3C Trace Context and Baggage propagation.                                                                                                                                                  |
 | `spanProcessors`      | `SpanProcessor[]`                             | Additional trace processors. They run before the Azure Monitor default when configured, unless `[]` disables traces. Without Azure Monitor, only supplied processors export. See [enrichment](#enrichment-and-filtering). |
 | `logRecordProcessors` | `LogRecordProcessor[]`                        | Additional log processors. They run before the Azure Monitor default when configured, unless `[]` disables logs. Without Azure Monitor, only supplied processors export. See [enrichment](#enrichment-and-filtering).     |
-| `instrumentations`    | `readonly BrowserInstrumentation[]`           | Empty. Pass instances returned by `getInstrumentations()` or compatible upstream instances. Built-in page views are configured separately.                                                                                |
+| `instrumentations`    | `readonly BrowserInstrumentation[]`           | Empty. Pass instances returned by `getInstrumentations()`, compatible upstream instances or optional framework adapters. Built-in page views are configured separately.                                                   |
 | `pageView`            | `PageViewInstrumentationConfig`               | Collection and page-operation correlation enabled. Requires a log pipeline to export page-view records.                                                                                                                   |
 
 ### Azure Monitor destination
@@ -103,7 +103,7 @@ discards buffered items; it does not wait for the connection-string promise.
 Standalone `AzureMonitorSpanExporter` and `AzureMonitorLogRecordExporter` still require an
 already-resolved string. Startup buffering is owned by the distribution, not the exporters.
 
-When Azure Monitor is configured, its processor is added before non-empty custom processor lists
+When Azure Monitor is configured, its processor is added after non-empty custom processor lists
 for each signal. They are independent processor branches, not a chain: filtering within the Azure
 Monitor processor does not filter records received by custom processors. An explicit empty array
 disables the entire signal, including Azure Monitor. Without Azure Monitor or custom processors,
@@ -327,16 +327,17 @@ storage enabled. The SDK does not replay storage operations from the disabled pe
 
 ## Page-view options
 
-| Option                                   | Type                             | Default and behavior                                                                                                                                               |
-| ---------------------------------------- | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `pageView.enabled`                       | `boolean`                        | `true`. `false` disables both built-in collection and its operation-correlation fallback; it does not remove code from bundles.                                    |
-| `pageView.autoTrackPageVisitTime`        | `boolean`                        | `false`. Emit a separate `browser.page_visit` log for the previous page when the next page view starts. Requires built-in page views and a log pipeline to export. |
-| `pageView.routeResolver`                 | `() => string \| undefined`      | Unset. Return a route pattern such as `/orders/:id`, not a concrete customer URL. Called when navigation is observed and again at settlement.                      |
-| `pageView.redactedQueryParams`           | `readonly string[]`              | Built-in list below. A supplied list **replaces**, not extends, that list. Names are case-sensitive.                                                               |
-| `pageView.sanitizeUrl`                   | `(url: string) => string`        | Unset. Sanitizes the page URL and referrer after built-in redaction.                                                                                               |
-| `pageView.applyCustomLogRecordData`      | `(logRecord: LogRecord) => void` | Unset. Mutates the page-view log immediately before emission.                                                                                                      |
-| `pageView.softNavigationSettleTimeoutMs` | `number`, milliseconds           | `10000`. Upper bound for settling soft navigations before emitting a capped duration.                                                                              |
-| `pageView.useNavigationApiIfAvailable`   | `boolean`                        | `false`. Prefer the experimental Navigation API when present, otherwise use History-based observation.                                                             |
+| Option                                   | Type                                        | Default and behavior                                                                                                                                                                               |
+| ---------------------------------------- | ------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pageView.enabled`                       | `boolean`                                   | `true`. `false` disables both built-in collection and its operation-correlation fallback; it does not remove code from bundles.                                                                    |
+| `pageView.autoTrackPageVisitTime`        | `boolean`                                   | `false`. Emit a separate `browser.page_visit` log for the previous page when the next page view starts. Requires built-in page views and a log pipeline to export.                                 |
+| `pageView.routeResolver`                 | `() => string \| undefined`                 | Unset. Return a route pattern such as `/orders/:id`, not a concrete customer URL. Called when navigation is observed and again at settlement.                                                      |
+| `pageView.routeSource`                   | `{ getCurrentUrl(); subscribe(listener); }` | Unset. Framework source of committed routes; replaces History/Navigation API observation, not document-load, page-hide or BFCache tracking. See [framework routing](#framework-routing-ownership). |
+| `pageView.redactedQueryParams`           | `readonly string[]`                         | Built-in list below. A supplied list **replaces**, not extends, that list. Names are case-sensitive.                                                                                               |
+| `pageView.sanitizeUrl`                   | `(url: string) => string`                   | Unset. Sanitizes the page URL and referrer after built-in redaction.                                                                                                                               |
+| `pageView.applyCustomLogRecordData`      | `(logRecord: LogRecord) => void`            | Unset. Mutates the page-view log immediately before emission.                                                                                                                                      |
+| `pageView.softNavigationSettleTimeoutMs` | `number`, milliseconds                      | `10000`. Upper bound for settling soft navigations before emitting a capped duration.                                                                                                              |
+| `pageView.useNavigationApiIfAvailable`   | `boolean`                                   | `false`. Prefer the experimental Navigation API when present, otherwise use History-based observation.                                                                                             |
 
 Default sensitive parameter names are `sig`, `Signature`, `AWSAccessKeyId`, `X-Goog-Signature`,
 `X-Amz-Signature`, `X-Amz-Credential`, `X-Amz-Security-Token`, `code`, `token`, `access_token`,
@@ -398,6 +399,170 @@ next instrumented page is skipped. On back/forward cache (BFCache) restore, the 
 persistent successor visit rather than reusing the restored page's old in-memory visit, avoiding
 duplicate reporting. Without storage, the tracker drops its visit on `pagehide` and cannot bridge
 BFCache away time.
+
+## Optional framework integrations
+
+Import React helpers from `@microsoft/opentelemetry-browser/react`. This is an optional entry point
+in the same package, not a separate SDK. Constructors do not initialize telemetry or subscribe to
+routers. Configure one application-root setup: pass the plugin in `instrumentations: [plugin]` **and** its
+`pageView: plugin.pageView` to `await useMicrosoftOpenTelemetry(...)`, then share that same plugin
+with framework consumers. Do not initialize the SDK from each component.
+
+All framework tracking methods produce instance-bound logs. Configure Azure Monitor, as in the
+examples, or custom `logRecordProcessors`; `logRecordProcessors: []` disables their export even
+with Azure Monitor. A trace-only pipeline cannot export framework events, exceptions, metrics or
+page views. Disabled/unregistered adapters do not fall back to another instance's logger.
+See [framework telemetry](event-catalogue.md#framework-telemetry) for schemas and mapping.
+
+### React setup and helpers
+
+This client-side example uses the core's default browser navigation observation. `App` is the
+application root and `connectionString` is application configuration:
+
+```tsx
+import { createRoot } from "react-dom/client";
+import { useMicrosoftOpenTelemetry } from "@microsoft/opentelemetry-browser";
+import {
+  AppInsightsContext,
+  AppInsightsErrorBoundary,
+  ReactPlugin,
+} from "@microsoft/opentelemetry-browser/react";
+
+const plugin = new ReactPlugin();
+const telemetry = await useMicrosoftOpenTelemetry({
+  azureMonitor: { connectionString },
+  instrumentations: [plugin],
+  pageView: plugin.pageView,
+});
+
+const root = createRoot(document.getElementById("root")!);
+root.render(
+  <AppInsightsContext.Provider value={plugin}>
+    <AppInsightsErrorBoundary
+      appInsights={plugin}
+      onError={({ error }) => <p role="alert">{error?.message ?? "Unable to render"}</p>}
+    >
+      <App />
+    </AppInsightsErrorBoundary>
+  </AppInsightsContext.Provider>,
+);
+
+// When disposing the application, unmount before shutting down telemetry.
+// root.unmount();
+// await Promise.resolve(); // Allow the engagement cleanup microtask to emit.
+// await telemetry.shutdown();
+```
+
+`useAppInsightsContext()` reads the nearest provider and throws if none exists. The error boundary
+requires `appInsights` and an `onError` **fallback component**, not a notification callback. That
+component receives nullable `error` and `errorInfo`; component information may arrive after the
+first fallback render. The boundary reports descendant render/lifecycle errors with the component
+stack, not event-handler, asynchronous or server-render errors. Initialize the SDK only in the
+browser; importing the adapter does not start collection during server rendering.
+
+To observe an existing history v4/v5-compatible router, construct
+`new ReactPlugin({ history: routerHistory })` instead. Pass the history object **actually used by
+the router**, including compatible React Router configurations that expose it; creating an
+unrelated browser history will not connect the router to telemetry. The structural contract uses
+`location.pathname` and `listen`, with v4 `(location, action)` or v5 `({ location, action })`
+callbacks. Pathname, query-only and hash-only changes create views; identical URLs are suppressed.
+Neither `history` nor `react-router` is a runtime dependency of the adapter.
+
+No direct React Router v6/v7 integration or additional routing hook is provided. If the router
+does not expose compatible history, omit `history` and use core browser URL observation, or supply
+an application-owned committed `pageView.routeSource`. Supply `routeResolver` to the plugin only
+when the application can return a stable route pattern; omission uses `document.title`, then the
+URL pathname, rather than automatically deriving patterns from React Router.
+
+```tsx
+import {
+  useAppInsightsContext,
+  useTrackEvent,
+  useTrackMetric,
+} from "@microsoft/opentelemetry-browser/react";
+
+function CartButton() {
+  const plugin = useAppInsightsContext();
+  const activity = useTrackMetric(plugin, "CartButton", { surface: "header" });
+  const setEventData = useTrackEvent(plugin, "cart.added", { count: 0 });
+
+  return (
+    <button
+      onMouseMove={activity}
+      onKeyDown={activity}
+      onClick={() => {
+        activity();
+        setEventData((previous) => ({ count: previous.count + 1 }));
+      }}
+    >
+      Add item
+    </button>
+  );
+}
+```
+
+- `useTrackMetric(plugin, componentName, customProperties?)` returns an activity callback, not a
+  metric value. Engagement starts at the first interaction; gaps of at least five seconds are
+  excluded entirely, including the final idle gap. No interaction means no metric. On real
+  unmount, a microtask emits `React Component Engaged Time (seconds)` with count `1` and
+  `Component Name`; immediate StrictMode cleanup replay is suppressed without interval timers.
+  The latest committed plugin, name and properties are used; changing them alone does not emit.
+- `useTrackEvent(plugin, eventName, eventData, skipFirstRun = true)` returns a React state setter,
+  including functional updates. `eventData` initializes state; later initializer changes do not
+  replace it. Committed updates emit events; same-value updates and StrictMode effect replay do
+  not duplicate them. Set `skipFirstRun` to `false` to emit the initial value. Changing the plugin
+  or event name reports current state. Objects become properties; scalars use a `data` property.
+- `withAITracking(plugin, Component, componentName?, className?)` forwards props and adds an
+  activity-observing `div` for key-down, mouse-move, scroll, mouse-down and touch-start/move events.
+  Use the hook if a wrapper is inappropriate. `AITrackedComponentBase<P>` supports class components
+  with their own `trackActivity` handlers; overridden lifecycle methods must call the base methods.
+
+### Framework routing ownership
+
+`pageView.routeSource` is a route-only seam: `getCurrentUrl()` returns the committed URL and
+`subscribe(listener)` returns an unsubscribe function. Notify only committed routes, without
+replaying the initial route; relative URLs are resolved against the document. An optional
+navigation `type` is `push`, `replace` or `traverse` (omission defaults to `push`). Core suppresses
+consecutive identical URLs and owns the document view, BFCache, page-hide handling, redaction,
+shared page-operation correlation and bounded paint/idle settlement (default cap: 10 seconds).
+Register a source on every SDK instance that should follow that router; shutdown removes that
+instance's subscription without stopping other instances.
+
+Page-operation correlation is shared across instances following the same navigation, while each
+adapter keeps its own log destination. Explicit application-provided OpenTelemetry context remains
+authoritative; the framework does not replace an active application span with a page operation.
+
+The framework source **replaces**, rather than supplements, core History/Navigation API
+observation. Do not also manually call `trackPageView` for automatically observed routes or enable
+the separate navigation instrumentation for the same page-view count. To customize options,
+preserve the source, for example `pageView: { ...plugin.pageView, autoTrackPageVisitTime: true }`.
+Component engagement, page-visit elapsed time and navigation settle duration are different
+measurements, not interchangeable page-duration APIs.
+
+### Application Insights extension compatibility
+
+The React adapter intentionally preserves familiar helper names from
+[`@microsoft/applicationinsights-react-js`](https://github.com/microsoft/applicationinsights-react-js).
+It is **not a drop-in Application Insights plugin**. Configure it through the async
+OpenTelemetry initializer, not `extensions`, `extensionConfig` or `loadAppInsights()`. The table
+describes helper/behavior alignment, not compatibility with every upstream release.
+
+| React surface                     | Application Insights React extension                                                 | This distribution's `/react`                                                                                                           |
+| --------------------------------- | ------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------- |
+| Router                            | Optional history v4/v5 listener; pathname URI                                        | Same structural history inputs; constructor configuration, no router dependency or direct v6/v7 adapter                                |
+| Route scheduling and initial view | History callbacks defer tracking by 500 ms; plugin can track the initial pathname    | Core owns one initial document view and bounded paint/idle settlement, not a fixed 500 ms delay                                        |
+| Context                           | `AppInsightsContext`, `useAppInsightsContext`                                        | Same provider/helper names; missing provider throws, no global fallback                                                                |
+| Engagement                        | `useTrackMetric`, `withAITracking`, `AITrackedComponentBase`; named component metric | Same helper names and metric/property names; five-second idle exclusion, no untouched-component metric, StrictMode cleanup suppression |
+| Custom events                     | `useTrackEvent` state-setter pattern                                                 | State setter with `skipFirstRun: true` default and committed-update semantics                                                          |
+| Error boundary                    | `appInsights`, `onError` fallback component                                          | Same prop names; fallback receives nullable `error`/`errorInfo`, exception includes component stack                                    |
+| Tracking methods                  | Analytics-backed event, metric, trace, exception and page-view helpers               | Corresponding instance-bound log helpers; `getAppInsights()` returns this adapter, not an AnalyticsPlugin                              |
+| SDK/plugin surface                | Plugin chain, analytics/context and cookie-manager access                            | No Application Insights plugin protocol, `getCookieMgr()`, PropertiesPlugin `context` or full SDK options                              |
+
+The adapter does not implement the complete Application Insights SDK, cookie controls or its option
+model. Use this distribution's session, identity, sampling and lifecycle controls instead. See
+[framework peers](dependency-policy.md#optional-framework-peers) for exact supported ranges and
+test versions, and [packaging](packaging.md#optional-framework-entry-points) for output formats.
+Member-level API documentation is generated from the source TSDoc by `npm run docs`.
 
 ## Browser instrumentation options
 

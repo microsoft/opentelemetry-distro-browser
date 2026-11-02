@@ -25,6 +25,7 @@ export interface PageCorrelation {
   decorate(active: Context): Context;
   operation(): SpanContext | undefined;
   operationName?(traceId?: string): string | undefined;
+  isActive?(): boolean;
 }
 
 export interface PageContextState {
@@ -47,9 +48,8 @@ function getPageContext(): PageContextState {
     manager: {
       active() {
         const active = state.storage?.active() ?? ROOT_CONTEXT;
-        return state.correlation
-          ? state.correlation.decorate(active)
-          : withoutPageOperation(active);
+        const owner = selectPageCorrelation(state);
+        return owner ? owner.decorate(active) : withoutPageOperation(active);
       },
       with: (ctx, fn, thisArg, ...args) =>
         state.storage ? state.storage.with(ctx, fn, thisArg, ...args) : fn.apply(thisArg, args),
@@ -195,21 +195,32 @@ export function releasePageContext(): void {
   if (!registry.router?.running.length) registry.page?.manager.disable();
 }
 
+/** Retains an observing owner, or a frozen fallback when every source is paused. */
+function selectPageCorrelation(state: PageContextState): PageCorrelation | undefined {
+  const current = state.correlation;
+  if (!current || current.isActive?.() === false) {
+    state.correlation =
+      state.owners.find((owner) => owner.isActive?.() !== false) ?? current ?? state.owners[0];
+  }
+  return state.correlation;
+}
+
 /** Adds page correlation and returns a removal callback that hands off to the next owner. */
 export function addPageCorrelation(owner: PageCorrelation): () => void {
   const state = getPageContext();
   state.owners.push(owner);
-  state.correlation = state.owners[0];
+  selectPageCorrelation(state);
   return () => {
     const index = state.owners.indexOf(owner);
     if (index >= 0) state.owners.splice(index, 1);
-    state.correlation = state.owners[0];
+    if (state.correlation === owner) state.correlation = undefined;
+    selectPageCorrelation(state);
   };
 }
 
 /** Returns another instance's page operation, if any. */
 export function getPageOperation(self: PageCorrelation | undefined): SpanContext | undefined {
-  const { correlation } = getPageContext();
+  const correlation = selectPageCorrelation(getPageContext());
   return correlation === self ? undefined : correlation?.operation();
 }
 
@@ -218,7 +229,7 @@ export function getPageOperationName(
   self: PageCorrelation | undefined,
   traceId?: string,
 ): string | undefined {
-  const { correlation } = getPageContext();
+  const correlation = selectPageCorrelation(getPageContext());
   if (correlation === self) return undefined;
   return correlation?.operationName?.(traceId);
 }

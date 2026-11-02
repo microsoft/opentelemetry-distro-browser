@@ -13,6 +13,8 @@ const esmOutput = {
 };
 
 const externalOpenTelemetry = (id) => id.startsWith("@opentelemetry/");
+const externalFramework = (id) =>
+  externalOpenTelemetry(id) || id === "react" || id.startsWith("react/");
 const compile = () => typescript({ tsconfig: "./tsconfig.src.json" });
 
 const unsafeIdleCallbackCheck = 'typeof window.requestIdleCallback === "function"';
@@ -102,6 +104,33 @@ const commonJsDeclarationImports = {
 };
 
 export default [
+  {
+    input: "src/frameworks/react/index.ts",
+    external: externalFramework,
+    plugins: [compile()],
+    output: [
+      { ...esmOutput, file: "dist/esm/react.js" },
+      {
+        file: "dist/commonjs/react.cjs",
+        format: "cjs",
+        exports: "named",
+        sourcemap: true,
+      },
+    ],
+  },
+  {
+    input: "src/frameworks/react/index.ts",
+    plugins: [dts({ tsconfig: "./tsconfig.src.json" })],
+    external: externalFramework,
+    output: [
+      { file: "dist/esm/react.d.ts", format: "es" },
+      {
+        file: "dist/commonjs/react.d.cts",
+        format: "es",
+        plugins: [commonJsDeclarationImports],
+      },
+    ],
+  },
   {
     input: "src/index.ts",
     // Share APIs with npm consumers and let their bundler select the SDK platform.
