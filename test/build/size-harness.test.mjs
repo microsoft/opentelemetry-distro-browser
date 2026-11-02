@@ -120,6 +120,35 @@ test("reports budgets for alpha and makes them blocking starting with beta", () 
   );
 });
 
+test("instrumentation budgets still reject each oversized metric", () => {
+  for (const entryPoint of [
+    "./instrumentations",
+    "dist/browser/opentelemetry-browser-instrumentations.iife.min.js",
+    "dist/browser/opentelemetry-browser-instrumentations.umd.min.js",
+  ]) {
+    const budget = entryPointBudgets[entryPoint] ?? browserBundleBudgets[entryPoint];
+    for (const metric of ["rawBytes", "gzipBytes", "brotliBytes"]) {
+      const scenarios = addBudgetResults([
+        {
+          entryPoint,
+          group: entryPoint === "./instrumentations" ? "entry-point" : "browser-bundle",
+          ...budget,
+          [metric]: budget[metric] + 1,
+        },
+      ]);
+      assert.deepEqual(scenarios[0].exceededMetrics, [metric]);
+      assert.throws(
+        () =>
+          enforceBundleSizeBudgets({
+            budgetPolicy: { mode: "blocking", blockingFrom: "beta" },
+            scenarios,
+          }),
+        /Bundle size budgets exceeded/,
+      );
+    }
+  }
+});
+
 test("always enforces budgets for the emitted browser bundles", () => {
   assert.deepEqual(Object.keys(browserBundleBudgets).sort(), [
     "dist/browser/opentelemetry-browser-instrumentations.iife.min.js",
