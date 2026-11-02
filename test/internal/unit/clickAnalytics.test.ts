@@ -914,6 +914,46 @@ describe("ClickAnalyticsInstrumentation", () => {
   });
 
   describe("automatic actions", () => {
+    it.each(["a", "area", "input"])(
+      "omits malformed DOM destinations for %s without dropping clicks",
+      async (tag) => {
+        const { instrumentation, records } = createInstrumentation();
+        instrumentation.enable();
+        const invalid = "https://example.test:invalid/path?token=secret";
+        const target = element(
+          tag === "input"
+            ? `<form action="${invalid}"><input type="submit" data-id="invalid"></form>`
+            : `<${tag} href="${invalid}" data-id="invalid"></${tag}>`,
+          tag,
+        );
+        mouse(target);
+        instrumentation.capturePageAction(target);
+        const exported = await records();
+        expect(exported).toHaveLength(2);
+        for (const record of exported) {
+          expect(record.attributes["browser.click.name"]).toBe("invalid");
+          expect(record.attributes["browser.click.target_url"]).toBeUndefined();
+          expect(JSON.stringify(record.attributes)).not.toContain("secret");
+        }
+      },
+    );
+
+    it.each(["", "true"])("preserves original-target and selected-control DNT=%s", async (dnt) => {
+      const { instrumentation, records } = createInstrumentation();
+      instrumentation.enable();
+      for (const markup of [
+        `<button data-id="ancestor"><span data-ai-dnt="${dnt}">Text</span></button>`,
+        `<section data-ai-dnt="${dnt}"><label for="dnt-control"><span>Label</span></label></section><input id="dnt-control" type="checkbox" data-id="external">`,
+        `<label for="dnt-control"><span>Label</span></label><section data-ai-dnt="${dnt}"><input id="dnt-control" type="checkbox" data-id="protected"></section>`,
+      ]) {
+        const target = element(markup, "span");
+        mouse(target);
+        keyboard(target, "Enter");
+        target.closest("div")?.remove();
+      }
+      expect(await records()).toHaveLength(dnt ? 0 : 6);
+    });
+
     it.each(["href", "xlink:href"])(
       "preserves SVG clicks with invalid %s destinations",
       async (attribute) => {

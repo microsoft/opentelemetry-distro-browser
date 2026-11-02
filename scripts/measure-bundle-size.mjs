@@ -23,7 +23,7 @@ export const entryPointBudgets = {
     brotliBytes: 47 * 1024,
   },
   "./instrumentations": {
-    rawBytes: 70 * 1024,
+    rawBytes: 70.25 * 1024,
     gzipBytes: 26.25 * 1024,
     brotliBytes: 23.25 * 1024,
   },

@@ -139,9 +139,11 @@ test("reports budgets for alpha and makes them blocking starting with beta", () 
   );
 });
 
-test("instrumentation budgets still reject each oversized metric", () => {
+test("instrumentation and SDK browser budgets still reject each oversized metric", () => {
   for (const entryPoint of [
     "./instrumentations",
+    "dist/browser/opentelemetry-browser.iife.min.js",
+    "dist/browser/opentelemetry-browser.umd.min.js",
     "dist/browser/opentelemetry-browser-instrumentations.iife.min.js",
     "dist/browser/opentelemetry-browser-instrumentations.umd.min.js",
   ]) {
