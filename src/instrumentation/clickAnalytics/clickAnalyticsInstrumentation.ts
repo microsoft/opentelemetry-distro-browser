@@ -29,10 +29,21 @@ function contentName(value: unknown): string {
 }
 
 function targetUri(element: Element): string {
-  if (element.tagName === "A" || element.tagName === "AREA") {
-    return (element as HTMLAnchorElement).href;
+  const tagName = element.tagName.toUpperCase();
+  if (tagName === "A" || tagName === "AREA") {
+    const href = (element as HTMLAnchorElement).href;
+    if (typeof href === "string") return href;
+    const value =
+      element.getAttribute("href") ??
+      element.getAttributeNS("http://www.w3.org/1999/xlink", "href");
+    if (value === null) return "";
+    try {
+      return new URL(value, element.baseURI).href;
+    } catch {
+      return "";
+    }
   }
-  if (element.tagName === "INPUT" && INPUT_TYPES.has((element as HTMLInputElement).type)) {
+  if (tagName === "INPUT" && INPUT_TYPES.has((element as HTMLInputElement).type)) {
     return (element as HTMLInputElement).form?.action || location.pathname;
   }
   return "";
@@ -52,11 +63,8 @@ function targetUri(element: Element): string {
 export class ClickAnalyticsInstrumentation extends InstrumentationBase<ClickAnalyticsInstrumentationConfig> {
   // Read by the shared instrumentation ownership guard before providers are bound.
   private enabledState = false;
-  #listening = false;
+  #onAction?: EventListener;
   #metadata: Record<string, string> = {};
-  readonly #onAction = (event: Event): void => {
-    this.#safely(() => this.#captureAutomatic(event));
-  };
 
   public constructor(config: ClickAnalyticsInstrumentationConfig = {}) {
     // The base constructor otherwise enables before subclass fields have initialized.
@@ -84,16 +92,30 @@ export class ClickAnalyticsInstrumentation extends InstrumentationBase<ClickAnal
   public enable(): void {
     if (this.enabledState) return;
     this.enabledState = true;
+    // Each activation owns a distinct callback so cancelled registration cannot remove a newer one.
+    const listener: EventListener = (event) => {
+      if (this.#onAction === listener) this.#safely(() => this.#captureAutomatic(event));
+    };
+    this.#onAction = listener;
     try {
       this.#metadata = getMetadata(this.getConfig());
+      if (this.#onAction !== listener) return;
       if (this.getConfig().autoCapture !== false && typeof window !== "undefined") {
-        // A wrapper may register a listener and then throw, so arm cleanup before either call.
-        this.#listening = true;
-        window.addEventListener("mousedown", this.#onAction);
-        window.addEventListener("keyup", this.#onAction);
+        for (const type of ["mousedown", "keyup"]) {
+          try {
+            window.addEventListener(type, listener);
+          } finally {
+            // A wrapper can disable/re-enable before it actually installs the old callback.
+            if (this.#onAction !== listener) {
+              window.removeEventListener("mousedown", listener);
+              window.removeEventListener("keyup", listener);
+            }
+          }
+          if (this.#onAction !== listener) return;
+        }
       }
     } catch (error) {
-      this.disable();
+      if (this.#onAction === listener) this.disable();
       throw error;
     }
   }
@@ -101,10 +123,11 @@ export class ClickAnalyticsInstrumentation extends InstrumentationBase<ClickAnal
   /** Removes this instance's listeners and suppresses manual capture until re-enabled. */
   public disable(): void {
     this.enabledState = false;
-    if (this.#listening) {
-      window.removeEventListener("mousedown", this.#onAction);
-      window.removeEventListener("keyup", this.#onAction);
-      this.#listening = false;
+    const listener = this.#onAction;
+    this.#onAction = undefined;
+    if (listener && typeof window !== "undefined") {
+      window.removeEventListener("mousedown", listener);
+      window.removeEventListener("keyup", listener);
     }
   }
 
@@ -232,6 +255,7 @@ export class ClickAnalyticsInstrumentation extends InstrumentationBase<ClickAnal
         attributes,
       };
       this.getConfig().applyCustomLogRecordData?.(record);
+      record.attributes = { ...record.attributes };
       // Protect explicit URLs and hook-added values too; DOM content remains application-owned.
       for (const key of ["url.full", "url.referrer", "browser.click.target_url"]) {
         const outputAttributes = record.attributes;
