@@ -164,7 +164,16 @@ test("the package exposes ESM and CommonJS entry points", () => {
 test("customer SDK stats expose configuration only, not internal reporting controls", async () => {
   for (const file of ["dist/esm/index.d.ts", "dist/commonjs/index.d.cts"]) {
     const declarations = await readFile(new URL(file, root), "utf8");
-    assert.match(declarations, /configuration\?/);
+    const source = ts.createSourceFile(file, declarations, ts.ScriptTarget.Latest, true);
+    const options = source.statements.filter(
+      (node) => ts.isInterfaceDeclaration(node) && node.name.text === "AzureMonitorSdkStatsOptions",
+    );
+    assert.equal(options.length, 1, `${file} must declare customer SDK stats options`);
+    assert.equal(options[0].heritageClauses, undefined);
+    assert.deepEqual(
+      options[0].members.map((member) => member.getText(source).replace(/\s+/g, " ")).sort(),
+      ["readonly collectionIntervalMillis?: number;", "readonly enabled?: boolean;"],
+    );
     assert.doesNotMatch(declarations, /internalReportingControls/);
   }
 });

@@ -64,6 +64,7 @@ export class ClickAnalyticsInstrumentation extends InstrumentationBase<ClickAnal
   // Read by the shared instrumentation ownership guard before providers are bound.
   private enabledState = false;
   #onAction?: EventListener;
+  readonly #pendingCleanup = new Set<EventListener>();
   #metadata: Record<string, string> = {};
 
   public constructor(config: ClickAnalyticsInstrumentationConfig = {}) {
@@ -107,8 +108,7 @@ export class ClickAnalyticsInstrumentation extends InstrumentationBase<ClickAnal
           } finally {
             // A wrapper can disable/re-enable before it actually installs the old callback.
             if (this.#onAction !== listener) {
-              window.removeEventListener("mousedown", listener);
-              window.removeEventListener("keyup", listener);
+              this.#removeListeners(listener);
             }
           }
           if (this.#onAction !== listener) return;
@@ -125,9 +125,26 @@ export class ClickAnalyticsInstrumentation extends InstrumentationBase<ClickAnal
     this.enabledState = false;
     const listener = this.#onAction;
     this.#onAction = undefined;
-    if (listener && typeof window !== "undefined") {
-      window.removeEventListener("mousedown", listener);
-      window.removeEventListener("keyup", listener);
+    if (listener) this.#pendingCleanup.add(listener);
+    // Snapshot the work so cleanup reentrancy cannot consume a newer activation's listeners.
+    for (const pending of [...this.#pendingCleanup]) this.#removeListeners(pending);
+  }
+
+  #removeListeners(listener: EventListener): void {
+    // Remove from the retry queue before invoking application wrappers, which may reenter disable.
+    this.#pendingCleanup.delete(listener);
+    if (typeof window === "undefined") return;
+    let failed = false;
+    for (const type of ["mousedown", "keyup"]) {
+      try {
+        window.removeEventListener(type, listener);
+      } catch {
+        failed = true;
+      }
+    }
+    if (failed) {
+      this.#pendingCleanup.add(listener);
+      diag.warn("Click cleanup failed.");
     }
   }
 
