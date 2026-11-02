@@ -1159,6 +1159,108 @@ describe("ClickAnalyticsInstrumentation", () => {
   });
 
   describe("lifecycle and isolation", () => {
+    it("retains failed cancellation cleanup and preserves the registration error", () => {
+      const { instrumentation } = createInstrumentation();
+      const originalAdd = window.addEventListener.bind(window);
+      const originalRemove = window.removeEventListener.bind(window);
+      const failure = new Error("registration failed");
+      let failCleanup = true;
+      const remove = vi
+        .spyOn(window, "removeEventListener")
+        .mockImplementation((type, listener, options) => {
+          if (failCleanup) throw new Error("cleanup failed");
+          originalRemove(type, listener, options);
+        });
+      const add = vi
+        .spyOn(window, "addEventListener")
+        .mockImplementation((type, listener, options) => {
+          instrumentation.disable();
+          originalAdd(type, listener, options);
+          throw failure;
+        });
+      expect(() => instrumentation.enable()).toThrow(failure);
+      const listener = add.mock.calls[0][1];
+      failCleanup = false;
+      remove.mockClear();
+      instrumentation.disable();
+      expect(remove.mock.calls).toEqual([
+        ["mousedown", listener],
+        ["keyup", listener],
+      ]);
+    });
+
+    it.each(["mousedown", "keyup", "both"])(
+      "retries failed %s cleanup while disabled callbacks stay inert",
+      async (failedEvent) => {
+        const { instrumentation, records } = createInstrumentation();
+        const add = vi.spyOn(window, "addEventListener");
+        instrumentation.enable();
+        const listener = add.mock.calls[0][1];
+        const originalRemove = window.removeEventListener.bind(window);
+        let fail = true;
+        const remove = vi
+          .spyOn(window, "removeEventListener")
+          .mockImplementation((type, callback, options) => {
+            if (fail && (type === failedEvent || failedEvent === "both"))
+              throw new Error("cleanup failed");
+            originalRemove(type, callback, options);
+          });
+        expect(() => instrumentation.disable()).not.toThrow();
+        expect(remove).toHaveBeenCalledWith("mousedown", listener);
+        expect(remove).toHaveBeenCalledWith("keyup", listener);
+        const target = element('<button data-id="cleanup"></button>');
+        mouse(target);
+        keyboard(target, "Enter");
+        instrumentation.trackPageAction({ name: "disabled" });
+        expect(await records()).toEqual([]);
+        remove.mockClear();
+        fail = false;
+        instrumentation.disable();
+        expect(remove.mock.calls).toEqual([
+          ["mousedown", listener],
+          ["keyup", listener],
+        ]);
+        remove.mockClear();
+        instrumentation.disable();
+        expect(remove).not.toHaveBeenCalled();
+      },
+    );
+
+    it("keeps reentrant activation live after cleanup fails and retries both generations on disable", async () => {
+      const { instrumentation, records } = createInstrumentation();
+      const add = vi.spyOn(window, "addEventListener");
+      instrumentation.enable();
+      const oldListener = add.mock.calls[0][1];
+      const originalRemove = window.removeEventListener.bind(window);
+      let reentered = false;
+      const remove = vi
+        .spyOn(window, "removeEventListener")
+        .mockImplementation((type, listener, options) => {
+          if (!reentered) {
+            reentered = true;
+            instrumentation.disable();
+            instrumentation.enable();
+            throw new Error("old cleanup failed");
+          }
+          originalRemove(type, listener, options);
+        });
+      instrumentation.disable();
+      const target = element('<button data-id="new"></button>');
+      mouse(target);
+      keyboard(target, "Enter");
+      expect(await records()).toHaveLength(2);
+      remove.mockClear();
+      instrumentation.disable();
+      expect(remove).toHaveBeenCalledWith("mousedown", oldListener);
+      expect(remove).toHaveBeenCalledWith("keyup", oldListener);
+      mouse(target);
+      keyboard(target, "Enter");
+      expect(await records()).toHaveLength(2);
+      remove.mockClear();
+      instrumentation.disable();
+      expect(remove).not.toHaveBeenCalled();
+    });
+
     it.each(["mousedown", "keyup"])(
       "cancels %s registration after reentrant disable",
       async (failedEvent) => {
