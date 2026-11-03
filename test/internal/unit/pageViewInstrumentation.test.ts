@@ -505,15 +505,21 @@ describe("PageViewInstrumentation", () => {
 
       instrumentation.enable();
       await vi.waitFor(() => {
-        expect(provider.records.map((record) => attributesOf(record)[ATTR_PAGE_VIEW_INDEX])).toEqual([0]);
+        expect(
+          provider.records.map((record) => attributesOf(record)[ATTR_PAGE_VIEW_INDEX]),
+        ).toEqual([0]);
       });
       history.pushState(null, "", "/step-1");
       await vi.waitFor(() => {
-        expect(provider.records.map((record) => attributesOf(record)[ATTR_PAGE_VIEW_INDEX])).toEqual([0, 1]);
+        expect(
+          provider.records.map((record) => attributesOf(record)[ATTR_PAGE_VIEW_INDEX]),
+        ).toEqual([0, 1]);
       });
       history.pushState(null, "", "/step-2");
       await vi.waitFor(() => {
-        expect(provider.records.map((record) => attributesOf(record)[ATTR_PAGE_VIEW_INDEX])).toEqual([0, 1, 2]);
+        expect(
+          provider.records.map((record) => attributesOf(record)[ATTR_PAGE_VIEW_INDEX]),
+        ).toEqual([0, 1, 2]);
       });
     });
 
