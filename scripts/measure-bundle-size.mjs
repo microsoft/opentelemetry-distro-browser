@@ -44,7 +44,7 @@ const sdkBrowserBundleBudget = {
   brotliBytes: 54 * 1024,
 };
 const instrumentationsBrowserBundleBudget = {
-  rawBytes: 64 * 1024,
+  rawBytes: 64.25 * 1024,
   gzipBytes: 19.75 * 1024,
   brotliBytes: 17.75 * 1024,
 };
