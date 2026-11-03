@@ -208,6 +208,58 @@ for (const file of ["index.js", "index.min.js"]) {
     expect(disable).toHaveBeenCalledOnce();
   });
 
+  it.each([false, true])(
+    `retries click listener cleanup during shutdown through ${file} (persistent: %s)`,
+    async (persistent) => {
+      const distro = await loadDistro();
+      const { createClickAnalyticsInstrumentation } = await loadInstrumentations();
+      const pipeline = createInMemoryPipeline();
+      const onLog = vi.spyOn(pipeline.logProcessor, "onEmit");
+      const click = await createClickAnalyticsInstrumentation();
+      const add = vi.spyOn(window, "addEventListener");
+      const handle = await distro.useMicrosoftOpenTelemetry({
+        ...pipeline.options,
+        pageView: { enabled: false },
+        instrumentations: [click],
+      });
+      handles.add(handle);
+      const listener = add.mock.calls.find(([type]) => type === "mousedown")?.[1];
+      expect(listener).toBeTypeOf("function");
+      const originalRemove = window.removeEventListener.bind(window);
+      const attempts = new Map<string, number>();
+      const warn = vi.spyOn(diag, "warn");
+      const remove = vi
+        .spyOn(window, "removeEventListener")
+        .mockImplementation((type, callback, options) => {
+          if (callback === listener) {
+            attempts.set(type, (attempts.get(type) ?? 0) + 1);
+            if (persistent || attempts.get(type) === 1) throw new Error("cleanup failed");
+          }
+          originalRemove(type, callback, options);
+        });
+      try {
+        await handle.shutdown();
+        handles.delete(handle);
+        expect(attempts).toEqual(
+          new Map([
+            ["mousedown", 2],
+            ["keyup", 2],
+          ]),
+        );
+        if (persistent) expect(warn).toHaveBeenCalledWith("Click cleanup failed after retry.");
+        else expect(warn).not.toHaveBeenCalledWith("Click cleanup failed after retry.");
+        const target = mountClickTarget('<button data-id="shutdown">Click</button>');
+        target.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+        target.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true, key: "Enter" }));
+        click.trackPageAction({ name: "after-shutdown" });
+        expect(onLog).not.toHaveBeenCalled();
+      } finally {
+        remove.mockRestore();
+        click.disable();
+      }
+    },
+  );
+
   it(`preserves a newer registered click activation when an older restart throws through ${file}`, async () => {
     const distro = await loadDistro();
     const { createClickAnalyticsInstrumentation } = await loadInstrumentations();

@@ -144,12 +144,17 @@ export class ClickAnalyticsInstrumentation extends InstrumentationBase<ClickAnal
       try {
         window.removeEventListener(type, listener);
       } catch {
-        failed = true;
+        // Shutdown may never call disable again; retry this listener once before reporting failure.
+        try {
+          window.removeEventListener(type, listener);
+        } catch {
+          failed = true;
+        }
       }
     }
     if (failed) {
       this.#pendingCleanup.add(listener);
-      diag.warn("Click cleanup failed.");
+      diag.warn("Click cleanup failed after retry.");
     }
   }
 
