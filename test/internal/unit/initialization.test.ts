@@ -187,7 +187,7 @@ it("honors an inherited startup sampling getter and captures its value once", as
   expect(read).toHaveBeenCalledOnce();
 });
 
-it.each([undefined, {}])(
+it.each([undefined, {}, { AppInsightsCfgSyncPlugin: undefined }])(
   "does not install configuration sync without opt-in: %j",
   async (extensionConfig) => {
     const addListener = vi.spyOn(globalThis, "addEventListener");

@@ -14,7 +14,7 @@ type Controller = ReturnType<typeof createRuntimeConfiguration>;
 export function captureConfigurationSync(value: unknown) {
   if (value === undefined) return undefined;
   const extension = fields(value, "extensionConfig.", ["AppInsightsCfgSyncPlugin"]);
-  if (!Object.hasOwn(extension, "AppInsightsCfgSyncPlugin")) return undefined;
+  if (extension.AppInsightsCfgSyncPlugin === undefined) return undefined;
   const options = fields(extension.AppInsightsCfgSyncPlugin, "AppInsightsCfgSyncPlugin.", [
     "syncMode",
     "customEvtName",

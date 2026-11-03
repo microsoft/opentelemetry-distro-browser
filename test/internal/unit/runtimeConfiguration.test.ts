@@ -1228,6 +1228,10 @@ describe("configuration synchronization", () => {
   it("requires explicit opt-in and captures receive defaults", () => {
     expect(captureConfigurationSync(undefined)).toBeUndefined();
     expect(captureConfigurationSync({})).toBeUndefined();
+    expect(captureConfigurationSync({ AppInsightsCfgSyncPlugin: undefined })).toBeUndefined();
+    expect(() => captureConfigurationSync({ AppInsightsCfgSyncPlugin: null })).toThrow(
+      "plain object",
+    );
     expect(captureConfigurationSync({ AppInsightsCfgSyncPlugin: {} })).toEqual({
       mode: 2,
       name: "ai_cfgsync",
