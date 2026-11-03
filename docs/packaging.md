@@ -86,7 +86,7 @@ including alpha:
 | Artifact                                                   |  Minified |     Gzip |   Brotli |
 | ---------------------------------------------------------- | --------: | -------: | -------: |
 | `opentelemetry-browser.{iife,umd}.min.js`                  | 189.25 kB | 60.25 kB | 52.75 kB |
-| `opentelemetry-browser-instrumentations.{iife,umd}.min.js` |     64 kB | 19.75 kB | 17.75 kB |
+| `opentelemetry-browser-instrumentations.{iife,umd}.min.js` |  64.25 kB | 19.75 kB | 17.75 kB |
 
 These ceilings include opt-in Click Analytics parity. Against the pre-feature build with the same
 dependencies, it adds approximately 2.4 kB gzip to SDK browser bundles, 2.7 kB gzip to instrumentation
