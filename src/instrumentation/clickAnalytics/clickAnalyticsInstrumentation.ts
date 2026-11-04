@@ -70,6 +70,7 @@ export class ClickAnalyticsInstrumentation extends InstrumentationBase<ClickAnal
   private enabledState = false;
   #onAction?: EventListener;
   readonly #pendingCleanup = new Set<EventListener>();
+  #cleaning = false;
   #metadata: Record<string, string> = {};
 
   public constructor(config: ClickAnalyticsInstrumentationConfig = {}) {
@@ -136,25 +137,34 @@ export class ClickAnalyticsInstrumentation extends InstrumentationBase<ClickAnal
   }
 
   #removeListeners(listener: EventListener): void {
+    if (this.#cleaning) {
+      this.#pendingCleanup.add(listener);
+      return;
+    }
     // Remove from the retry queue before invoking application wrappers, which may reenter disable.
     this.#pendingCleanup.delete(listener);
     if (typeof window === "undefined") return;
-    let failed = false;
-    for (const type of ["mousedown", "keyup"]) {
-      try {
-        window.removeEventListener(type, listener);
-      } catch {
-        // Shutdown may never call disable again; retry this listener once before reporting failure.
+    this.#cleaning = true;
+    try {
+      let failed = false;
+      for (const type of ["mousedown", "keyup"]) {
         try {
           window.removeEventListener(type, listener);
         } catch {
-          failed = true;
+          // Shutdown may never call disable again; retry once before reporting failure.
+          try {
+            window.removeEventListener(type, listener);
+          } catch {
+            failed = true;
+          }
         }
       }
-    }
-    if (failed) {
-      this.#pendingCleanup.add(listener);
-      diag.warn("Click cleanup failed after retry.");
+      if (failed) {
+        this.#pendingCleanup.add(listener);
+        diag.warn("Click cleanup failed after retry.");
+      }
+    } finally {
+      this.#cleaning = false;
     }
   }
 
