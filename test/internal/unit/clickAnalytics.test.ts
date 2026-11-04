@@ -1205,17 +1205,19 @@ describe("ClickAnalyticsInstrumentation", () => {
       instrumentation.enable();
       const originalRemove = window.removeEventListener.bind(window);
       let attempts = 0;
-      const remove = vi.spyOn(window, "removeEventListener").mockImplementation((type, listener, options) => {
-        if (type === "mousedown") {
-          // Cap the fixture itself so a regression fails without exhausting the browser stack.
-          if (++attempts <= 5) {
-            instrumentation.disable();
-            instrumentation.enable();
+      const remove = vi
+        .spyOn(window, "removeEventListener")
+        .mockImplementation((type, listener, options) => {
+          if (type === "mousedown") {
+            // Cap the fixture itself so a regression fails without exhausting the browser stack.
+            if (++attempts <= 5) {
+              instrumentation.disable();
+              instrumentation.enable();
+            }
+            throw new Error("reentrant removal failed");
           }
-          throw new Error("reentrant removal failed");
-        }
-        originalRemove(type, listener, options);
-      });
+          originalRemove(type, listener, options);
+        });
       try {
         instrumentation.disable();
         expect(attempts).toBe(2);

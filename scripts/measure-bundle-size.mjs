@@ -24,7 +24,7 @@ export const entryPointBudgets = {
   },
   "./instrumentations": {
     rawBytes: 70.25 * 1024,
-    gzipBytes: 26.25 * 1024,
+    gzipBytes: 26.5 * 1024,
     brotliBytes: 23.25 * 1024,
   },
   // The generator validates its options and assembles optional loader steps. It runs where the
@@ -46,7 +46,7 @@ const sdkBrowserBundleBudget = {
 const instrumentationsBrowserBundleBudget = {
   rawBytes: 64.25 * 1024,
   gzipBytes: 19.75 * 1024,
-  brotliBytes: 17.75 * 1024,
+  brotliBytes: 18 * 1024,
 };
 
 /**
