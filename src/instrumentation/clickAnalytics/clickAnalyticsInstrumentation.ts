@@ -338,7 +338,8 @@ export class ClickAnalyticsInstrumentation extends InstrumentationBase<ClickAnal
         continue;
       }
       if (
-        (element.tagName !== "INPUT" || INPUT_TYPES.has((element as HTMLInputElement).type)) &&
+        (element.tagName.toUpperCase() !== "INPUT" ||
+          INPUT_TYPES.has((element as HTMLInputElement).type)) &&
         !isDoNotTrack(element, config)
       ) {
         this.capturePageAction(
