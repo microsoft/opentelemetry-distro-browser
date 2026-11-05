@@ -2,14 +2,15 @@
 // Licensed under the MIT License.
 
 import type { BrowserInstrumentation, InstrumentationOptions } from "../../types.js";
+import { CLICK_ANALYTICS_ENABLED } from "../../shared/buildFeatures.js";
 import type {
   ClickAnalyticsInstrumentation,
   ClickAnalyticsInstrumentationConfig,
 } from "../clickAnalytics/types.js";
 
 /**
- * Creates a deferred Click Analytics instance with manual capture APIs, without eagerly loading
- * its implementation into applications that use only other instrumentations.
+ * Creates a deferred npm-only Click Analytics instance with manual capture APIs, without eagerly
+ * loading its implementation into applications that use only other instrumentations.
  * @public
  */
 export async function createClickAnalyticsInstrumentation(
@@ -57,6 +58,7 @@ function isEnabled(options: { enabled?: boolean } | undefined, defaultEnabled: b
  * `fetch` and `xhr` are constructed unless they are turned off, matching the Application Insights
  * JavaScript SDK, where `disableAjaxTracking` and `disableFetchTracking` both default to false.
  * Everything else is constructed only when `enabled` is `true`.
+ * Click Analytics is npm-only; CDN bundles reject its configuration.
  *
  * Instances are returned inert, with `enabled: false`, which is the deferred-enablement contract
  * `MicrosoftOpenTelemetryBrowserOptions.instrumentations` documents: registration binds their
@@ -75,6 +77,9 @@ function isEnabled(options: { enabled?: boolean } | undefined, defaultEnabled: b
 export async function getInstrumentations(
   options: InstrumentationOptions = {},
 ): Promise<BrowserInstrumentation[]> {
+  if (!CLICK_ANALYTICS_ENABLED && "clickAnalytics" in options) {
+    throw new Error("Click Analytics is only available through the npm package.");
+  }
   const pending: Promise<BrowserInstrumentation>[] = [];
 
   if (isEnabled(options.fetch, ON_BY_DEFAULT)) {
@@ -163,7 +168,7 @@ export async function getInstrumentations(
     );
   }
 
-  if (isEnabled(options.clickAnalytics, false)) {
+  if (CLICK_ANALYTICS_ENABLED && isEnabled(options.clickAnalytics, false)) {
     pending.push(
       import("../clickAnalytics/clickAnalyticsInstrumentation.js").then(
         ({ ClickAnalyticsInstrumentation }) =>

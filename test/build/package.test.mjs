@@ -201,7 +201,21 @@ test("click analytics exposes a type-only capture interface and matching factory
     assert.equal(clicks.getConfig().enabled, false);
     assert.equal(typeof clicks.capturePageAction, "function");
     assert.equal(typeof clicks.trackPageAction, "function");
+    const selected = await instrumentations.getInstrumentations({
+      fetch: { enabled: false },
+      xhr: { enabled: false },
+      clickAnalytics: { enabled: true, autoCapture: false },
+    });
+    assert.equal(selected.length, 1);
+    assert.equal(
+      selected[0].instrumentationName,
+      "@microsoft/opentelemetry-browser/click-analytics",
+    );
+    assert.equal(selected[0].getConfig().enabled, false);
+    assert.equal(typeof selected[0].trackPageAction, "function");
   }
+  const snippetDeclarations = await readFile(new URL("dist/esm/snippet.d.ts", root), "utf8");
+  assert.doesNotMatch(snippetDeclarations, /clickAnalytics|ClickAnalytics/);
 });
 
 test("SDK stats expose root configuration without runtime exports or snippet configuration", async () => {

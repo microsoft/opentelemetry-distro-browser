@@ -91,6 +91,7 @@ export interface SdkLoaderConfig {
    * Named after `instrumentationOptions` in the Node.js distribution, because
    * `MicrosoftOpenTelemetryBrowserOptions.instrumentations` holds constructed instances. Only
    * JSON-serializable settings are accepted, so hooks and regular expressions are unavailable.
+   * Click Analytics is npm-only and cannot be configured by the loader.
    */
   readonly instrumentationOptions?: {
     readonly [name in SdkLoaderInstrumentationName]?: SdkLoaderJsonObject & {
@@ -112,7 +113,6 @@ export interface SdkLoaderConfig {
  * @public
  */
 export type SdkLoaderInstrumentationName =
-  | "clickAnalytics"
   | "console"
   | "errors"
   | "fetch"
@@ -124,7 +124,6 @@ export type SdkLoaderInstrumentationName =
   | "xhr";
 
 const instrumentationNames: readonly string[] = [
-  "clickAnalytics",
   "console",
   "errors",
   "fetch",

@@ -17,7 +17,7 @@ const compile = () => typescript({ tsconfig: "./tsconfig.src.json" });
 
 const unsafeIdleCallbackCheck = 'typeof window.requestIdleCallback === "function"';
 // Upstream resource timing reads `window` when its module is evaluated, which throws in a worker.
-// The global bundles inline every instrumentation, so guard the check until upstream does.
+// The global bundles inline supported instrumentations, so guard the check until upstream does.
 const workerSafeIdleCallback = {
   name: "worker-safe-idle-callback",
   transform(code, id) {
@@ -36,14 +36,13 @@ const cdnFeatures = {
   name: "cdn-features",
   transform(code, id) {
     if (!/[\\/]src[\\/]shared[\\/]buildFeatures\.ts$/.test(id)) return null;
-    const declaration = "export const CUSTOMER_SDK_STATS_ENABLED = true;";
-    const index = code.indexOf(declaration);
-    if (index === -1) this.error("Customer SDK Stats build flag was not found.");
-    const source = new MagicString(code).overwrite(
-      index,
-      index + declaration.length,
-      "export const CUSTOMER_SDK_STATS_ENABLED = false;",
-    );
+    const source = new MagicString(code);
+    for (const name of ["CUSTOMER_SDK_STATS_ENABLED", "CLICK_ANALYTICS_ENABLED"]) {
+      const declaration = `export const ${name} = true;`;
+      const index = code.indexOf(declaration);
+      if (index === -1) this.error(`${name} build flag was not found.`);
+      source.overwrite(index, index + declaration.length, `export const ${name} = false;`);
+    }
     return { code: source.toString(), map: source.generateMap({ hires: true }) };
   },
 };
@@ -188,7 +187,7 @@ export default [
   },
   globalBundle("src/browser.ts", "opentelemetry-browser", "Microsoft.OpenTelemetry"),
   globalBundle(
-    "src/instrumentation/browserInstrumentation/index.ts",
+    "src/instrumentation/browserInstrumentation/browser.ts",
     "opentelemetry-browser-instrumentations",
     "Microsoft.OpenTelemetryInstrumentations",
   ),

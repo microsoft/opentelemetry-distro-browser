@@ -61,7 +61,7 @@ export interface InstrumentationOptions {
   /** Configuration for `@opentelemetry/browser-instrumentation/experimental/user-action`. */
   userAction?: UserActionInstrumentationConfig;
 
-  /** Optional Application Insights-compatible click content. Prefer this or `userAction`, not both. */
+  /** npm-only Application Insights-compatible click content. Prefer this or `userAction`, not both. */
   clickAnalytics?: ClickAnalyticsInstrumentationConfig;
 
   /** Configuration for `@opentelemetry/browser-instrumentation/experimental/web-vitals`. */
