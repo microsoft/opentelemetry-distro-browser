@@ -1075,6 +1075,49 @@ describe("ClickAnalyticsInstrumentation", () => {
       },
     );
 
+    it.each(["text", "password"])(
+      "does not read or capture XHTML %s input values, directly or through labels",
+      async (type) => {
+        const xhtml = new DOMParser().parseFromString(
+          `<html xmlns="http://www.w3.org/1999/xhtml"><body><label for="xhtml-input">Input</label><input id="xhtml-input" type="${type}" value="private input value" /></body></html>`,
+          "application/xhtml+xml",
+        );
+        const input = xhtml.querySelector<HTMLInputElement>("input")!;
+        const label = xhtml.querySelector<HTMLLabelElement>("label")!;
+        expect(input.tagName).toBe("input");
+        expect(label.control).toBe(input);
+        // Parsed XHTML has no window; attach the automatic handlers to its event tree instead.
+        vi.spyOn(window, "addEventListener").mockImplementation((...args) =>
+          xhtml.addEventListener(...args),
+        );
+        vi.spyOn(window, "removeEventListener").mockImplementation((...args) =>
+          xhtml.removeEventListener(...args),
+        );
+        const contentName = vi.fn(() => "");
+        const { instrumentation, records } = createInstrumentation({
+          dataTags: { useDefaultContentNameOrId: true },
+          callback: { contentName },
+        });
+        instrumentation.enable();
+        for (const target of [input, label]) {
+          mouse(target);
+          keyboard(target, "Enter");
+          keyboard(target, " ");
+        }
+        expect(await records()).toEqual([]);
+        expect(contentName).not.toHaveBeenCalled();
+
+        input.type = "button";
+        input.value = "Public action";
+        mouse(input);
+        const exported = await records();
+        expect(exported).toHaveLength(1);
+        expect(exported[0].attributes["browser.click.content"]).toBe(
+          '[{"contentName":"Public action"}]',
+        );
+      },
+    );
+
     it.each(["a", "area"])("captures a %s destination as an absolute URL", async (tag) => {
       const { instrumentation, records } = createInstrumentation();
       instrumentation.enable();

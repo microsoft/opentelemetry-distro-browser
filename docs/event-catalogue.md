@@ -29,12 +29,12 @@ automatic log events use INFO severity (`9`) and have no required body.
 | Document timing    | Log `browser.navigation_timing`     | Opt-in                | `@opentelemetry/browser-instrumentation/experimental/navigation-timing`                             |
 | Subresource timing | Log `browser.resource_timing`       | Opt-in                | `@opentelemetry/browser-instrumentation/experimental/resource-timing`                               |
 | Clicks             | Log `browser.user_action.click`     | Opt-in                | `@opentelemetry/browser-instrumentation/experimental/user-action`                                   |
-| Click Analytics    | Log `browser.click`                 | Opt-in                | [Click Analytics](../src/instrumentation/clickAnalytics/clickAnalyticsInstrumentation.ts)           |
+| Click Analytics    | Log `browser.click`                 | Opt-in, npm-only      | [Click Analytics](../src/instrumentation/clickAnalytics/clickAnalyticsInstrumentation.ts)           |
 | Web Vitals         | Log `browser.web_vital`             | Opt-in                | `@opentelemetry/browser-instrumentation/experimental/web-vitals`                                    |
 
 The [instrumentation helper](../src/instrumentation/browserInstrumentation/getInstrumentations.ts)
-loads only selected modules in npm applications. The CDN SDK includes all modules but enables only
-fetch/XHR unless configured otherwise. Merely importing the distribution installs none of these;
+loads only selected modules in npm applications. The CDN SDK includes all CDN-supported modules but
+enables only fetch/XHR unless configured otherwise. Merely importing the distribution installs none of these;
 initialization must include an exporting pipeline for the relevant signal.
 
 ## Common enrichment and correlation
@@ -260,14 +260,14 @@ sanitize before emission. Structured attributes are subject to downstream SDK/ex
 
 ## Click Analytics: `browser.click`
 
-Opt-in distribution instrumentation, separate from the unchanged `userAction` module above.
+Opt-in, npm-only distribution instrumentation, separate from the unchanged `userAction` module above.
 **Enabling both can emit duplicate action records for the same interaction.** The implementation
 lives in the new [Click Analytics folder](../src/instrumentation/clickAnalytics/clickAnalyticsInstrumentation.ts),
 not a separate package, and is exposed through the existing
 `@microsoft/opentelemetry-browser/instrumentations` export. Use the async
 `createClickAnalyticsInstrumentation(config)` factory for a deferred instance; the class is type-only,
-not a public runtime constructor. The factory and behavior validators are also available on the CDN
-global `Microsoft.OpenTelemetry`. See
+not a public runtime constructor. Click Analytics, its factory and behavior validators are excluded
+from both CDN bundle families and the loader configuration. See
 [configuration, manual APIs and parity differences](configuration-reference.md#click-analytics).
 
 Records use standard **OpenTelemetry log transport**, with top-level `eventName: "browser.click"`,

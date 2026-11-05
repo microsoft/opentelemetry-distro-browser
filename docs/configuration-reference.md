@@ -687,7 +687,7 @@ do not confuse them with the initialization object or loader configuration.
 | `resourceTiming`   | No                     | `initiatorTypes`, `ignoreUrls`, `batchSize`, `maxQueueSize`, `forceProcessingAfter`, `maxProcessingTime`                        |
 | `userAction`       | No                     | `autoCapturedActions`, `applyCustomLogRecordData`                                                                               |
 | `webVitals`        | No                     | `includeRawAttribution`, `applyCustomLogRecordData`                                                                             |
-| `clickAnalytics`   | No                     | `autoCapture`, `callback`, `pageTags`, `coreData`, `dataTags`; [all options](#click-analytics)                                  |
+| `clickAnalytics`   | No                     | npm-only: `autoCapture`, `callback`, `pageTags`, `coreData`, `dataTags`; [all options](#click-analytics)                        |
 
 - `enabled` is a boolean. Fetch/XHR are constructed unless `false`; other modules require `true`.
   All returned instances are initially inert; registration enables them after provider binding.
@@ -798,15 +798,15 @@ await telemetry.instrumentations.remove("application-errors");
 
 ### Click Analytics
 
-Click Analytics is **opt-in** and emits `browser.click` log records. It lives in the new
+Click Analytics is **opt-in and npm-only** and emits `browser.click` log records. It lives in the new
 [Click Analytics source folder](../src/instrumentation/clickAnalytics/clickAnalyticsInstrumentation.ts),
 not a separate package. Import `createClickAnalyticsInstrumentation`, types and behavior validators through the existing
 `@microsoft/opentelemetry-browser/instrumentations` export, not the SDK root. It has no
 Application Insights (`ApplicationInsights`) runtime dependency. A log pipeline is required to
 export records; the example uses Azure Monitor, but OTLP/custom log processors work too.
 `ClickAnalyticsInstrumentation` is a type-only export; its internal constructor is not a public
-runtime API. The factory and behavior validators are also available on the CDN global
-`Microsoft.OpenTelemetry`.
+runtime API. Click Analytics, its factory and behavior validators are excluded from both the SDK
+and instrumentation CDN bundles. The loader does not accept `clickAnalytics` configuration.
 
 ```typescript
 import { useMicrosoftOpenTelemetry } from "@microsoft/opentelemetry-browser";
@@ -913,7 +913,7 @@ truthy content `bhvr` replaces it through the validator only when the behavior o
 assigned (not `undefined`, `null` or `""`); only then is `bhvr` removed from content. The default
 validator maps numeric `0` to `""`; a custom validator can preserve `0`.
 
-The instrumentations export and CDN `Microsoft.OpenTelemetry` global provide:
+The npm instrumentations export provides:
 
 - `BehaviorMapValidator(map)`: own-key lookup returning the mapped string/number or `""`; a
   missing key or falsy mapped value, including numeric `0`, is rejected.
