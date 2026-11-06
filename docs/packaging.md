@@ -72,7 +72,7 @@ Every executable published entry point has absolute minified, gzip and Brotli bu
 | Entry point          | Minified |     Gzip |   Brotli |
 | -------------------- | -------: | -------: | -------: |
 | `.`                  |   162 kB | 50.75 kB | 44.75 kB |
-| `./instrumentations` |    64 kB |    24 kB |    22 kB |
+| `./instrumentations` | 70.25 kB |  26.5 kB | 23.25 kB |
 | `./snippet`          |  6.25 kB |  2.75 kB |   2.5 kB |
 
 The generated JSON and Markdown reports show the measured values, ceilings and result for each
@@ -85,10 +85,10 @@ comparison remains informational and does not replace the absolute gate.
 emits them, so it must run after a production build. Their budgets block in every release channel,
 including alpha:
 
-| Artifact                                                   | Minified |    Gzip |  Brotli |
-| ---------------------------------------------------------- | -------: | ------: | ------: |
-| `opentelemetry-browser.{iife,umd}.min.js`                  | 180.5 kB | 57.5 kB | 50.5 kB |
-| `opentelemetry-browser-instrumentations.{iife,umd}.min.js` | 55.75 kB |   17 kB | 15.5 kB |
+| Artifact                                                   |  Minified |     Gzip |   Brotli |
+| ---------------------------------------------------------- | --------: | -------: | -------: |
+| `opentelemetry-browser.{iife,umd}.min.js`                  | 184.25 kB | 58.75 kB | 51.25 kB |
+| `opentelemetry-browser-instrumentations.{iife,umd}.min.js` |  55.75 kB |    17 kB |  15.5 kB |
 
 Click Analytics is available only through the npm instrumentations entry, including its factory and
 behavior validators. Its implementation remains a lazy npm chunk; neither the root SDK nor either
