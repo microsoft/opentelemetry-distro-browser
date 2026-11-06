@@ -504,9 +504,13 @@ it("excludes real ingestion resource timing without filtering custom processor b
   expect(captured.filter((envelope) => envelope.data.baseType === "MetricData")).toHaveLength(1);
 });
 
-it.each([0, 100])(
-  "excludes peer ingestion across two custom origins at %s percent sampling",
-  async (samplingPercentage) => {
+it.each([
+  { samplingPercentage: 0, streamingResponse: false },
+  { samplingPercentage: 0, streamingResponse: true },
+  { samplingPercentage: 100, streamingResponse: false },
+])(
+  "excludes peer ingestion across two custom origins at $samplingPercentage percent sampling (streaming response: $streamingResponse)",
+  async ({ samplingPercentage, streamingResponse }) => {
     const moduleUrl = new URL("../../dist/esm/index.js", import.meta.url);
     const distro: typeof import("../../src/index.js") = await import(
       /* @vite-ignore */ moduleUrl.href
@@ -514,7 +518,7 @@ it.each([0, 100])(
     const nativeFetch = globalThis.fetch.bind(globalThis);
     const transport = vi.fn(nativeFetch);
     vi.stubGlobal("fetch", withoutSdkStats(transport));
-    const runId = crypto.randomUUID();
+    const runId = `${crypto.randomUUID()}${streamingResponse ? "-streaming-response" : ""}`;
     const firstOrigin = new URL(inject("ingestionEndpoint")).origin;
     const secondOrigin = firstOrigin.replace("127.0.0.1", "localhost");
     const start = async (origin: string, key: string) => {
@@ -555,13 +559,14 @@ it.each([0, 100])(
     await Promise.all([first.handle.forceFlush(), second.handle.forceFlush()]);
     if (samplingPercentage === 0) {
       // Sampling sends nothing. Seed real peer timings without sending application records.
+      // Resource timings require completed responses, not just fetch's response headers.
       await Promise.all(
         [firstOrigin, secondOrigin].map((origin) =>
           nativeFetch(`${origin}/ingest/${runId}/v2/track`, {
             method: "POST",
             headers: { "content-type": "application/json" },
             body: "[]",
-          }),
+          }).then((response) => response.text()),
         ),
       );
     }
