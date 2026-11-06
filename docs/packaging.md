@@ -72,7 +72,7 @@ Every executable published entry point has absolute minified, gzip and Brotli bu
 | Entry point          | Minified |    Gzip |  Brotli |
 | -------------------- | -------: | ------: | ------: |
 | `.`                  |   170 kB | 53.5 kB |   47 kB |
-| `./instrumentations` |    64 kB |   24 kB |   22 kB |
+| `./instrumentations` | 70.25 kB | 26.5 kB | 23.25 kB |
 | `./snippet`          |  6.75 kB |    3 kB | 2.75 kB |
 
 The generated JSON and Markdown reports show the measured values, ceilings and result for each
