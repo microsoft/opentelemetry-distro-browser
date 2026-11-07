@@ -27,16 +27,18 @@ CommonJS test runners such as Jest must transform those dependencies.
 
 The `opentelemetry-browser.*` SDK bundles are self-contained and expose `Microsoft.OpenTelemetry`.
 They also expose the standard OpenTelemetry APIs used by the bundled SDK, so direct-script
-consumers can emit manual telemetry without loading a second API copy. They inline every
-instrumentation and expose `getInstrumentations`, because a page loading them from the CDN has no
+consumers can emit manual telemetry without loading a second API copy. They inline CDN-supported
+instrumentations and expose `getInstrumentations`, because a page loading them from the CDN has no
 bundler to add instrumentations later. They omit the opt-in browser and user-agent resource
-detectors and customer SDK Stats, which are available from the npm package only. CDN builds remove
-customer reporting and pipeline accounting at build time, rather than only disabling them at runtime.
-The loader snippet does not accept `azureMonitor.sdkStats`, and CDN exporters and initialization
-reject that option. Internal SDK Stats remains unchanged. The
+detectors, customer SDK Stats and Click Analytics, which are available from the npm package only.
+CDN builds remove customer reporting, pipeline accounting and Click Analytics implementation code at
+build time, rather than only disabling them at runtime. The loader snippet does not accept
+`azureMonitor.sdkStats` or `instrumentationOptions.clickAnalytics`, and CDN APIs reject those options.
+Internal SDK Stats remains unchanged. The
 `opentelemetry-browser-instrumentations.*` bundles expose
 only `Microsoft.OpenTelemetryInstrumentations` and include their own API copy, which shares state
-with the SDK bundle through the OpenTelemetry global registry. Use IIFE when RequireJS may already be present; UMD deliberately registers with
+with the SDK bundle through the OpenTelemetry global registry. They also exclude Click Analytics,
+its factory and behavior validators. Use IIFE when RequireJS may already be present; UMD deliberately registers with
 AMD loaders.
 
 `npm run test:build` checks the output inventory, ESM and CommonJS package resolution, declaration
@@ -70,7 +72,7 @@ Every executable published entry point has absolute minified, gzip and Brotli bu
 | Entry point          | Minified |     Gzip |   Brotli |
 | -------------------- | -------: | -------: | -------: |
 | `.`                  |   162 kB | 50.75 kB | 44.75 kB |
-| `./instrumentations` |    64 kB |    24 kB |    22 kB |
+| `./instrumentations` | 70.25 kB |  26.5 kB | 23.25 kB |
 | `./snippet`          |  6.25 kB |  2.75 kB |   2.5 kB |
 
 The generated JSON and Markdown reports show the measured values, ceilings and result for each
@@ -83,10 +85,16 @@ comparison remains informational and does not replace the absolute gate.
 emits them, so it must run after a production build. Their budgets block in every release channel,
 including alpha:
 
-| Artifact                                                   |  Minified |  Gzip |  Brotli |
-| ---------------------------------------------------------- | --------: | ----: | ------: |
-| `opentelemetry-browser.{iife,umd}.min.js`                  | 184.25 kB | 59 kB | 51.5 kB |
-| `opentelemetry-browser-instrumentations.{iife,umd}.min.js` |     63 kB | 19 kB |   17 kB |
+| Artifact                                                   |  Minified |     Gzip |   Brotli |
+| ---------------------------------------------------------- | --------: | -------: | -------: |
+| `opentelemetry-browser.{iife,umd}.min.js`                  | 184.25 kB | 58.75 kB | 51.25 kB |
+| `opentelemetry-browser-instrumentations.{iife,umd}.min.js` |  55.75 kB |    17 kB |  15.5 kB |
+
+Click Analytics is available only through the npm instrumentations entry, including its factory and
+behavior validators. Its implementation remains a lazy npm chunk; neither the root SDK nor either
+CDN bundle family imports it. The size report measures the Click Analytics factory and its async
+implementation independently of the other instrumentation factories. CDN budgets exclude Click
+Analytics and remain blocking for every release channel.
 
 SWC minifies the browser bundles and shortens `_`-prefixed properties, the TypeScript `private`
 convention used by OpenTelemetry, so source code keeps descriptive names. Members that
