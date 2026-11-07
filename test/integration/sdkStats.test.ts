@@ -32,6 +32,20 @@ const SECOND_KEY = "22222222-2222-2222-2222-222222222222";
 const handles: Pick<MicrosoftOpenTelemetryBrowser, "shutdown">[] = [];
 let referrerPolicy: HTMLMetaElement | undefined;
 
+function stubResourceTimingIdleCallbacks(): void {
+  // These tests cover filtering, not the upstream scheduler's handling of exhausted deadlines.
+  vi.stubGlobal("requestIdleCallback", (callback: IdleRequestCallback) =>
+    window.setTimeout(() => {
+      const start = performance.now();
+      callback({
+        didTimeout: false,
+        timeRemaining: () => Math.max(0, 50 - (performance.now() - start)),
+      });
+    }, 0),
+  );
+  vi.stubGlobal("cancelIdleCallback", (id: number) => window.clearTimeout(id));
+}
+
 it.each(["index.js", "index.min.js"])(
   "shares unload reservations with the separately bundled %s",
   async (file) => {
@@ -449,6 +463,7 @@ it.each(
 );
 
 it("excludes real ingestion resource timing without filtering custom processor branches", async () => {
+  stubResourceTimingIdleCallbacks();
   const moduleUrl = new URL("../../dist/esm/index.js", import.meta.url);
   const distro: typeof import("../../src/index.js") = await import(
     /* @vite-ignore */ moduleUrl.href
@@ -511,6 +526,7 @@ it.each([
 ])(
   "excludes peer ingestion across two custom origins at $samplingPercentage percent sampling (streaming response: $streamingResponse)",
   async ({ samplingPercentage, streamingResponse }) => {
+    stubResourceTimingIdleCallbacks();
     const moduleUrl = new URL("../../dist/esm/index.js", import.meta.url);
     const distro: typeof import("../../src/index.js") = await import(
       /* @vite-ignore */ moduleUrl.href
@@ -575,8 +591,17 @@ it.each([
         const urls = observed
           .filter((record) => record.eventName === "browser.resource_timing")
           .map((record) => record.attributes["url.full"]);
-        expect(urls).toContain(`${firstOrigin}/ingest/${runId}/v2/track`);
-        expect(urls).toContain(`${secondOrigin}/ingest/${runId}/v2/track`);
+        const browserTimings = performance
+          .getEntriesByType("resource")
+          .filter((entry) => entry.name.includes(`/ingest/${runId}/`))
+          .map((entry) => ({
+            url: entry.name,
+            responseEnd: (entry as PerformanceResourceTiming).responseEnd,
+            duration: entry.duration,
+          }));
+        const diagnostic = `Browser resource timings: ${JSON.stringify(browserTimings)}`;
+        expect(urls, diagnostic).toContain(`${firstOrigin}/ingest/${runId}/v2/track`);
+        expect(urls, diagnostic).toContain(`${secondOrigin}/ingest/${runId}/v2/track`);
       });
     }
     for (let index = 0; index < 3; index++) {
