@@ -80,8 +80,8 @@ export interface BrowserInstrumentation {
 export interface MicrosoftOpenTelemetryBrowser {
     readonly configSync?: MicrosoftOpenTelemetryBrowserConfigurationSync;
     forceFlush(): Promise<void>;
-    readonly instrumentations: MicrosoftOpenTelemetryBrowserInstrumentations;
     getCookieMgr(): MicrosoftOpenTelemetryBrowserCookieManager;
+    readonly instrumentations: MicrosoftOpenTelemetryBrowserInstrumentations;
     shutdown(): Promise<void>;
     updateCfg(patch: MicrosoftOpenTelemetryBrowserConfigurationUpdate, mergeExisting?: boolean): Promise<MicrosoftOpenTelemetryBrowserConfigurationUpdateResult>;
     readonly userContext: MicrosoftOpenTelemetryBrowserUserContext;
@@ -133,24 +133,6 @@ export interface MicrosoftOpenTelemetryBrowserConfigurationUpdateResult {
 }
 
 // @public
-export interface MicrosoftOpenTelemetryBrowserExceptionOptions {
-    expLog?: () => {
-        logs: readonly string[];
-    };
-    inclScripts?: boolean;
-    maxLogs?: number;
-}
-
-// @public
-export interface MicrosoftOpenTelemetryBrowserInstrumentations {
-    add(id: string, instrumentation: BrowserInstrumentation): Promise<void>;
-    get(id: string): BrowserInstrumentation | undefined;
-    remove(id: string): Promise<void>;
-    replace(id: string, instrumentation: BrowserInstrumentation): Promise<void>;
-    setEnabled(id: string, enabled: boolean): Promise<void>;
-}
-
-// @public
 export interface MicrosoftOpenTelemetryBrowserCookieConfig {
     blockedCookies?: readonly string[];
     delCookie?: (name: string, value: string) => void;
@@ -174,13 +156,31 @@ export interface MicrosoftOpenTelemetryBrowserCookieManager {
 }
 
 // @public
+export interface MicrosoftOpenTelemetryBrowserExceptionOptions {
+    expLog?: () => {
+        logs: readonly string[];
+    };
+    inclScripts?: boolean;
+    maxLogs?: number;
+}
+
+// @public
+export interface MicrosoftOpenTelemetryBrowserInstrumentations {
+    add(id: string, instrumentation: BrowserInstrumentation): Promise<void>;
+    get(id: string): BrowserInstrumentation | undefined;
+    remove(id: string): Promise<void>;
+    replace(id: string, instrumentation: BrowserInstrumentation): Promise<void>;
+    setEnabled(id: string, enabled: boolean): Promise<void>;
+}
+
+// @public
 export interface MicrosoftOpenTelemetryBrowserOptions {
     azureMonitor?: AzureMonitorOptions<string | Promise<string>>;
+    cookieCfg?: MicrosoftOpenTelemetryBrowserCookieConfig;
     expCfg?: MicrosoftOpenTelemetryBrowserExceptionOptions;
     extensionConfig?: {
         AppInsightsCfgSyncPlugin?: MicrosoftOpenTelemetryBrowserConfigurationSyncOptions;
     };
-    cookieCfg?: MicrosoftOpenTelemetryBrowserCookieConfig;
     instrumentations?: readonly BrowserInstrumentation[];
     logRecordProcessors?: LogRecordProcessor[];
     pageView?: PageViewInstrumentationConfig;

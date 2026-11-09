@@ -7,9 +7,15 @@ import { createCookieManager } from "../../../src/storage/cookieManager.js";
 import type { KeyValueStorage } from "../../../src/storage/keyValueStorage.js";
 import type { MicrosoftOpenTelemetryBrowserCookieManager } from "../../../src/types.js";
 
-const key = "opentelemetry-session";
-const encode = (value: unknown) => encodeURIComponent(JSON.stringify(value));
-const decode = (value: string) => JSON.parse(decodeURIComponent(value));
+const key = "ai_session";
+const storageKey = "opentelemetry-session";
+const legacyEncode = (value: unknown) => encodeURIComponent(JSON.stringify(value));
+const encode = (value: { id: string; startTimestamp: number; lastActivityTimestamp?: number }) =>
+  `${value.id}|${value.startTimestamp}|${value.lastActivityTimestamp ?? value.startTimestamp}`;
+function decode(value: string) {
+  const [id, start, activity] = value.split("|");
+  return { id, startTimestamp: Number(start), lastActivityTimestamp: Number(activity) };
+}
 
 function fakeBackends() {
   const values = new Map<string, string>();
@@ -71,7 +77,7 @@ afterEach(() => {
 
 it("restores the complete prefixed cookie first without reading or writing storage", async () => {
   const { cookies, storage, values } = fakeBackends();
-  const record = { id: "cookie; 雪", startTimestamp: 900_000, lastActivityTimestamp: 990_000 };
+  const record = { id: "ai+cookie/id", startTimestamp: 900_000, lastActivityTimestamp: 990_000 };
   values.set(`app-${key}`, encode(record));
   storage.getItem.mockReturnValue({
     success: true,
@@ -103,7 +109,7 @@ it("falls back to a missing cookie's storage backup and migrates it on activity"
   const session = createSession({}, storage, cookies);
   await session.start();
   expect(session.getSessionId()).toBe("backup");
-  expect(storage.getItem).toHaveBeenCalledExactlyOnceWith(key);
+  expect(storage.getItem).toHaveBeenCalledExactlyOnceWith(storageKey);
   expect(decode(values.get(key)!)).toEqual({
     id: "backup",
     startTimestamp: 900_000,
@@ -113,7 +119,7 @@ it("falls back to a missing cookie's storage backup and migrates it on activity"
 });
 
 it.each(["existing", "missing", "malformed"])(
-  "keeps failed session reads unresolved until recovery (%s cookie)",
+  "keeps a stable provisional session without persistence until read recovery (%s cookie)",
   async (state) => {
     const { storage } = fakeBackends();
     storage.getItem.mockReturnValue({
@@ -137,7 +143,10 @@ it.each(["existing", "missing", "malformed"])(
     });
     const session = createSession({}, storage, cookies);
     await session.start();
-    expect(session.getSessionId()).toBeNull();
+    const provisional = session.getSessionId();
+    expect(provisional).toMatch(/^[0-9a-f]{32}$/);
+    vi.setSystemTime(Date.now() + 1000);
+    expect(session.getSessionId()).toBe(provisional);
     session.backup();
     expect(storage.getItem).not.toHaveBeenCalled();
     expect(storage.setItem).not.toHaveBeenCalled();
@@ -145,6 +154,7 @@ it.each(["existing", "missing", "malformed"])(
 
     unavailable = false;
     const id = session.getSessionId();
+    expect(id).not.toBe(provisional);
     if (state === "existing") expect(id).toBe("authoritative");
     else if (state === "missing") expect(id).toBe("backup");
     else expect(id).toMatch(/^[0-9a-f]{32}$/);
@@ -188,8 +198,15 @@ it.each([
   "%",
   "%E0%A4%A",
   "not-json",
-  encode(null),
-  encode({ id: "invalid" }),
+  legacyEncode(null),
+  legacyEncode({ id: "invalid" }),
+  "invalid||1000000",
+  "invalid|1000000|",
+  "invalid|NaN|1000000",
+  "invalid|1000000|Infinity",
+  "invalid|1000000|999999",
+  "invalid|1000000|1000001",
+  "invalid|1000000|1000000|extra",
   encode({ id: "future", startTimestamp: 1_000_001 }),
   encode({ id: "invalid-activity", startTimestamp: 900_000, lastActivityTimestamp: 899_999 }),
 ])("does not fall back from a present malformed cookie (%s)", async (value) => {
@@ -227,6 +244,51 @@ it.each([
       }),
       age,
     );
+  },
+);
+
+it.each([
+  { field: "maxDuration", before: 2, after: 100, age: 99 },
+  { field: "maxDuration", before: 300, after: 5, age: 4 },
+  { field: "maxDuration", before: 2, after: 0, age: undefined },
+  { field: "maxDuration", before: 0, after: 100, age: 99 },
+  { field: "inactivityTimeout", before: 2, after: 120, age: 120 },
+  { field: "inactivityTimeout", before: 120, after: 2, age: 2 },
+] as const)(
+  "refreshes persisted $field from $before to $after on activity and survives reload",
+  async ({ field, before, after, age }) => {
+    const backend = expiringCookieBackend();
+    const cookies = createCookieManager(backend);
+    const initial = { inactivityTimeout: 120, maxDuration: 300, [field]: before };
+    let policy = initial;
+    const session = createSession(initial, null, cookies, key, () => policy);
+    await session.start();
+    const started = Date.now();
+    const id = session.getSessionId();
+    expect(backend.setCookie).toHaveBeenCalledOnce();
+
+    vi.setSystemTime(started + 1000);
+    policy = { ...policy, [field]: after };
+    expect(backend.setCookie).toHaveBeenCalledOnce();
+    expect(session.getSessionId()).toBe(id);
+    expect(backend.setCookie).toHaveBeenCalledTimes(2);
+    const formatted = backend.setCookie.mock.calls.at(-1)![1];
+    if (age === undefined) expect(formatted).not.toContain("max-age=");
+    else expect(formatted).toContain(`; max-age=${age};`);
+
+    vi.setSystemTime(started + 1500);
+    expect(session.getSessionId()).toBe(id);
+    expect(backend.setCookie).toHaveBeenCalledTimes(policy.inactivityTimeout <= 60 ? 3 : 2);
+    session.shutdown();
+    cookies.shutdown();
+
+    vi.setSystemTime(started + 2500);
+    const reloadedCookies = createCookieManager(backend);
+    const reloaded = createSession(policy, null, reloadedCookies);
+    await reloaded.start();
+    expect(reloaded.getSessionId()).toBe(id);
+    reloaded.shutdown();
+    reloadedCookies.shutdown();
   },
 );
 
@@ -589,7 +651,7 @@ it("backs up only explicitly, using current activity without refreshing cookies"
   expect(storage.setItem).not.toHaveBeenCalled();
   session.backup();
   expect(storage.setItem).toHaveBeenCalledExactlyOnceWith(
-    key,
+    storageKey,
     JSON.stringify({
       id,
       startTimestamp: start,
@@ -676,11 +738,87 @@ it("keeps the legacy storage path writing on each activity without cookie encodi
   expect(session.getSessionId()).toBe(id);
   expect(storage.setItem).toHaveBeenCalledTimes(2);
   expect(storage.setItem).toHaveBeenLastCalledWith(
-    key,
+    storageKey,
     JSON.stringify({
       id,
       startTimestamp: start,
       lastActivityTimestamp: start + 1,
     }),
   );
+});
+
+it.each(["inactivityTimeout", "maxDuration"] as const)(
+  "expires provisional sessions normally at the %s boundary without writing either backend",
+  async (option) => {
+    const { storage } = fakeBackends();
+    const setCookie = vi.fn();
+    const cookies = createCookieManager({
+      getCookie() {
+        throw new Error("cookie read unavailable");
+      },
+      setCookie,
+    });
+    const session = createSession({ [option]: 2 }, storage, cookies);
+    await session.start();
+    const first = session.getSessionId();
+    expect(first).toMatch(/^[0-9a-f]{32}$/);
+    vi.setSystemTime(Date.now() + 1000);
+    expect(session.getSessionId()).toBe(first);
+    // Activity extends inactivity, but not maximum lifetime.
+    vi.setSystemTime(Date.now() + (option === "inactivityTimeout" ? 2000 : 1000));
+    const renewed = session.getSessionId();
+    expect(renewed).toMatch(/^[0-9a-f]{32}$/);
+    expect(renewed).not.toBe(first);
+    expect(session.getSessionId()).toBe(renewed);
+    session.backup();
+    expect(setCookie).not.toHaveBeenCalled();
+    expect(storage.getItem).not.toHaveBeenCalled();
+    expect(storage.setItem).not.toHaveBeenCalled();
+    session.shutdown();
+    cookies.shutdown();
+  },
+);
+
+it.each(["legacy-session", "cookie; 雪", "cookie|delimiter"])(
+  "restores a JSON Web Storage backup without emitting unsafe raw cookie values (%s)",
+  async (id) => {
+    const { cookies, storage, values } = fakeBackends();
+    const record = { id, startTimestamp: 900_000, lastActivityTimestamp: 990_000 };
+    storage.getItem.mockReturnValue({ success: true, value: JSON.stringify(record) });
+    const session = createSession({}, storage, cookies);
+    await session.start();
+    expect(session.getSessionId()).toBe(id);
+    if (id === "legacy-session") {
+      expect(values.get(key)).toBe(`${id}|900000|1000000`);
+    } else {
+      expect(cookies.set).not.toHaveBeenCalled();
+      expect(values.has(key)).toBe(false);
+    }
+    session.backup();
+    expect(storage.setItem).toHaveBeenCalledExactlyOnceWith(
+      storageKey,
+      JSON.stringify({ ...record, lastActivityTimestamp: Date.now() }),
+    );
+    session.shutdown();
+  },
+);
+
+it("writes raw Application Insights session values and preserves the JSON backup key across reloads", async () => {
+  const { cookies, storage, values } = fakeBackends();
+  values.set(key, "AI+session/id|900000|990000");
+  const first = createSession({}, storage, cookies);
+  await first.start();
+  expect(first.getSessionId()).toBe("AI+session/id");
+  expect(values.get(key)).toBe("AI+session/id|900000|1000000");
+  first.backup();
+  expect(storage.setItem).toHaveBeenCalledExactlyOnceWith(
+    storageKey,
+    '{"id":"AI+session/id","startTimestamp":900000,"lastActivityTimestamp":1000000}',
+  );
+  first.shutdown();
+  const reloaded = createSession({}, storage, cookies);
+  await reloaded.start();
+  expect(reloaded.getSessionId()).toBe("AI+session/id");
+  expect(storage.getItem).not.toHaveBeenCalled();
+  reloaded.shutdown();
 });

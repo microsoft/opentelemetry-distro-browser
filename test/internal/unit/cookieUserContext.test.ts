@@ -12,10 +12,26 @@ import { createCookieUserContext } from "../../../src/user/createCookieUserConte
 import { createUserContext } from "../../../src/user/createUserContext.js";
 import { MemoryStorage } from "../../fixtures/sessionStorageSetup.js";
 
-const anonymousCookie = "opentelemetry-user";
-const authenticatedCookie = "opentelemetry-auth-user";
-const encode = (value: unknown) => encodeURIComponent(JSON.stringify(value));
-const decode = (value: string) => JSON.parse(decodeURIComponent(value));
+const anonymousCookie = "ai_user";
+const authenticatedCookie = "ai_authUser";
+const legacyEncode = (value: unknown) => encodeURIComponent(JSON.stringify(value));
+const encode = (
+  value:
+    | { anonymousId: string; acquisitionTimestamp: number }
+    | { authenticatedUserId: string; accountId?: string },
+) =>
+  "anonymousId" in value
+    ? `${value.anonymousId}|${new Date(value.acquisitionTimestamp).toISOString()}`
+    : encodeURI(
+        value.authenticatedUserId + (value.accountId === undefined ? "" : `|${value.accountId}`),
+      );
+function decode(value: string) {
+  const parts = decodeURI(value).split("|");
+  if (parts[1]?.includes("T")) {
+    return { anonymousId: parts[0], acquisitionTimestamp: Date.parse(parts[1]) };
+  }
+  return { authenticatedUserId: parts[0], ...(parts.length > 1 && { accountId: parts[1] }) };
+}
 
 function fakeManager() {
   const values = new Map<string, string>();
@@ -172,8 +188,8 @@ it.each([
     authenticatedUserId: "old-user",
     accountId: "old-account",
   });
-  const key = `${prefix}${anonymousCookie}`;
-  const otherKey = `${prefix ? "" : "other-"}${anonymousCookie}`;
+  const key = `${prefix}opentelemetry-user`;
+  const otherKey = `${prefix ? "" : "other-"}opentelemetry-user`;
   localStorage.setItem(key, legacy);
   localStorage.setItem(otherKey, legacy);
   const local = vi.spyOn(window, "localStorage", "get").mockReturnValue(localStorage);
@@ -326,22 +342,42 @@ it("uses Web Crypto and falls back when it is missing or throws", () => {
   ).toMatch(/^[0-9a-f]{32}$/);
 });
 
-it("restores independently encoded identities without rewriting or copying extra fields", () => {
+it("restores canonical identities without rewriting them", () => {
   const { cookies, values } = fakeManager();
   values.set(anonymousCookie, encode({ anonymousId: "anonymous", acquisitionTimestamp: 42 }));
   values.set(
     authenticatedCookie,
-    encode({
-      authenticatedUserId: "user;|= 雪",
-      accountId: "account,;\n",
-      anonymousId: "wrong",
-      __proto__: { polluted: true },
-    }),
+    encode({ authenticatedUserId: "user=雪%2F", accountId: "account,100%" }),
   );
   const { provider } = createCookieUserContext(true, cookies);
   expect(provider.getAnonymousUserId()).toBe("anonymous");
-  expect(provider.getAuthenticatedUserId()).toBe("user;|= 雪");
-  expect(provider.getAccountId()).toBe("account,;\n");
+  expect(provider.getAuthenticatedUserId()).toBe("user=雪%2F");
+  expect(provider.getAccountId()).toBe("account,100%");
+  expect(cookies.set).not.toHaveBeenCalled();
+});
+
+it("writes raw ISO anonymous values and encoded unicode/literal-percent authentication for reload", () => {
+  vi.spyOn(Date, "now").mockReturnValue(42);
+  const { cookies, values } = fakeManager();
+  const first = createCookieUserContext(true, cookies);
+  const anonymousId = first.provider.getAnonymousUserId();
+  expect(values.get(anonymousCookie)).toBe(`${anonymousId}|1970-01-01T00:00:00.042Z`);
+  first.context.setAuthenticatedUserContext("用户%2F%7C%", "tenant/雪%25#?", true);
+  expect(values.get(authenticatedCookie)).toBe(encodeURI("用户%2F%7C%|tenant/雪%25#?"));
+  const reloaded = createCookieUserContext(true, cookies);
+  expect(reloaded.provider.getAnonymousUserId()).toBe(anonymousId);
+  expect(reloaded.provider.getAuthenticatedUserId()).toBe("用户%2F%7C%");
+  expect(reloaded.provider.getAccountId()).toBe("tenant/雪%25#?");
+});
+
+it("restores an Application Insights auth cookie whose delimiter was URI-encoded", () => {
+  const { cookies, values } = fakeManager();
+  values.set(anonymousCookie, "AI+anonymous/id|1970-01-01T00:00:00.042Z");
+  values.set(authenticatedCookie, "user%7C%E9%9B%AA%252F");
+  const { provider } = createCookieUserContext(true, cookies);
+  expect(provider.getAnonymousUserId()).toBe("AI+anonymous/id");
+  expect(provider.getAuthenticatedUserId()).toBe("user");
+  expect(provider.getAccountId()).toBe("雪%2F");
   expect(cookies.set).not.toHaveBeenCalled();
 });
 
@@ -383,10 +419,10 @@ it("persists authentication only on explicit opt-in and never gives auth cookies
   context.setAuthenticatedUserContext("user", "account");
   expect(provider.getAuthenticatedUserId()).toBe("user");
   expect(values.has(authenticatedCookie)).toBe(false);
-  context.setAuthenticatedUserContext("user;|= 雪", "account,;\n", true);
+  context.setAuthenticatedUserContext("user=雪%2F", "account,100%", true);
   expect(cookies.set).toHaveBeenLastCalledWith(
     authenticatedCookie,
-    encode({ authenticatedUserId: "user;|= 雪", accountId: "account,;\n" }),
+    encode({ authenticatedUserId: "user=雪%2F", accountId: "account,100%" }),
   );
   context.setAuthenticatedUserContext("replacement");
   expect(provider.getAccountId()).toBeUndefined();
@@ -495,15 +531,17 @@ it.each(["", null, 123, {}, false])(
 it.each([
   "%",
   "%E0%A4%A",
-  encode("private-user"),
-  encode(null),
-  encode([]),
-  encode({}),
-  encode({ anonymousId: "", acquisitionTimestamp: 42 }),
-  encode({ anonymousId: "private-user" }),
-  encode({ anonymousId: "private-user", acquisitionTimestamp: "42" }),
-  encode({ anonymousId: "private-user", acquisitionTimestamp: -1 }),
-  encode({ anonymousId: "private-user", acquisitionTimestamp: null }),
+  legacyEncode("private-user"),
+  legacyEncode(null),
+  legacyEncode([]),
+  legacyEncode({}),
+  legacyEncode({ anonymousId: "", acquisitionTimestamp: 42 }),
+  legacyEncode({ anonymousId: "private-user" }),
+  legacyEncode({ anonymousId: "private-user", acquisitionTimestamp: "42" }),
+  legacyEncode({ anonymousId: "private-user", acquisitionTimestamp: -1 }),
+  legacyEncode({ anonymousId: "private-user", acquisitionTimestamp: null }),
+  "private-user|not-a-date",
+  "private-user|1970-01-01T00:00:00.042Z|extra",
   encodeURIComponent('{"anonymousId":"private-user","acquisitionTimestamp":1e400}'),
   encodeURIComponent('{"__proto__":{"anonymousId":"private-user","acquisitionTimestamp":42}}'),
 ])("recovers malformed anonymous cookie %s without logging identity", (value) => {
@@ -518,14 +556,11 @@ it.each([
 
 it.each([
   "%",
-  encode(null),
-  encode([]),
-  encode({}),
-  encode({ authenticatedUserId: "" }),
-  encode({ authenticatedUserId: "private-user", accountId: "" }),
-  encode({ authenticatedUserId: "private-user", accountId: null }),
-  encode({ authenticatedUserId: 42 }),
-  encodeURIComponent('{"__proto__":{"authenticatedUserId":"private-user"}}'),
+  "%E0%A4%A",
+  "|account",
+  "private-user|",
+  "private-user|account|extra",
+  "private-user%7Caccount%7Cextra",
 ])("removes malformed auth cookie %s without restoring or logging it", (value) => {
   const warn = vi.spyOn(diag, "warn");
   const { cookies, values } = fakeManager();
@@ -537,18 +572,19 @@ it.each([
   expect(warn).not.toHaveBeenCalled();
 });
 
-it("ignores inherited fields and never assigns a parsed prototype", () => {
-  const inherited = vi.spyOn(Object.prototype, "hasOwnProperty");
+it("rejects anonymous JSON without restoring identity or a parsed prototype", () => {
   const { cookies, values } = fakeManager();
   values.set(
-    authenticatedCookie,
-    encodeURIComponent('{"authenticatedUserId":"user","__proto__":{"polluted":true}}'),
+    anonymousCookie,
+    encodeURIComponent(
+      '{"anonymousId":"user","acquisitionTimestamp":42,"authenticatedUserId":"wrong","__proto__":{"polluted":true}}',
+    ),
   );
   const { provider } = createCookieUserContext(true, cookies);
-  expect(provider.getAuthenticatedUserId()).toBe("user");
+  expect(provider.getAnonymousUserId()).toMatch(/^[0-9a-f]{32}$/);
+  expect(provider.getAuthenticatedUserId()).toBeUndefined();
   expect(provider.getAccountId()).toBeUndefined();
   expect(Object.prototype).not.toHaveProperty("polluted");
-  expect(inherited).toHaveBeenCalled();
 });
 
 it.each([anonymousCookie, authenticatedCookie])(
@@ -567,6 +603,18 @@ it.each([anonymousCookie, authenticatedCookie])(
     cookies.get.mockReturnValue("");
     context.setEnabled(true);
     expect(provider.getAnonymousUserId()).toBeDefined();
+  },
+);
+
+it.each(["{}", "[]", "null", '{"authenticatedUserId":"literal-id"}'])(
+  "roundtrips JSON-shaped authenticated IDs as literal strings (%s)",
+  (userId) => {
+    const { cookies } = fakeManager();
+    const first = createCookieUserContext(true, cookies);
+    first.context.setAuthenticatedUserContext(userId, undefined, true);
+    const restored = createCookieUserContext(true, cookies);
+    expect(restored.provider.getAuthenticatedUserId()).toBe(userId);
+    expect(restored.provider.getAccountId()).toBeUndefined();
   },
 );
 
@@ -787,7 +835,7 @@ it.each([false, true])(
   },
 );
 
-it.each(["", "%", encode({ anonymousId: "invalid" })])(
+it.each(["", "%", legacyEncode({ anonymousId: "invalid" })])(
   "notifies a new user before saving a missing or invalid anonymous cookie %s",
   (value) => {
     const { cookies, values } = fakeManager();
@@ -814,7 +862,7 @@ it("does not notify a new user for an existing valid anonymous cookie", () => {
 it.each(["", "app-"])(
   "retains the session backup when anonymous and session cookies are ignored (prefix=%j)",
   async (prefix) => {
-    const sessionCookie = `${prefix}opentelemetry-session`;
+    const sessionCookie = `${prefix}ai_session`;
     const values = new Map<string, string>();
     const cookieValues = new Map<string, string>();
     const now = Date.now();
@@ -895,6 +943,96 @@ it("does not access cookies or notify new users while user context is disabled",
   context.setEnabled(true);
   expect(onNewUser).toHaveBeenCalledTimes(1);
   expect(provider.getAnonymousUserId()).toBeDefined();
+});
+
+it.each([
+  ["user|delimiter", "account"],
+  ["user", "account|delimiter"],
+  ["user\ud800", "account"],
+  ["user", "account\udfff"],
+] as const)(
+  "retains memory identity but clears a superseded login when canonical encoding cannot roundtrip (%j, %j)",
+  (userId, accountId) => {
+    const { cookies, values } = fakeManager();
+    const { context, provider } = createCookieUserContext(true, cookies);
+    context.setAuthenticatedUserContext("previous-user", "previous-account", true);
+    cookies.set.mockClear();
+    expect(() => context.setAuthenticatedUserContext(userId, accountId, true)).not.toThrow();
+    expect(provider.getAuthenticatedUserId()).toBe(userId);
+    expect(provider.getAccountId()).toBe(accountId);
+    expect(cookies.set).not.toHaveBeenCalled();
+    expect(values.has(authenticatedCookie)).toBe(false);
+    expect(cookies.del).toHaveBeenCalledWith(authenticatedCookie);
+    expect(
+      createCookieUserContext(true, cookies).provider.getAuthenticatedUserId(),
+    ).toBeUndefined();
+  },
+);
+
+it("preserves punctuation in memory when the canonical auth value is rejected as header injection", () => {
+  const values = new Map<string, string>();
+  const setCookie = vi.fn((name: string, value: string) => values.set(name, value.split(";")[0]!));
+  const cookies = createCookieManager({
+    getCookie: (name) => values.get(name) ?? "",
+    setCookie,
+    delCookie: (name) => values.delete(name),
+  });
+  const { context, provider } = createCookieUserContext(true, cookies);
+  context.setAuthenticatedUserContext("previous", undefined, true);
+  setCookie.mockClear();
+  context.setAuthenticatedUserContext("user;= 雪", "account,;\n", true);
+  expect(provider.getAuthenticatedUserId()).toBe("user;= 雪");
+  expect(provider.getAccountId()).toBe("account,;\n");
+  expect(setCookie).not.toHaveBeenCalled();
+  expect(values.has(authenticatedCookie)).toBe(false);
+  cookies.shutdown();
+});
+
+it.each(
+  [
+    { cookie: anonymousCookie, disableBeforeWrite: false },
+    { cookie: anonymousCookie, disableBeforeWrite: true },
+    { cookie: authenticatedCookie, disableBeforeWrite: false },
+    { cookie: authenticatedCookie, disableBeforeWrite: true },
+  ].flatMap((options) => [false, true].map((deferred) => ({ ...options, deferred }))),
+)(
+  "keeps enrichment disabled and cookies purged after a reentrant opt-out (%j)",
+  ({ cookie, disableBeforeWrite, deferred }) => {
+    const values = new Map<string, string>();
+    const cookies = createCookieManager({
+      enabled: !deferred,
+      getCookie: (name) => values.get(name) ?? "",
+      setCookie(name, value) {
+        if (name === cookie && disableBeforeWrite) context.setEnabled(false);
+        values.set(name, value.split(";")[0]!);
+        if (name === cookie && !disableBeforeWrite) context.setEnabled(false);
+      },
+      delCookie: (name) => values.delete(name),
+    });
+    const { context, provider } = createCookieUserContext(false, cookies);
+    context.setAuthenticatedUserContext("memory-user", "account", true);
+    context.setEnabled(true);
+    if (deferred) cookies.setEnabled(true);
+    expect(provider.getAnonymousUserId()).toBeUndefined();
+    expect(provider.getAuthenticatedUserId()).toBe("memory-user");
+    expect(provider.getAccountId()).toBe("account");
+    expect(values.has(anonymousCookie)).toBe(false);
+    expect(values.has(authenticatedCookie)).toBe(false);
+    expect(cookies.get(anonymousCookie)).toBe("");
+    cookies.shutdown();
+  },
+);
+
+it("replaces an unsupported anonymous JSON cookie with a safe canonical identity", () => {
+  const { cookies, values } = fakeManager();
+  values.set(anonymousCookie, legacyEncode({ anonymousId: "anon;=雪", acquisitionTimestamp: 42 }));
+  const { context, provider } = createCookieUserContext(true, cookies);
+  const anonymousId = provider.getAnonymousUserId();
+  expect(anonymousId).toMatch(/^[0-9a-f]{32}$/);
+  context.setEnabled(false);
+  context.setEnabled(true);
+  expect(provider.getAnonymousUserId()).toBe(anonymousId);
+  expect(values.get(anonymousCookie)).toMatch(/^[0-9a-f]{32}\|\d{4}-/);
 });
 
 it("bounds new-user notification across failed retries and contains callback failures", () => {

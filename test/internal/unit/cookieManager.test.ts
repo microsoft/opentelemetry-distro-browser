@@ -205,7 +205,7 @@ it("retains failed deferred writes and deletes for a later enable without generi
 });
 
 it("does not restore superseded authentication after a deferred replacement hook throws", () => {
-  const name = "opentelemetry-auth-user";
+  const name = "ai_authUser";
   const values = new Map<string, string>();
   let fail = false;
   const cookies = createCookieManager({
@@ -346,7 +346,63 @@ it.each(["set", "del", "purge", "defer", "shutdown"] as const)(
     expect(setCookie.mock.calls.map(([, value]) => value.split(";")[0])).toEqual(
       action === "set" || action === "defer" ? ["old", "new"] : ["old"],
     );
-    expect(delCookie).toHaveBeenCalledTimes(action === "del" || action === "purge" ? 1 : 0);
+    expect(delCookie).toHaveBeenCalledTimes(action === "purge" ? 2 : action === "del" ? 1 : 0);
+  },
+);
+
+it.each([
+  "none",
+  "set",
+  "set-fails",
+  "del",
+  "del-before-write",
+  "defer",
+  "shutdown",
+  "other",
+] as const)(
+  "honors in-flight replay purge unless superseded by a newer same-name write (%s)",
+  (action) => {
+    const values = new Map<string, string>();
+    const delCookie = vi.fn((name: string, _formatted: string) => values.delete(name));
+    const manager = createCookieManager({
+      enabled: false,
+      domain: "example.test",
+      path: "/scoped",
+      getCookie: (name) => values.get(name) ?? "",
+      setCookie(name, value) {
+        if (!value.startsWith("old;")) {
+          if (action === "set-fails") throw new Error("new write denied");
+          values.set(name, value.split(";")[0]!);
+          return;
+        }
+        manager.purge(name);
+        if (action === "del-before-write") manager.del(name);
+        values.set(name, "old");
+        if (action === "defer") manager.setEnabled(false);
+        if (action === "set" || action === "set-fails" || action === "defer") {
+          manager.set(name, "new");
+        } else if (action === "del") manager.del(name);
+        else if (action === "shutdown") manager.shutdown();
+        else if (action === "other") manager.set("other", "new");
+      },
+      delCookie,
+    });
+    manager.set("name", "old");
+    manager.setEnabled(true);
+    manager.setEnabled(true);
+    expect(values.get("name")).toBe(action === "set" || action === "defer" ? "new" : undefined);
+    expect(delCookie).toHaveBeenCalledTimes(
+      action === "set" || action === "defer"
+        ? 1
+        : action === "del" || action === "del-before-write"
+          ? 3
+          : 2,
+    );
+    for (const [name, formatted] of delCookie.mock.calls) {
+      expect(name).toBe("name");
+      expect(formatted).toContain("; domain=example.test; path=/scoped");
+    }
+    manager.shutdown();
   },
 );
 

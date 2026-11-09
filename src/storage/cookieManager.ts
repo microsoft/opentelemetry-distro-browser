@@ -79,6 +79,7 @@ export function createCookieManager(
   let everEnabled = enabled;
   let stopped = false;
   let replaying = false;
+  let inFlightReplay: { name: string; cleanup?: () => boolean } | undefined;
   let replayFailureHandler: ((name: string, removeSuperseded: () => boolean) => void) | undefined;
 
   function attempt<T>(operation: () => T, fallback: T): T {
@@ -139,9 +140,16 @@ export function createCookieManager(
     if (enabled) {
       // A newer explicit operation supersedes even an in-flight or failed replay.
       pending.delete(name);
-      return write(name, formatted, remove);
+      const replay = inFlightReplay?.name === name ? inFlightReplay : undefined;
+      const cleanup = replay?.cleanup;
+      const accepted = write(name, formatted, remove);
+      if (accepted && !remove && replay && replay.cleanup === cleanup) {
+        replay.cleanup = undefined;
+      }
+      return accepted;
     }
     if (settings.disableCookieDefer) return false;
+    if (!remove && inFlightReplay?.name === name) inFlightReplay.cleanup = undefined;
     // Delete before re-inserting so flush order also reflects the latest operation per name.
     pending.delete(name);
     pending.set(name, { value, formatted, remove, scope });
@@ -199,7 +207,13 @@ export function createCookieManager(
           for (const [name, operation] of Array.from(pending)) {
             if (stopped || !enabled) break;
             if (pending.get(name) !== operation) continue;
+            const replay: typeof inFlightReplay = operation.remove ? undefined : { name };
+            inFlightReplay = replay;
             const success = write(name, operation.formatted, operation.remove);
+            inFlightReplay = undefined;
+            // A hook may finish writing after a nested purge. Honor that purge once more,
+            // unless a newer same-name write superseded it while the hook was running.
+            replay?.cleanup?.();
             // Hooks (including diagnostics) can re-enter, replace, purge, or stop the manager.
             if (pending.get(name) !== operation) continue;
             if (success) pending.delete(name);
@@ -265,7 +279,11 @@ export function createCookieManager(
       // Cleanup bypasses enabled, ignored/blocked lists and shutdown, and cannot resurrect a write.
       pending.delete(name);
       if (!validScope(name, path) || !validPrefixScope(name, path)) return false;
-      return write(name, deletion(attributes(settings.domain, path || settings.path || "/")), true);
+      const formatted = deletion(attributes(settings.domain, path || settings.path || "/"));
+      if (inFlightReplay?.name === name) {
+        inFlightReplay.cleanup = () => write(name, formatted, true);
+      }
+      return write(name, formatted, true);
     },
     shutdown() {
       stopped = true;

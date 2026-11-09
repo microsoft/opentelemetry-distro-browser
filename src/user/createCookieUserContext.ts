@@ -10,11 +10,6 @@ import type {
 } from "../types.js";
 import type { UserContextProvider } from "./createUserContext.js";
 
-interface AnonymousIdentity {
-  anonymousId: string;
-  acquisitionTimestamp: number;
-}
-
 function generateAnonymousId(): string {
   try {
     const bytes = globalThis.crypto.getRandomValues(new Uint8Array(16));
@@ -23,25 +18,6 @@ function generateAnonymousId(): string {
     // Match the upstream fallback when Web Crypto is unavailable or restricted.
     return createDefaultSessionIdGenerator().generateSessionId();
   }
-}
-
-/** Decode only JSON records; callers select validated own fields rather than copying input. */
-function decode(value: string): object | undefined {
-  try {
-    const parsed: unknown = JSON.parse(decodeURIComponent(value));
-    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
-      ? parsed
-      : undefined;
-  } catch {
-    // Malformed URI/JSON and identity values must not escape into diagnostics.
-    return undefined;
-  }
-}
-
-function own(value: object | undefined, key: string): unknown {
-  return value && Object.prototype.hasOwnProperty.call(value, key)
-    ? (value as Record<string, unknown>)[key]
-    : undefined;
 }
 
 /**
@@ -64,11 +40,11 @@ export function createCookieUserContext(
   provider: UserContextProvider;
   shutdown(): void;
 } {
-  const anonymousCookie = `${namePrefix}opentelemetry-user`;
-  const authenticatedCookie = `${namePrefix}opentelemetry-auth-user`;
+  const anonymousCookie = `${namePrefix}ai_user`;
+  const authenticatedCookie = `${namePrefix}ai_authUser`;
   let enabled = initialEnabled !== false;
   let stopped = false;
-  let anonymousIdentity: AnonymousIdentity | undefined;
+  let anonymousValue = "";
   let anonymousIdentityEnabled = false;
   let newUserNotified = false;
   let authenticatedUserId: string | undefined;
@@ -84,53 +60,59 @@ export function createCookieUserContext(
     }
   }
 
+  function purge(name: string): boolean {
+    return attempt(() => cookies.purge(name));
+  }
+
+  function deleteAuthentication(): boolean {
+    return attempt(() => cookies.del(authenticatedCookie));
+  }
+
   function saveAnonymous(): void {
-    if (stopped) return;
-    anonymousIdentity ??= {
-      anonymousId: generateAnonymousId(),
-      acquisitionTimestamp: Date.now(),
-    };
-    anonymousIdentityEnabled = attempt(() =>
-      cookies.set(anonymousCookie, encodeURIComponent(JSON.stringify(anonymousIdentity)), 31536000),
-    );
+    if (stopped || !enabled) return;
+    // Keep the accepted wire value so retries retain both the ID and acquisition date.
+    anonymousValue ||= `${generateAnonymousId()}|${new Date(Date.now()).toISOString()}`;
+    const accepted = attempt(() => cookies.set(anonymousCookie, anonymousValue, 31536000));
+    // A custom write hook can synchronously disable or shut down this context.
+    anonymousIdentityEnabled = accepted && enabled && !stopped;
+    // The hook may finish its write after the nested opt-out already purged the cookie.
+    if (!enabled) purge(anonymousCookie);
   }
 
   function saveAuthentication(): void {
     if (stopped || !enabled) return;
     if (removeAuthentication) {
-      removeAuthentication = !attempt(() => cookies.del(authenticatedCookie));
+      removeAuthentication = !deleteAuthentication();
       return;
     }
-    if (!storeAuthentication || authenticatedUserId === undefined) return;
-    if (
-      !attempt(() =>
-        cookies.set(
-          authenticatedCookie,
-          encodeURIComponent(JSON.stringify({ authenticatedUserId, accountId })),
-        ),
-      )
-    ) {
+    const userId = authenticatedUserId;
+    if (!storeAuthentication || userId === undefined) return;
+    const accepted = attempt(() => {
+      // AI's decoded pipe delimiter cannot represent pipes within either identity field.
+      if (userId.includes("|") || accountId?.includes("|")) return false;
+      return cookies.set(
+        authenticatedCookie,
+        encodeURI(userId + (accountId === undefined ? "" : `|${accountId}`)),
+      );
+    });
+    if (!enabled) {
+      purge(authenticatedCookie);
+    } else if (!accepted) {
       // Do not leave a previous login available for restoration after a failed replacement.
-      if (!stopped) attempt(() => cookies.del(authenticatedCookie));
+      if (!stopped) deleteAuthentication();
     }
   }
 
   function restoreAnonymous(value: string): void {
-    const anonymous = decode(value);
-    const id = own(anonymous, "anonymousId");
-    const acquired = own(anonymous, "acquisitionTimestamp");
-    if (
-      isNonEmptyString(id) &&
-      typeof acquired === "number" &&
-      Number.isFinite(acquired) &&
-      acquired >= 0
-    ) {
-      anonymousIdentity = { anonymousId: id, acquisitionTimestamp: acquired };
+    if (!enabled || stopped) return;
+    const parts = value.split("|");
+    const id = parts.length === 2 ? parts[0] : undefined;
+    const acquired = Date.parse(parts[1] ?? "");
+    if (isNonEmptyString(id) && Number.isFinite(acquired) && acquired >= 0) {
+      anonymousValue = value;
       anonymousIdentityEnabled = true;
     } else {
       if (
-        enabled &&
-        !stopped &&
         canReadAnonymousCookie &&
         !newUserNotified &&
         onNewUser &&
@@ -164,15 +146,25 @@ export function createCookieUserContext(
       const authenticatedValue = cookies.get(authenticatedCookie);
       refreshAnonymous(anonymous);
 
-      const authenticated = decode(authenticatedValue);
-      const user = own(authenticated, "authenticatedUserId");
-      const account = own(authenticated, "accountId");
-      if (isNonEmptyString(user) && (account === undefined || isNonEmptyString(account))) {
-        authenticatedUserId = user;
-        accountId = account;
-        storeAuthentication = true;
-      } else if (authenticatedValue) {
-        attempt(() => cookies.del(authenticatedCookie));
+      if (authenticatedValue) {
+        let parts: string[] = [];
+        try {
+          parts = decodeURI(authenticatedValue).split("|");
+        } catch {
+          // A malformed URI follows the same cleanup path as an invalid identity.
+        }
+        const [user, account] = parts;
+        if (
+          parts.length <= 2 &&
+          isNonEmptyString(user) &&
+          (account === undefined || isNonEmptyString(account))
+        ) {
+          authenticatedUserId = user;
+          accountId = account;
+          storeAuthentication = true;
+        } else {
+          deleteAuthentication();
+        }
       }
     } catch {
       // A custom manager may throw, unlike the built-in manager. Initialization stays safe.
@@ -201,7 +193,7 @@ export function createCookieUserContext(
       storeAuthentication = false;
       removeAuthentication = false;
       // del, rather than purge, honors the cookie manager's deferred-cleanup policy.
-      attempt(() => cookies.del(authenticatedCookie));
+      deleteAuthentication();
       attempt(() => {
         onLegacyCleanup?.("clear");
         return true;
@@ -220,8 +212,8 @@ export function createCookieUserContext(
       } else {
         anonymousIdentityEnabled = false;
         // Purge also cancels deferred writes, even when the physical deletion fails.
-        attempt(() => cookies.purge(anonymousCookie));
-        if (attempt(() => cookies.purge(authenticatedCookie))) removeAuthentication = false;
+        purge(anonymousCookie);
+        if (purge(authenticatedCookie)) removeAuthentication = false;
         attempt(() => {
           onLegacyCleanup?.("purge");
           return true;
@@ -243,7 +235,9 @@ export function createCookieUserContext(
             // Custom cookie managers may throw while reading.
           }
         }
-        return anonymousIdentityEnabled ? anonymousIdentity?.anonymousId : undefined;
+        return enabled && !stopped && anonymousIdentityEnabled
+          ? anonymousValue.split("|")[0]
+          : undefined;
       },
       getAuthenticatedUserId: () => authenticatedUserId,
       getAccountId: () => accountId,

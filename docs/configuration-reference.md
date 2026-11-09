@@ -400,10 +400,10 @@ responsibilities. Do not treat either transport as confidential or use it for se
 
 ### Browser storage
 
-| Option               | Type      | Default | Behavior                                                                                                                                                                                                                                                          |
-| -------------------- | --------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `storage.enabled`    | `boolean` | `true`  | `false` blocks SDK-managed Web Storage access for this handle, including the localStorage session backup, legacy identity cleanup, unsent telemetry buffer and page-visit persistence, not cookies. SPA visit timing then uses memory.                            |
-| `storage.namePrefix` | `string`  | `""`    | Literal prefix for cookie names `opentelemetry-user`, `opentelemetry-auth-user` and `opentelemetry-session`, and session, legacy identity, unsent telemetry buffer and page-visit Web Storage keys. For example, `"shop-"` produces `shop-opentelemetry-session`. |
+| Option               | Type      | Default | Behavior                                                                                                                                                                                                                                                                    |
+| -------------------- | --------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `storage.enabled`    | `boolean` | `true`  | `false` blocks SDK-managed Web Storage access for this handle, including the localStorage session backup, legacy identity cleanup, unsent telemetry buffer and page-visit persistence, not cookies. SPA visit timing then uses memory.                                      |
+| `storage.namePrefix` | `string`  | `""`    | Literal prefix for cookie names `ai_user`, `ai_authUser` and `ai_session`, and session, legacy identity, unsent telemetry buffer and page-visit Web Storage keys. For example, `"shop-"` produces the `shop-ai_session` cookie and `shop-opentelemetry-session` backup key. |
 
 Settings are captured at initialization and apply independently to each handle. A prefix namespaces
 stored sessions and identities; it does not provide origin isolation or a security boundary. No data
@@ -503,17 +503,23 @@ replace a lifetime through either spelling.
 
 Managed `session.id` fills only an absent value: a non-empty string supplied on the record or
 resource takes precedence. Azure Monitor prefers a valid record-level ID over the resource ID.
-Sessions use the prefixed `opentelemetry-session` cookie as the primary store. Activity refreshes
-the cookie at most once every 60 seconds, except a positive startup inactivity window of 60 seconds
-or less persists each distinct activity timestamp. New sessions force a write, and rejected writes
-do not delay a later retry. Cookie lifetime is bounded by the remaining maximum duration and
-inactivity window; `maxDuration: 0` uses a browser-session cookie while managed inactivity expiry
-still applies.
+Sessions use the prefixed `ai_session` cookie as the primary store, with Application Insights' raw
+`id|startTimestampMs|lastActivityTimestampMs` format. Activity refreshes the cookie at most once
+every 60 seconds, except a positive inactivity window of 60 seconds or less persists each
+distinct activity timestamp. New sessions force a write, and rejected writes do not delay a later
+retry. Cookie lifetime is bounded by the remaining maximum duration and inactivity window;
+`maxDuration: 0` uses a browser-session cookie while managed inactivity expiry still applies.
+Runtime lifetime updates do not access persistence; the next activity refreshes the cookie using
+the new policy without waiting for the previous write throttle.
 
-When Web Storage is enabled, the latest session is backed up to localStorage on unload and
+When Web Storage is enabled, the latest session is backed up as JSON under the unchanged prefixed
+`opentelemetry-session` localStorage key on unload and
 shutdown, not on each activity update. A missing cookie can restore a valid, unexpired backup,
 including when cookies are disabled. A present malformed cookie does not fall back to the backup.
 If neither backend is available, session correlation stays in memory.
+During a transient cookie-read failure, a provisional in-memory session follows normal inactivity
+and maximum expiry without writing cookies or backups. Recovery restores the authoritative cookie,
+falls back to a valid backup when absent, or creates a fresh session when invalid.
 When user context and anonymous-cookie reads are enabled, a missing or invalid anonymous-user cookie
 invalidates the old session backup before restoration. Clearing user cookies therefore starts a
 new managed session instead of reconnecting it to the previous identity's backup.
@@ -521,11 +527,33 @@ new managed session instead of reconnecting it to the previous identity's backup
 ### User identity options and controls
 
 `userContext.enabled` defaults to `true`. Managed `enduser.pseudo.id` persists across page loads in
-the prefixed `opentelemetry-user` cookie with a one-year lifetime (31,536,000 seconds). Authenticated
+the prefixed `ai_user` cookie with a one-year lifetime (31,536,000 seconds), using Application
+Insights' raw `id|ISO-acquisition-timestamp` format. Authenticated
 user and account IDs set through the returned handle are memory-only by default. Pass `true` as the
-third setter argument to opt into the separate prefixed `opentelemetry-auth-user` session cookie:
+third setter argument to opt into the separate prefixed `ai_authUser` session cookie:
 `telemetry.userContext.setAuthenticatedUserContext(userId, accountId, true)`. When enabled, user
 context restores a valid authenticated cookie on initialization. User identity does not use Web Storage.
+
+Authenticated cookies use `encodeURI(userId + optional '|' + accountId)` and are read with
+`decodeURI()` before splitting. With `storage.namePrefix` omitted, valid default Application Insights
+cookies retain identity and session continuity when switching SDKs within the same domain/path.
+For customized names, match the complete cookie names: Application Insights appends
+`userCookiePostfix` to `ai_user` and `sessionCookiePostfix` (or `namePrefix`) to `ai_session`, and
+leaves `ai_authUser` unprefixed. This distribution instead prepends `storage.namePrefix` to all
+three names, so setting the same prefix in both SDKs does not produce matching names.
+Cookie values use the Application Insights formats, not URI-encoded JSON records.
+Legacy anonymous Web Storage cleanup keeps the unchanged
+prefixed `opentelemetry-user` key. Old `opentelemetry-*` cookie names are not restored. Auth cookies
+are interpreted only as canonical strings, so JSON-shaped IDs remain literal IDs, not legacy records.
+Concurrent SDKs sharing cookie names can update each other's persistence; use distinct
+prefixes when continuity is not intended.
+
+The public setter still accepts all non-empty user/account strings for memory identity. Cookie
+persistence cannot roundtrip IDs containing `|`, and URI encoding can fail for unpaired UTF-16
+surrogates. Semicolons left raw by `encodeURI()` are rejected by the cookie manager's header-safety
+policy. These failures keep the new identity in memory and attempt to delete any superseded auth
+cookie, just like a failed write. Use persistence-safe opaque IDs rather than personal information.
+Unsafe session IDs can be restored from a JSON Web Storage backup, but are not written as raw cookie values.
 
 Explicit record/resource identity takes precedence over managed defaults. Spans are enriched when
 they start and logs when emitted; later identity changes are not retroactive.

@@ -37,11 +37,11 @@ export function createSession(
     "localStorage",
     "Session storage unavailable; using an in-memory session.",
   ),
-  readLifetimes?: () => { readonly inactivityTimeout: number; readonly maxDuration: number },
   cookies?: MicrosoftOpenTelemetryBrowserCookieManager & {
     read?: (name: string) => CookieReadResult;
   },
-  cookieName = storageKey,
+  cookieName = "ai_session",
+  readLifetimes?: () => { readonly inactivityTimeout: number; readonly maxDuration: number },
 ) {
   const inactivityTimeout = lifetimeSeconds(
     options.inactivityTimeout,
@@ -54,6 +54,7 @@ export function createSession(
   let lastActivityTimestamp = Date.now();
   let currentSession: Session | undefined;
   let lastCookieWrite: number | undefined;
+  let lastCookiePolicy: { inactivityTimeout: number; maxDuration: number } | undefined;
   let ignoreBackup = false;
   let readFailed = false;
   let restoredFromBackup = false;
@@ -75,18 +76,22 @@ export function createSession(
 
   function save(session: Session, force = false): void {
     // Keep errors synchronous because upstream does not await saves.
-    if (!persist) return;
+    if (!persist || readFailed) return;
     if (!cookies) {
       storage?.setItem(storageKey, serialize(session));
       return;
     }
     const now = Date.now();
+    const policy = readLifetimes?.() ?? { inactivityTimeout, maxDuration };
     if (
       !force &&
       lastCookieWrite !== undefined &&
+      lastCookiePolicy?.inactivityTimeout === policy.inactivityTimeout &&
+      lastCookiePolicy.maxDuration === policy.maxDuration &&
       now >= lastCookieWrite &&
       (now === lastCookieWrite ||
-        ((inactivityTimeout === 0 || inactivityTimeout > 60) && now - lastCookieWrite < 60_000))
+        ((policy.inactivityTimeout === 0 || policy.inactivityTimeout > 60) &&
+          now - lastCookieWrite < 60_000))
     ) {
       return;
     }
@@ -95,23 +100,33 @@ export function createSession(
     lastCookieWrite = undefined;
     // Round cookie retention up to whole seconds; timestamps enforce the exact session deadline.
     const maxAge =
-      maxDuration === 0
+      policy.maxDuration === 0
         ? undefined
         : Math.ceil(
             Math.max(
               0,
               Math.min(
-                maxDuration - (now - session.startTimestamp) / 1000,
-                inactivityTimeout > 0
-                  ? inactivityTimeout - (now - lastActivityTimestamp) / 1000
+                policy.maxDuration - (now - session.startTimestamp) / 1000,
+                policy.inactivityTimeout > 0
+                  ? policy.inactivityTimeout - (now - lastActivityTimestamp) / 1000
                   : Infinity,
               ),
             ),
           );
     try {
       // Accepted deferred writes count too; never bypass cookie policy via Web Storage.
-      if (cookies.set(cookieName, encodeURIComponent(serialize(session)), maxAge)) {
+      // Legacy JSON IDs may not be safe in AI's raw pipe-delimited cookie format.
+      // eslint-disable-next-line no-control-regex
+      if (/[;|\x00-\x1f\x7f]/.test(session.id)) return;
+      if (
+        cookies.set(
+          cookieName,
+          `${session.id}|${session.startTimestamp}|${lastActivityTimestamp}`,
+          maxAge,
+        )
+      ) {
         lastCookieWrite = now;
+        lastCookiePolicy = { ...policy };
       }
     } catch {
       // Custom managers may throw; persistence must not interrupt telemetry.
@@ -136,52 +151,50 @@ export function createSession(
       }
     }
     const fromBackup = value === null;
+    let id: unknown;
+    let startTimestamp: unknown;
+    let lastActivity: unknown;
     if (value === null) {
       if (ignoreBackup) return null;
       const result = storage?.getItem(storageKey);
       if (!result?.success || result.value === null) return null;
-      value = result.value;
-    } else {
       try {
-        value = decodeURIComponent(value);
-      } catch {
-        // A present malformed cookie is authoritative; do not resurrect a storage backup.
-        return null;
+        const session: unknown = JSON.parse(result.value);
+        if (typeof session === "object" && session !== null) {
+          id = "id" in session ? session.id : undefined;
+          startTimestamp = "startTimestamp" in session ? session.startTimestamp : undefined;
+          lastActivity =
+            "lastActivityTimestamp" in session ? session.lastActivityTimestamp : startTimestamp;
+        }
+      } catch (error) {
+        if (!(error instanceof SyntaxError)) throw error;
       }
-    }
-    let session: unknown;
-    try {
-      session = JSON.parse(value);
-    } catch (error) {
-      if (!(error instanceof SyntaxError)) throw error;
+    } else {
+      const parts = value.split("|");
+      // A present malformed cookie is authoritative; do not resurrect a storage backup.
+      if (parts.length !== 3) return null;
+      id = parts[0];
+      startTimestamp = parts[1] ? Number(parts[1]) : undefined;
+      lastActivity = parts[2] ? Number(parts[2]) : undefined;
     }
     if (
-      typeof session === "object" &&
-      session !== null &&
-      "id" in session &&
-      typeof session.id === "string" &&
-      session.id.length > 0 &&
-      "startTimestamp" in session &&
-      typeof session.startTimestamp === "number" &&
-      Number.isFinite(session.startTimestamp) &&
-      session.startTimestamp >= 0 &&
-      session.startTimestamp <= Date.now()
+      typeof id === "string" &&
+      id.length > 0 &&
+      typeof startTimestamp === "number" &&
+      Number.isFinite(startTimestamp) &&
+      startTimestamp >= 0 &&
+      startTimestamp <= Date.now() &&
+      typeof lastActivity === "number" &&
+      Number.isFinite(lastActivity) &&
+      lastActivity >= startTimestamp &&
+      lastActivity <= Date.now()
     ) {
-      const lastActivity =
-        "lastActivityTimestamp" in session ? session.lastActivityTimestamp : session.startTimestamp;
-      if (
-        typeof lastActivity === "number" &&
-        Number.isFinite(lastActivity) &&
-        lastActivity >= session.startTimestamp &&
-        lastActivity <= Date.now()
-      ) {
-        lastActivityTimestamp = lastActivity;
-        const restored = { id: session.id, startTimestamp: session.startTimestamp };
-        if (expired(restored, Date.now())) return null;
-        currentSession = restored;
-        restoredFromBackup = fromBackup;
-        return restored;
-      }
+      lastActivityTimestamp = lastActivity;
+      const restored = { id, startTimestamp };
+      if (expired(restored, Date.now())) return null;
+      currentSession = restored;
+      restoredFromBackup = fromBackup;
+      return restored;
     }
     diag.warn("Invalid stored session; creating a new session.");
     return null;
@@ -192,9 +205,8 @@ export function createSession(
       return Promise.resolve(restore());
     },
     save(session) {
-      // Upstream creates a provisional session after a failed read. Do not persist it or
-      // expose it as authoritative; the next enrichment retries the synchronous restore.
-      if (readFailed) return Promise.resolve();
+      // Keep a provisional session for correlation during read failures, without persisting
+      // over unresolved cookies or backups. Later enrichment retries authoritative restoration.
       currentSession = session;
       restoredFromBackup = false;
       lastActivityTimestamp = session.startTimestamp;
@@ -225,14 +237,19 @@ export function createSession(
     },
     /** Saves the latest activity to the optional Web Storage backup without creating a session. */
     backup() {
-      if (persist && currentSession) storage?.setItem(storageKey, serialize(currentSession));
+      if (persist && !readFailed && currentSession) {
+        storage?.setItem(storageKey, serialize(currentSession));
+      }
     },
     getSessionId() {
       if (readFailed) {
-        restore();
-        if (readFailed) return null;
-        manager.shutdown();
-        manager = createManager();
+        const restored = restore();
+        if (!readFailed) {
+          currentSession = restored ?? undefined;
+          lastCookieWrite = undefined;
+          manager.shutdown();
+          manager = createManager();
+        }
       }
       const session = currentSession ?? manager.getSession();
       const now = Date.now();

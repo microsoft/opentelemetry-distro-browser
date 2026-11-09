@@ -15,21 +15,45 @@ import { USER_STORAGE_KEY as storageKey } from "../../../src/user/constants.js";
 
 const handles = new Set<MicrosoftOpenTelemetryBrowser>();
 let previousUser: string | null;
-const authKey = "opentelemetry-auth-user";
+const userCookie = "ai_user";
+const authKey = "ai_authUser";
 
 function clearCookies() {
-  for (const key of [storageKey, authKey, "opentelemetry-session"]) {
+  for (const key of [userCookie, authKey, "ai_session"]) {
     document.cookie = `${key}=; max-age=0; path=/`;
   }
 }
 
-function readCookie(key = storageKey) {
+function readCookie(key = userCookie) {
   const value = document.cookie.split("; ").find((part) => part.startsWith(`${key}=`));
-  return value ? JSON.parse(decodeURIComponent(value.slice(key.length + 1))) : null;
+  if (!value) return null;
+  const raw = value.slice(key.length + 1);
+  if (raw.startsWith("%7B")) return JSON.parse(decodeURIComponent(raw));
+  const [id, second] = (key === authKey ? decodeURI(raw) : raw).split("|");
+  return key === userCookie
+    ? { anonymousId: id, acquisitionTimestamp: Date.parse(second!) }
+    : { authenticatedUserId: id, ...(second !== undefined && { accountId: second }) };
 }
 
-function storeCookie(value: string, key = storageKey) {
-  document.cookie = `${key}=${encodeURIComponent(value)}; path=/`;
+function storeCookie(value: string, key = userCookie) {
+  let encoded = encodeURIComponent(value);
+  try {
+    const record = JSON.parse(value);
+    if (
+      key === userCookie &&
+      typeof record?.anonymousId === "string" &&
+      typeof record.acquisitionTimestamp === "number"
+    ) {
+      encoded = `${record.anonymousId}|${new Date(record.acquisitionTimestamp).toISOString()}`;
+    } else if (key === authKey && typeof record?.authenticatedUserId === "string") {
+      encoded = encodeURI(
+        record.authenticatedUserId + (record.accountId === undefined ? "" : `|${record.accountId}`),
+      );
+    }
+  } catch {
+    // Keep malformed JSON fixtures encoded for negative restoration tests.
+  }
+  document.cookie = `${key}=${encoded}; path=/`;
 }
 
 function failWrites() {
@@ -256,7 +280,7 @@ it.each([false, true])(
   async (storeAuthentication) => {
     const first = await initialize();
     first.handle.userContext.setAuthenticatedUserContext(
-      "user; 雪",
+      "user 雪%2F",
       "account=42",
       storeAuthentication,
     );
@@ -264,9 +288,9 @@ it.each([false, true])(
     const write = vi.spyOn(document, "cookie", "set");
     first.handle.userContext.setEnabled(true);
     const identity = first.emit().span.attributes;
-    expect(identity).toMatchObject({ "user.id": "user; 雪", "user.account.id": "account=42" });
+    expect(identity).toMatchObject({ "user.id": "user 雪%2F", "user.account.id": "account=42" });
     expect(identity["enduser.pseudo.id"]).toMatch(/^[0-9a-f]{32}$/);
-    const authentication = { authenticatedUserId: "user; 雪", accountId: "account=42" };
+    const authentication = { authenticatedUserId: "user 雪%2F", accountId: "account=42" };
     expect(readCookie(authKey)).toEqual(storeAuthentication ? authentication : null);
     if (storeAuthentication) {
       const authWrite = write.mock.calls.find(([value]) => value.startsWith(`${authKey}=`))![0];
@@ -276,7 +300,7 @@ it.each([false, true])(
     expect(readCookie()).toBeNull();
     expect(readCookie(authKey)).toBeNull();
     expect(first.emit().span.attributes).toMatchObject({
-      "user.id": "user; 雪",
+      "user.id": "user 雪%2F",
       "user.account.id": "account=42",
     });
     first.handle.userContext.setEnabled(true);
@@ -288,7 +312,7 @@ it.each([false, true])(
     const restored = await initialize("default");
     const attributes = restored.emit().span.attributes;
     expect(attributes["enduser.pseudo.id"]).toBe(identity["enduser.pseudo.id"]);
-    expect(attributes["user.id"]).toBe(storeAuthentication ? "user; 雪" : undefined);
+    expect(attributes["user.id"]).toBe(storeAuthentication ? "user 雪%2F" : undefined);
     expect(attributes["user.account.id"]).toBe(storeAuthentication ? "account=42" : undefined);
   },
 );

@@ -46,7 +46,7 @@ let previousSession: string | null;
 let sdk: MicrosoftOpenTelemetryBrowser | undefined;
 
 function clearIdentityCookies(): void {
-  for (const name of ["opentelemetry-session", "opentelemetry-user", "opentelemetry-auth-user"]) {
+  for (const name of ["ai_session", "ai_user", "ai_authUser"]) {
     document.cookie = `${name}=; max-age=0; path=/`;
   }
 }

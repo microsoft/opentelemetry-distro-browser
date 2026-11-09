@@ -239,7 +239,7 @@ export async function useMicrosoftOpenTelemetry(
   }
   const cookies = createCookieManager(options.cookieCfg);
   cookies.setReplayFailureHandler((name, removeSuperseded) => {
-    if (name === `${namePrefix}opentelemetry-auth-user`) removeSuperseded();
+    if (name === `${namePrefix}ai_authUser`) removeSuperseded();
   });
   const sessionStorage = storageEnabled
     ? createKeyValueStorage(
@@ -256,9 +256,9 @@ export async function useMicrosoftOpenTelemetry(
             ...configuration.snapshot().session,
           },
           sessionStorage,
-          () => configuration.snapshot().session,
           cookies,
-          `${namePrefix}opentelemetry-session`,
+          `${namePrefix}ai_session`,
+          () => configuration.snapshot().session,
         )
       : undefined;
   getSharedRegistry();
@@ -547,7 +547,7 @@ export async function useMicrosoftOpenTelemetry(
       cookies,
       namePrefix,
       () => session?.discardBackup(),
-      cookies.canRead(`${namePrefix}opentelemetry-user`),
+      cookies.canRead(`${namePrefix}ai_user`),
       (action) => {
         // Explicit privacy controls also clean records written by older versions. Never restore
         // legacy authentication or access Web Storage when the caller has disabled it.

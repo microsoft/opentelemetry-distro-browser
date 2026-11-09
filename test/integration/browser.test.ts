@@ -14,7 +14,8 @@ import type {
   MicrosoftOpenTelemetryBrowserOptions,
 } from "../../src/index.js";
 
-const cookieKeys = ["opentelemetry-user", "opentelemetry-auth-user", "opentelemetry-session"];
+const cookieKeys = ["ai_user", "ai_authUser", "ai_session"];
+const storageKeys = ["opentelemetry-user", "opentelemetry-session"];
 const prefixes = ["", "browser-a-", "browser-b-"];
 const savedStorage = new Map<string, string | null>();
 const cookieHandles = new Set<MicrosoftOpenTelemetryBrowser>();
@@ -27,13 +28,26 @@ function clearCookies() {
 
 function readCookie(name: string) {
   const value = document.cookie.split("; ").find((part) => part.startsWith(`${name}=`));
-  return value ? JSON.parse(decodeURIComponent(value.slice(name.length + 1))) : null;
+  if (!value) return null;
+  const raw = value.slice(name.length + 1);
+  const parts = (name.endsWith("ai_authUser") ? decodeURI(raw) : raw).split("|");
+  if (name.endsWith("ai_user")) {
+    return { anonymousId: parts[0], acquisitionTimestamp: Date.parse(parts[1]!) };
+  }
+  if (name.endsWith("ai_session")) {
+    return {
+      id: parts[0],
+      startTimestamp: Number(parts[1]),
+      lastActivityTimestamp: Number(parts[2]),
+    };
+  }
+  return { authenticatedUserId: parts[0], ...(parts.length > 1 && { accountId: parts[1] }) };
 }
 
 beforeEach(() => {
   clearCookies();
   for (const prefix of prefixes) {
-    for (const key of cookieKeys) {
+    for (const key of storageKeys) {
       savedStorage.set(prefix + key, localStorage.getItem(prefix + key));
       localStorage.removeItem(prefix + key);
     }
@@ -160,12 +174,12 @@ it.each(["index.js", "index.min.js"])(
     expect(attributes["session.id"]).toMatch(/^[0-9a-f]{32}$/);
     expect(attributes["enduser.pseudo.id"]).toMatch(/^[0-9a-f]{32}$/);
     expect(attributes["user.id"]).toBe("memory-user");
-    expect(readCookie("browser-a-opentelemetry-auth-user")).toBeNull();
-    expect(readCookie("browser-a-opentelemetry-user")).toEqual({
+    expect(readCookie("browser-a-ai_authUser")).toBeNull();
+    expect(readCookie("browser-a-ai_user")).toEqual({
       anonymousId: attributes["enduser.pseudo.id"],
       acquisitionTimestamp: expect.any(Number),
     });
-    expect(readCookie("browser-a-opentelemetry-session").id).toBe(attributes["session.id"]);
+    expect(readCookie("browser-a-ai_session")!.id).toBe(attributes["session.id"]);
     await first.handle.shutdown();
 
     const restored = await initializeCookieConsumer(file, options);
@@ -174,10 +188,10 @@ it.each(["index.js", "index.min.js"])(
     expect(restoredAttributes["enduser.pseudo.id"]).toBe(attributes["enduser.pseudo.id"]);
     expect(restoredAttributes["user.id"]).toBeUndefined();
     expect(restoredAttributes["user.account.id"]).toBeUndefined();
-    restored.handle.userContext.setAuthenticatedUserContext("user; 雪", "account=42", true);
-    expect((await restored.emit())["user.id"]).toBe("user; 雪");
-    expect(readCookie("browser-a-opentelemetry-auth-user")).toEqual({
-      authenticatedUserId: "user; 雪",
+    restored.handle.userContext.setAuthenticatedUserContext("user 雪%2F", "account=42", true);
+    expect((await restored.emit())["user.id"]).toBe("user 雪%2F");
+    expect(readCookie("browser-a-ai_authUser")).toEqual({
+      authenticatedUserId: "user 雪%2F",
       accountId: "account=42",
     });
     await restored.handle.shutdown();
@@ -195,7 +209,7 @@ it.each(["index.js", "index.min.js"])(
     expect(await authenticated.emit()).toMatchObject({
       "session.id": attributes["session.id"],
       "enduser.pseudo.id": attributes["enduser.pseudo.id"],
-      "user.id": "user; 雪",
+      "user.id": "user 雪%2F",
       "user.account.id": "account=42",
     });
     authenticated.handle.userContext.setAuthenticatedUserContext(
@@ -204,17 +218,82 @@ it.each(["index.js", "index.min.js"])(
       false,
     );
     expect((await authenticated.emit())["user.account.id"]).toBeUndefined();
-    expect(readCookie("browser-a-opentelemetry-auth-user")).toBeNull();
+    expect(readCookie("browser-a-ai_authUser")).toBeNull();
     authenticated.handle.userContext.setEnabled(false);
-    expect(readCookie("browser-a-opentelemetry-user")).toBeNull();
-    expect(readCookie("browser-b-opentelemetry-user").anonymousId).toBe(
-      otherAttributes["enduser.pseudo.id"],
-    );
+    expect(readCookie("browser-a-ai_user")).toBeNull();
+    expect(readCookie("browser-b-ai_user")!.anonymousId).toBe(otherAttributes["enduser.pseudo.id"]);
     await authenticated.handle.shutdown();
     expect(local).not.toHaveBeenCalled();
     expect(session).not.toHaveBeenCalled();
-    expect(readCookie("opentelemetry-user")).toBeNull();
-    expect(readCookie("opentelemetry-session")).toBeNull();
+    expect(readCookie("ai_user")).toBeNull();
+    expect(readCookie("ai_session")).toBeNull();
+  },
+);
+
+it.each(
+  ["index.js", "index.min.js"].flatMap((file) =>
+    ["", "browser-a-"].map((namePrefix) => ({ file, namePrefix })),
+  ),
+)(
+  "continues Application Insights cookies and roundtrips canonical identities through $file (prefix=$namePrefix)",
+  async ({ file, namePrefix }) => {
+    const now = Date.now();
+    const anonymousId = "AI+anonymous/id";
+    const sessionId = "AI+session/id";
+    const acquired = new Date(now - 86_400_000).toISOString();
+    const start = now - 2000;
+    const userId = "用户 雪%2F%7C%";
+    const accountId = "tenant/雪%25#?";
+    const anonymousName = `${namePrefix}ai_user`;
+    const sessionName = `${namePrefix}ai_session`;
+    const authName = `${namePrefix}ai_authUser`;
+    document.cookie = `${anonymousName}=${anonymousId}|${acquired}; path=/`;
+    document.cookie = `${sessionName}=${sessionId}|${start}|${now - 1000}; path=/`;
+    document.cookie = `${authName}=${encodeURI(`${userId}|${accountId}`)}; path=/`;
+    const legacyUser = JSON.stringify({ anonymousId: "old-storage-user" });
+    localStorage.setItem(`${namePrefix}opentelemetry-user`, legacyUser);
+    localStorage.setItem(
+      `${namePrefix}opentelemetry-session`,
+      JSON.stringify({ id: "superseded-backup", startTimestamp: start }),
+    );
+    const options = { storage: { namePrefix } };
+    const first = await initializeCookieConsumer(file, options);
+    const expected = {
+      "enduser.pseudo.id": anonymousId,
+      "session.id": sessionId,
+      "user.id": userId,
+      "user.account.id": accountId,
+    };
+    expect(await first.emit()).toMatchObject(expected);
+    const manager = first.handle.getCookieMgr();
+    expect(manager.get(anonymousName)).toBe(`${anonymousId}|${acquired}`);
+    expect(manager.get(sessionName)).toMatch(new RegExp(`^AI\\+session/id\\|${start}\\|\\d+$`));
+    expect(manager.get(authName)).toBe(encodeURI(`${userId}|${accountId}`));
+    expect(localStorage.getItem(`${namePrefix}opentelemetry-user`)).toBe(legacyUser);
+
+    const replacement = "replacement 雪%2F%7C%";
+    first.handle.userContext.setAuthenticatedUserContext(replacement, accountId, true);
+    expect(manager.get(authName)).toBe(encodeURI(`${replacement}|${accountId}`));
+    await first.handle.shutdown();
+    expect(JSON.parse(localStorage.getItem(`${namePrefix}opentelemetry-session`)!)).toMatchObject({
+      id: sessionId,
+      startTimestamp: start,
+      lastActivityTimestamp: expect.any(Number),
+    });
+    const restored = await initializeCookieConsumer(file, options);
+    expect(await restored.emit()).toMatchObject({ ...expected, "user.id": replacement });
+    restored.handle.userContext.setAuthenticatedUserContext("memory|identity", "account|id", true);
+    expect(await restored.emit()).toMatchObject({
+      "user.id": "memory|identity",
+      "user.account.id": "account|id",
+    });
+    expect(restored.handle.getCookieMgr().get(authName)).toBe("");
+    await restored.handle.shutdown();
+    const afterFailedPersistence = await initializeCookieConsumer(file, options);
+    const attributes = await afterFailedPersistence.emit();
+    expect(attributes["user.id"]).toBeUndefined();
+    expect(attributes["session.id"]).toBe(sessionId);
+    expect(attributes["enduser.pseudo.id"]).toBe(anonymousId);
   },
 );
 
@@ -252,9 +331,9 @@ it.each(["index.js", "index.min.js"])(
     expect(deferred.pipeline.logExporter.getFinishedLogRecords()).toHaveLength(1);
     expect(write).not.toHaveBeenCalled();
     deferred.handle.getCookieMgr().setEnabled(true);
-    expect(readCookie("opentelemetry-session").id).toBe(before["session.id"]);
-    expect(readCookie("opentelemetry-user").anonymousId).toBe(before["enduser.pseudo.id"]);
-    expect(readCookie("opentelemetry-auth-user")).toEqual({ authenticatedUserId: "deferred-user" });
+    expect(readCookie("ai_session")!.id).toBe(before["session.id"]);
+    expect(readCookie("ai_user")!.anonymousId).toBe(before["enduser.pseudo.id"]);
+    expect(readCookie("ai_authUser")).toEqual({ authenticatedUserId: "deferred-user" });
     expect(await deferred.emit()).toMatchObject(before);
     expect(deferred.pipeline.spanExporter.getFinishedSpans()).toHaveLength(2);
     expect(deferred.pipeline.logExporter.getFinishedLogRecords()).toHaveLength(2);
@@ -267,14 +346,14 @@ it.each(["index.js", "index.min.js"])(
     cancelled.handle.userContext.setAuthenticatedUserContext("cancelled-user", undefined, true);
     await cancelled.emit();
     const manager = cancelled.handle.getCookieMgr();
-    expect(manager.get("browser-b-opentelemetry-auth-user")).not.toBe("");
+    expect(manager.get("browser-b-ai_authUser")).not.toBe("");
     await cancelled.handle.shutdown();
     write.mockClear();
     manager.setEnabled(true);
     cancelled.handle.userContext.setEnabled(true);
     cancelled.handle.userContext.setAuthenticatedUserContext("stale-user", undefined, true);
     expect(manager.isEnabled()).toBe(false);
-    expect(manager.get("browser-b-opentelemetry-auth-user")).toBe("");
+    expect(manager.get("browser-b-ai_authUser")).toBe("");
     expect(write).not.toHaveBeenCalled();
     for (const key of cookieKeys) expect(readCookie(`browser-b-${key}`)).toBeNull();
     expect(local).not.toHaveBeenCalled();
@@ -757,11 +836,9 @@ it.each(["index.js", "index.min.js"])(
       expect(sessionId).toMatch(/^[0-9a-f]{32}$/);
       for (const record of [...spans, ...records]) {
         expect(record.attributes["session.id"]).toBe(sessionId);
-        expect(record.attributes["enduser.pseudo.id"]).toBe(
-          readCookie("opentelemetry-user").anonymousId,
-        );
+        expect(record.attributes["enduser.pseudo.id"]).toBe(readCookie("ai_user")!.anonymousId);
       }
-      expect(readCookie("opentelemetry-session").id).toBe(sessionId);
+      expect(readCookie("ai_session")!.id).toBe(sessionId);
       expect(localStorage.getItem("opentelemetry-session")).toBeNull();
       tracer
         .startSpan("application-session", {
