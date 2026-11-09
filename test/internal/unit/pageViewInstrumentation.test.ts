@@ -591,41 +591,52 @@ describe("PageViewInstrumentation", () => {
       expect(attributesOf(provider.records[0] as LogRecord)[ATTR_PAGE_VIEW_TYPE]).toBe("push");
     });
 
-    it("treats a traversal back to a hash entry as a traversal", async () => {
-      const { instrumentation, provider } = createInstrumentation();
+    it.each([false, true])(
+      "treats a traversal back to a hash entry as a traversal (delayed idle: %s)",
+      async (delayedIdle) => {
+        const { instrumentation, provider } = createInstrumentation();
 
-      instrumentation.enable();
-      await vi.waitFor(() => expect(provider.records).toHaveLength(1), {
-        timeout: BROWSER_ASYNC_TIMEOUT_MS,
-      });
-      const previousUrl = location.href;
-      provider.records.length = 0;
+        instrumentation.enable();
+        await vi.waitFor(() => expect(provider.records).toHaveLength(1), {
+          timeout: BROWSER_ASYNC_TIMEOUT_MS,
+        });
+        const previousUrl = location.href;
+        provider.records.length = 0;
 
-      // Traversing fires popstate first and hashchange second; the first starts the page view and
-      // the second is discarded as a duplicate, so the classification comes from popstate.
-      history.pushState(null, "", "#hash-a");
-      await vi.waitFor(() => expect(provider.records).toHaveLength(1), {
-        timeout: BROWSER_ASYNC_TIMEOUT_MS,
-      });
-      const hashUrl = location.href;
-      provider.records.length = 0;
-      const traversed = waitForPopState();
-      history.back();
-      await traversed;
+        // Traversing fires popstate first and hashchange second; the first starts the page view and
+        // the second is discarded as a duplicate, so the classification comes from popstate.
+        history.pushState(null, "", "#hash-a");
+        await vi.waitFor(() => expect(provider.records).toHaveLength(1), {
+          timeout: BROWSER_ASYNC_TIMEOUT_MS,
+        });
+        const hashUrl = location.href;
+        provider.records.length = 0;
+        if (delayedIdle) {
+          // An idle callback may arrive after settle()'s fixed 50 ms delay on a busy browser.
+          vi.stubGlobal("requestIdleCallback", (callback: IdleRequestCallback) =>
+            window.setTimeout(() => callback({ didTimeout: false, timeRemaining: () => 50 }), 150),
+          );
+          vi.stubGlobal("cancelIdleCallback", (id: number) => window.clearTimeout(id));
+        }
+        try {
+          const traversed = waitForPopState();
+          history.back();
+          await traversed;
+          await vi.waitFor(() => expect(provider.records).toHaveLength(1), {
+            timeout: BROWSER_ASYNC_TIMEOUT_MS,
+          });
 
-      // The idle callback can run later than settle()'s fixed post-frame delay on busy runners.
-      await vi.waitFor(
-        () => {
-          expect(provider.records).toHaveLength(1);
           expect(attributesOf(provider.records[0] as LogRecord)).toMatchObject({
             [ATTR_PAGE_VIEW_TYPE]: "traverse",
             [ATTR_URL_FULL]: previousUrl,
             [ATTR_PAGE_VIEW_REFERRER]: hashUrl,
           });
-        },
-        { timeout: BROWSER_ASYNC_TIMEOUT_MS },
-      );
-    });
+        } finally {
+          instrumentation.disable();
+          if (delayedIdle) vi.unstubAllGlobals();
+        }
+      },
+    );
   });
 
   describe("duration", () => {
