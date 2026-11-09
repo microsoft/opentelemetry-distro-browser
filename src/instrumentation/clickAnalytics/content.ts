@@ -60,12 +60,12 @@ function getHtmlContent(
   // Structural access works with SVG elements and elements from another browser realm.
   const html = element as HTMLElement & {
     text?: string;
-    value?: string;
+    value?: string | number;
     name?: string;
     alt?: string;
   };
   const customizedName = config.callback?.contentName?.(element, true);
-  let defaultName: string | undefined;
+  let defaultName: string | number | undefined;
   switch (element.tagName.toUpperCase()) {
     case "A":
       defaultName = html.text || html.innerHTML;
@@ -80,7 +80,10 @@ function getHtmlContent(
   return {
     id: element.id,
     contentName:
-      customizedName || defaultName?.substring(0, 200) || element.getAttribute("alt") || "",
+      customizedName ||
+      (typeof defaultName === "number" ? String(defaultName) : defaultName)?.substring(0, 200) ||
+      element.getAttribute("alt") ||
+      "",
   };
 }
 
@@ -244,7 +247,7 @@ export function isDoNotTrack(
   const attribute = getDataPrefix(config) + (config.dataTags?.dntDataTag ?? "ai-dnt");
   let current: Element | null = element;
   while (current) {
-    if (isAssigned(current.getAttribute(attribute))) return true;
+    if (isAssigned(Element.prototype.getAttribute.call(current, attribute))) return true;
     current = current.parentElement;
   }
   return false;

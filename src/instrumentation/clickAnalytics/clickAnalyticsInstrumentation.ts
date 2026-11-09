@@ -40,8 +40,9 @@ function targetUri(element: Element): string {
         : (element.getAttribute("href") ??
           element.getAttributeNS("http://www.w3.org/1999/xlink", "href"));
   } else if (tagName === "INPUT" && INPUT_TYPES.has((element as HTMLInputElement).type)) {
-    value = (element as HTMLInputElement).form?.action ?? null;
-    if (!value) return location.pathname;
+    const form = (element as HTMLInputElement).form;
+    if (!form) return location.pathname;
+    value = Element.prototype.getAttribute.call(form, "action") || element.ownerDocument.URL;
   } else {
     return "";
   }
@@ -329,7 +330,10 @@ export class ClickAnalyticsInstrumentation extends InstrumentationBase<ClickAnal
         .map((tag) => tag.trim()),
     );
     let element = event.target as Element | null;
-    if (element?.tagName && isDoNotTrack(element, config)) return;
+    // Retargeting hides shadow descendants from event.target, but not from the composed path.
+    for (const target of event.composedPath()) {
+      if ((target as Element).nodeType === 1 && isDoNotTrack(target as Element, config)) return;
+    }
     while (element?.tagName) {
       const control = (element as HTMLLabelElement).control;
       if (control && elements.has(control.tagName.toUpperCase())) element = control;
