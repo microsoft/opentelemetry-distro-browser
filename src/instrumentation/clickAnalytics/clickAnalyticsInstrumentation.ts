@@ -332,19 +332,23 @@ export class ClickAnalyticsInstrumentation extends InstrumentationBase<ClickAnal
     let element = event.target as Element | null;
     // Retargeting hides shadow descendants from event.target, but not from the composed path.
     for (const target of event.composedPath()) {
-      if ((target as Element).nodeType === 1 && isDoNotTrack(target as Element, config)) return;
+      if ((target as Element).nodeType === 1 && isDoNotTrack(target as Element, config, false))
+        return;
     }
     while (element?.tagName) {
       const control = (element as HTMLLabelElement).control;
-      if (control && elements.has(control.tagName.toUpperCase())) element = control;
+      if (control && elements.has(control.tagName.toUpperCase())) {
+        // An associated control can live outside the event path, so check its ancestors too.
+        if (isDoNotTrack(control, config)) return;
+        element = control;
+      }
       if (!elements.has(element.tagName.toUpperCase())) {
         element = element.parentElement;
         continue;
       }
       if (
-        (element.tagName.toUpperCase() !== "INPUT" ||
-          INPUT_TYPES.has((element as HTMLInputElement).type)) &&
-        !isDoNotTrack(element, config)
+        element.tagName.toUpperCase() !== "INPUT" ||
+        INPUT_TYPES.has((element as HTMLInputElement).type)
       ) {
         this.capturePageAction(
           element,

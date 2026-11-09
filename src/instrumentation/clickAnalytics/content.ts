@@ -237,18 +237,20 @@ export function getMetadata(config: ClickAnalyticsInstrumentationConfig): Record
  * Matches upstream's actual value-based behavior, not its misleading presence-based comment:
  * an empty attribute does not suppress capture. Any nonempty value, including `false`, does.
  * This check is independent of the content traversal boundary.
+ * Pass `false` for `includeAncestors` when the caller already visits every composed-path element.
  *
  * @internal
  */
 export function isDoNotTrack(
   element: Element,
   config: ClickAnalyticsInstrumentationConfig,
+  includeAncestors = true,
 ): boolean {
   const attribute = getDataPrefix(config) + (config.dataTags?.dntDataTag ?? "ai-dnt");
   let current: Element | null = element;
   while (current) {
     if (isAssigned(Element.prototype.getAttribute.call(current, attribute))) return true;
-    current = current.parentElement;
+    current = includeAncestors ? current.parentElement : null;
   }
   return false;
 }

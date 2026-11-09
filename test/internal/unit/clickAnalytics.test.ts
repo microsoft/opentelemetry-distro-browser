@@ -915,6 +915,37 @@ describe("ClickAnalyticsInstrumentation", () => {
   });
 
   describe("automatic actions", () => {
+    it.each([false, true])(
+      "checks each composed-path DNT attribute once (eligible control: %s)",
+      async (eligible) => {
+        const { instrumentation, records } = createInstrumentation();
+        instrumentation.enable();
+        const root = mount(eligible ? '<button data-id="deep"></button>' : "<section></section>");
+        let target = root.firstElementChild!;
+        const path: Element[] = [target, root, document.body, document.documentElement];
+        for (let depth = 0; depth < 40; depth++) {
+          const child = document.createElement("span");
+          target.append(child);
+          target = child;
+          path.push(child);
+        }
+        const reads = vi.spyOn(Element.prototype, "getAttribute");
+        for (const dispatch of [() => mouse(target), () => keyboard(target, "Enter")]) {
+          reads.mockClear();
+          dispatch();
+          const dntReads = reads.mock.calls
+            .map(([attribute], index) =>
+              attribute === "data-ai-dnt" ? reads.mock.contexts[index] : undefined,
+            )
+            .filter((element) => element !== undefined);
+          expect(dntReads).toHaveLength(path.length);
+          for (const element of path)
+            expect(dntReads.filter((read) => read === element)).toHaveLength(1);
+        }
+        expect(await records()).toHaveLength(eligible ? 2 : 0);
+      },
+    );
+
     it.each([0, 7])(
       "captures tagged actions beneath a numeric parent value of %s",
       async (value) => {
