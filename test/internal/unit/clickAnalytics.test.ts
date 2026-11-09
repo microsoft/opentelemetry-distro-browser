@@ -915,6 +915,86 @@ describe("ClickAnalyticsInstrumentation", () => {
   });
 
   describe("automatic actions", () => {
+    it.each([0, 7])(
+      "captures tagged actions beneath a numeric parent value of %s",
+      async (value) => {
+        const { instrumentation, records } = createInstrumentation({
+          dataTags: { useDefaultContentNameOrId: true, parentDataTag: "boundary" },
+        });
+        instrumentation.enable();
+        const target = element(
+          `<ol><li value="${value}"><button data-id="child">Action</button></li></ol>`,
+        );
+        mouse(target);
+        instrumentation.capturePageAction(target);
+        const exported = await records();
+        expect(exported).toHaveLength(2);
+        for (const record of exported) {
+          expect(record.attributes["browser.click.name"]).toBe("child");
+          expect(record.attributes["browser.click.content"]).toBe('[{"contentName":"Action"}]');
+        }
+        expect(
+          getElementContent(target, {
+            dataTags: { useDefaultContentNameOrId: true, parentDataTag: "boundary" },
+          }).parentname,
+        ).toBe(value ? String(value) : "Action");
+      },
+    );
+
+    it.each(["", "true", "false"])(
+      "honors composed-path DNT=%s inside nested shadow roots",
+      async (dnt) => {
+        const { instrumentation, records } = createInstrumentation({
+          dataTags: { customDataPrefix: "data-track-", dntDataTag: "private" },
+        });
+        instrumentation.enable();
+        const anchor = element(
+          '<a href="/destination" data-track-id="link"><span></span></a>',
+          "a",
+        );
+        const shadow = anchor.querySelector("span")!.attachShadow({ mode: "open" });
+        shadow.innerHTML = `<section data-track-private="${dnt}"><span></span></section>`;
+        const nested = shadow.querySelector("span")!.attachShadow({ mode: "open" });
+        nested.innerHTML = "<span>Action</span>";
+        const target = nested.querySelector("span")!;
+        target.dispatchEvent(
+          new MouseEvent("mousedown", { bubbles: true, composed: true, button: 0 }),
+        );
+        target.dispatchEvent(
+          new KeyboardEvent("keyup", { bubbles: true, composed: true, key: "Enter" }),
+        );
+        const exported = await records();
+        expect(exported).toHaveLength(dnt ? 0 : 2);
+        for (const record of exported) expect(record.attributes["browser.click.name"]).toBe("link");
+      },
+    );
+
+    it.each(["name", "id"])(
+      "reads form destinations when an input has %s=action",
+      async (attribute) => {
+        const { instrumentation, records } = createInstrumentation();
+        instrumentation.enable();
+        for (const action of ["/submit?token=secret&keep=yes", "", undefined]) {
+          const target = element(
+            `<form${action === undefined ? "" : ` action="${action}"`}><input ${attribute}="action"><input ${attribute}="getAttribute"><input type="submit" data-id="submit"></form>`,
+            'input[type="submit"]',
+          );
+          mouse(target);
+          instrumentation.capturePageAction(target);
+        }
+        const exported = await records();
+        expect(exported).toHaveLength(6);
+        for (const [index, record] of exported.entries()) {
+          expect(record.attributes["browser.click.target_url"]).toBe(
+            index < 2
+              ? new URL("/submit?token=REDACTED&keep=yes", location.href).href
+              : location.href,
+          );
+          expect(JSON.stringify(record.attributes)).not.toContain("secret");
+        }
+      },
+    );
+
     it.each(["a", "area", "input"])(
       "omits malformed DOM destinations for %s without dropping clicks",
       async (tag) => {
