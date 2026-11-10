@@ -71,10 +71,13 @@ it("formats session and persistent cookies and deletes the configured domain/pat
   manager.del("name");
   expect(delCookie).toHaveBeenLastCalledWith(
     "name",
-    `; expires=Thu, 01 Jan 1970 00:00:01 GMT; max-age=0${location.protocol === "https:" ? "; secure" : ""}; domain=.example.test; path=/app`,
+    `; expires=Thu, 01 Jan 1970 00:00:01 GMT; max-age=0${secure}; domain=.example.test; path=/app`,
   );
   manager.purge("name", "/other");
-  expect(delCookie.mock.calls.at(-1)?.[1]).toContain("path=/other");
+  expect(delCookie).toHaveBeenLastCalledWith(
+    "name",
+    `; expires=Thu, 01 Jan 1970 00:00:01 GMT; max-age=0${secure}; domain=.example.test; path=/other`,
+  );
 });
 
 it("uses the configured path for actual host-only cookie deletion", () => {
@@ -269,7 +272,7 @@ it.each([false, true])(
     expect(cleanupResults).toEqual([!cleanupFails]);
     expect(delCookie).toHaveBeenCalledExactlyOnceWith(
       name,
-      `; expires=Thu, 01 Jan 1970 00:00:01 GMT; max-age=0${location.protocol === "https:" ? "; secure" : ""}; domain=override.test; path=/override`,
+      `; expires=Thu, 01 Jan 1970 00:00:01 GMT; max-age=0${location.protocol === "https:" ? "; secure; SameSite=None" : ""}; domain=override.test; path=/override`,
     );
     if (cleanupFails) {
       cleanupFails = false;
@@ -685,12 +688,9 @@ it.each(["__Host-identity", "__Secure-identity"])(
     const setCookie = vi.fn();
     const delCookie = vi.fn();
     const manager = createCookieManager({ setCookie, delCookie });
-    const secure = location.protocol === "https:" ? "; secure" : "";
+    const secure = location.protocol === "https:" ? "; secure; SameSite=None" : "";
     expect(manager.set(name, "identity")).toBe(true);
-    expect(setCookie).toHaveBeenCalledWith(
-      name,
-      `identity${secure ? `${secure}; SameSite=None` : ""}; path=/`,
-    );
+    expect(setCookie).toHaveBeenCalledWith(name, `identity${secure}; path=/`);
     expect(manager.del(name)).toBe(true);
     expect(manager.purge(name)).toBe(true);
     manager.shutdown();

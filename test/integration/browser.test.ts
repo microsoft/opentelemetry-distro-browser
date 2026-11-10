@@ -4,6 +4,7 @@
 import { ROOT_CONTEXT, context, diag, propagation, trace } from "@opentelemetry/api";
 import { logs } from "@opentelemetry/api-logs";
 import { afterEach, beforeEach, expect, inject, it, vi } from "vitest";
+import { commands, server } from "vitest/browser";
 import { resourceFromAttributes } from "@opentelemetry/resources";
 import { version } from "../../package.json";
 import type { AzureMonitorEnvelope, PageViewData } from "../../src/exporter/telemetryModels.js";
@@ -19,6 +20,32 @@ const storageKeys = ["opentelemetry-user", "opentelemetry-session"];
 const prefixes = ["", "browser-a-", "browser-b-"];
 const savedStorage = new Map<string, string | null>();
 const cookieHandles = new Set<MicrosoftOpenTelemetryBrowser>();
+
+// Chromium rejects SameSite-default deletion in a cross-site iframe. Firefox currently accepts
+// it, while WebKit's default third-party policy blocks the initial write in this fixture.
+it
+  .runIf(server.browser === "chromium")
+  .each(
+    [false, true].flatMap((minified) =>
+      (["del", "purge", "clear", "deferred-clear", "disable", "shutdown-del"] as const).map(
+        (cleanup) => ({ minified, cleanup }),
+      ),
+    ),
+  )(
+  "removes cross-site HTTPS identity cookies with $cleanup (minified=$minified)",
+  async ({ minified, cleanup }) => {
+    const { before, after, reloaded } = await commands.inspectCrossSiteCookieCleanup(
+      minified,
+      cleanup,
+    );
+    // Prove third-party writes succeeded before asserting deletion, rather than passing vacuously.
+    expect(before).toContain("ai_authUser=iframe-user%7Ciframe-account");
+    const anonymousCookie = before.split("; ").find((part) => part.startsWith("ai_user="));
+    expect(anonymousCookie).toMatch(/^ai_user=.+/);
+    expect(after).toBe(cleanup === "disable" ? "" : anonymousCookie);
+    expect(reloaded).toBe(after);
+  },
+);
 
 function clearCookies() {
   for (const prefix of prefixes) {

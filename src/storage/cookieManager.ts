@@ -111,7 +111,7 @@ export function createCookieManager(
 
   function deletion(scope = attributes(settings.domain, settings.path || "/")): string {
     const secure = typeof location !== "undefined" && location.protocol === "https:";
-    return `; expires=Thu, 01 Jan 1970 00:00:01 GMT; max-age=0${secure ? "; secure" : ""}${scope}`;
+    return `; expires=Thu, 01 Jan 1970 00:00:01 GMT; max-age=0${secure ? "; secure; SameSite=None" : ""}${scope}`;
   }
 
   function validPrefixScope(name: string, path?: string, domain?: string): boolean {
