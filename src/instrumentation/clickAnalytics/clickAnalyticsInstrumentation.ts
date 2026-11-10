@@ -331,8 +331,14 @@ export class ClickAnalyticsInstrumentation extends InstrumentationBase<ClickAnal
     );
     let element = event.target as Element | null;
     // Retargeting hides shadow descendants from event.target, but not from the composed path.
+    // Form named controls can shadow nodeType; use the native getter on path nodes, not Window.
+    const nodeType = Object.getOwnPropertyDescriptor(Node.prototype, "nodeType");
     for (const target of event.composedPath()) {
-      if ((target as Element).nodeType === 1 && isDoNotTrack(target as Element, config, false))
+      if (
+        target !== window &&
+        nodeType?.get?.call(target) === 1 &&
+        isDoNotTrack(target as Element, config, false)
+      )
         return;
     }
     while (element?.tagName) {

@@ -915,6 +915,24 @@ describe("ClickAnalyticsInstrumentation", () => {
   });
 
   describe("automatic actions", () => {
+    it.each(["name", "id"])("honors form DNT when an input has %s=nodeType", async (attribute) => {
+      const { instrumentation, records } = createInstrumentation();
+      instrumentation.enable();
+      const target = element(
+        `<form><input ${attribute}="nodeType"><button data-id="protected">Action</button></form>`,
+        "button",
+      );
+      const form = target.parentElement!;
+      expect(form.nodeType).toBe(form.querySelector("input"));
+      for (const dnt of ["true", "false", ""]) {
+        form.setAttribute("data-ai-dnt", dnt);
+        mouse(target);
+        keyboard(target, "Enter");
+        keyboard(target, " ");
+        expect(await records()).toHaveLength(dnt ? 0 : 3);
+      }
+    });
+
     it.each([false, true])(
       "checks each composed-path DNT attribute once (eligible control: %s)",
       async (eligible) => {
