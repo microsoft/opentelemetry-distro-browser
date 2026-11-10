@@ -972,6 +972,46 @@ describe("ClickAnalyticsInstrumentation", () => {
       },
     );
 
+    it.each(
+      ["name", "id"].flatMap((attribute) =>
+        [false, true].flatMap((duplicate) =>
+          [["value"], ["name"], ["value", "name"]].map((properties) => ({
+            attribute,
+            duplicate,
+            properties,
+          })),
+        ),
+      ),
+    )(
+      "captures form-parent content with $attribute=$properties controls (duplicate: $duplicate)",
+      async ({ attribute, duplicate, properties }) => {
+        const { instrumentation, records } = createInstrumentation({
+          dataTags: { useDefaultContentNameOrId: true, parentDataTag: "boundary" },
+        });
+        instrumentation.enable();
+        const controls = properties
+          .map((property) => `<input ${attribute}="${property}">`.repeat(duplicate ? 2 : 1))
+          .join("");
+        const target = element(
+          `<form name="parent-name">${controls}<button data-id="child">Action</button></form>`,
+          "button",
+        );
+        const content = getElementContent(target, {
+          dataTags: { useDefaultContentNameOrId: true, parentDataTag: "boundary" },
+        });
+        expect(content.parentname).toBe(properties.includes("name") ? "Action" : "parent-name");
+        mouse(target);
+        keyboard(target, "Enter");
+        instrumentation.capturePageAction(target);
+        const exported = await records();
+        expect(exported).toHaveLength(3);
+        for (const record of exported) {
+          expect(record.attributes["browser.click.name"]).toBe("child");
+          expect(record.attributes["browser.click.content"]).toBe('[{"contentName":"Action"}]');
+        }
+      },
+    );
+
     it.each(["", "true", "false"])(
       "honors composed-path DNT=%s inside nested shadow roots",
       async (dnt) => {

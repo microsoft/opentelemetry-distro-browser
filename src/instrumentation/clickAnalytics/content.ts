@@ -50,6 +50,11 @@ function removeEmptyContent(content: ClickAnalyticsProperties): void {
   }
 }
 
+function getText(value: unknown): string {
+  // Form named properties can return elements or collections; never coerce those into content.
+  return value && (typeof value === "string" || typeof value === "number") ? String(value) : "";
+}
+
 function getHtmlContent(
   element: Element | null,
   config: ClickAnalyticsInstrumentationConfig,
@@ -59,31 +64,33 @@ function getHtmlContent(
   }
   // Structural access works with SVG elements and elements from another browser realm.
   const html = element as HTMLElement & {
-    text?: string;
-    value?: string | number;
-    name?: string;
-    alt?: string;
+    text?: unknown;
+    value?: unknown;
+    name?: unknown;
+    alt?: unknown;
   };
   const customizedName = config.callback?.contentName?.(element, true);
-  let defaultName: string | number | undefined;
+  let defaultName: string;
   switch (element.tagName.toUpperCase()) {
     case "A":
-      defaultName = html.text || html.innerHTML;
+      defaultName = getText(html.text) || getText(html.innerHTML);
       break;
     case "IMG":
     case "AREA":
-      defaultName = html.alt;
+      defaultName = getText(html.alt);
       break;
     default:
-      defaultName = html.value || html.name || html.alt || html.innerText || element.id;
+      defaultName =
+        getText(html.value) ||
+        getText(html.name) ||
+        getText(html.alt) ||
+        getText(html.innerText) ||
+        getText(element.id);
   }
   return {
     id: element.id,
     contentName:
-      customizedName ||
-      (typeof defaultName === "number" ? String(defaultName) : defaultName)?.substring(0, 200) ||
-      element.getAttribute("alt") ||
-      "",
+      customizedName || defaultName.substring(0, 200) || element.getAttribute("alt") || "",
   };
 }
 
