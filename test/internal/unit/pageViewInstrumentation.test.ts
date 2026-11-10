@@ -577,19 +577,40 @@ describe("PageViewInstrumentation", () => {
       expect(provider.records).toHaveLength(1);
     });
 
-    it("treats a new hash navigation as a push, matching the Navigation API", async () => {
-      const { instrumentation, provider } = createInstrumentation();
+    it.each([false, true])(
+      "treats a new hash navigation as a push, matching the Navigation API (delayed idle: %s)",
+      async (delayedIdle) => {
+        const { instrumentation, provider } = createInstrumentation();
 
-      instrumentation.enable();
-      await settle();
-      provider.records.length = 0;
+        instrumentation.enable();
+        await vi.waitFor(() => expect(provider.records).toHaveLength(1), {
+          timeout: BROWSER_ASYNC_TIMEOUT_MS,
+        });
+        provider.records.length = 0;
+        if (delayedIdle) {
+          // Reproduce idle delivery after settle()'s fixed 50 ms delay.
+          vi.stubGlobal("requestIdleCallback", (callback: IdleRequestCallback) =>
+            window.setTimeout(() => callback({ didTimeout: false, timeRemaining: () => 50 }), 150),
+          );
+          vi.stubGlobal("cancelIdleCallback", (id: number) => window.clearTimeout(id));
+        }
+        try {
+          location.hash = "#section-2";
+          await vi.waitFor(() => expect(provider.records).toHaveLength(1), {
+            timeout: BROWSER_ASYNC_TIMEOUT_MS,
+          });
 
-      location.hash = "#section-2";
-      await settle();
-
-      expect(provider.records).toHaveLength(1);
-      expect(attributesOf(provider.records[0] as LogRecord)[ATTR_PAGE_VIEW_TYPE]).toBe("push");
-    });
+          expect(attributesOf(provider.records[0] as LogRecord)).toMatchObject({
+            [ATTR_PAGE_VIEW_TYPE]: "push",
+            [ATTR_URL_FULL]: location.href,
+            [ATTR_PAGE_VIEW_DURATION_SOURCE]: "soft_navigation_settled",
+          });
+        } finally {
+          instrumentation.disable();
+          if (delayedIdle) vi.unstubAllGlobals();
+        }
+      },
+    );
 
     it.each([false, true])(
       "treats a traversal back to a hash entry as a traversal (delayed idle: %s)",
