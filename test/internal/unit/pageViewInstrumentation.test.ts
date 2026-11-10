@@ -1229,23 +1229,42 @@ describe("PageViewInstrumentation", () => {
       expect(attributesOf(record)[ATTR_PAGE_VIEW_DURATION_SOURCE]).toBe("soft_navigation_settled");
     });
 
-    it("does not give a soft navigation the document load duration", async () => {
-      const { instrumentation, provider } = createInstrumentation();
+    it.each([false, true])(
+      "does not give a soft navigation the document load duration (delayed idle: %s)",
+      async (delayedIdle) => {
+        const { instrumentation, provider } = createInstrumentation();
+        if (delayedIdle) {
+          // Idle delivery can outlast settle()'s fixed delay without changing duration semantics.
+          vi.stubGlobal("requestIdleCallback", (callback: IdleRequestCallback) =>
+            window.setTimeout(() => callback({ didTimeout: false, timeRemaining: () => 50 }), 150),
+          );
+          vi.stubGlobal("cancelIdleCallback", (id: number) => window.clearTimeout(id));
+        }
 
-      // Starts a soft navigation before the scheduled document-load finalization runs.
-      instrumentation.enable();
-      history.pushState(null, "", "/before-load-settles");
-      await settle();
+        try {
+          // Starts a soft navigation before the scheduled document-load finalization runs.
+          instrumentation.enable();
+          history.pushState(null, "", "/before-load-settles");
+          await vi.waitFor(() => expect(provider.records).toHaveLength(2), {
+            timeout: BROWSER_ASYNC_TIMEOUT_MS,
+          });
 
-      expect(provider.records.length).toBe(2);
-      const [documentView, softView] = provider.records as [LogRecord, LogRecord];
-      expect(attributesOf(documentView)[ATTR_PAGE_VIEW_SAME_DOCUMENT]).toBe(false);
-      expect(attributesOf(softView)[ATTR_PAGE_VIEW_SAME_DOCUMENT]).toBe(true);
-      expect(attributesOf(softView)[ATTR_PAGE_VIEW_DURATION_SOURCE]).not.toBe("navigation_timing");
-      expect(attributesOf(softView)[ATTR_PAGE_VIEW_DURATION]).toBeLessThan(
-        attributesOf(documentView)[ATTR_PAGE_VIEW_DURATION] as number,
-      );
-    });
+          expect(provider.records.length).toBe(2);
+          const [documentView, softView] = provider.records as [LogRecord, LogRecord];
+          expect(attributesOf(documentView)[ATTR_PAGE_VIEW_SAME_DOCUMENT]).toBe(false);
+          expect(attributesOf(softView)[ATTR_PAGE_VIEW_SAME_DOCUMENT]).toBe(true);
+          expect(attributesOf(softView)[ATTR_PAGE_VIEW_DURATION_SOURCE]).not.toBe(
+            "navigation_timing",
+          );
+          expect(attributesOf(softView)[ATTR_PAGE_VIEW_DURATION]).toBeLessThan(
+            attributesOf(documentView)[ATTR_PAGE_VIEW_DURATION] as number,
+          );
+        } finally {
+          instrumentation.disable();
+          if (delayedIdle) vi.unstubAllGlobals();
+        }
+      },
+    );
 
     it("drops the URL rather than reporting it raw when the sanitizer throws", async () => {
       const { instrumentation, provider } = createInstrumentation({
