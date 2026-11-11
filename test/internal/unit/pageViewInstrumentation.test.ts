@@ -895,13 +895,20 @@ describe("PageViewInstrumentation", () => {
       });
 
       instrumentation.enable();
-      await settle();
+      await vi.waitFor(() => expect(provider.records).toHaveLength(1), {
+        timeout: BROWSER_ASYNC_TIMEOUT_MS,
+      });
       provider.records.length = 0;
 
       history.pushState(null, "", "/secure?token=supersecret&visible=true");
-      await settle();
+      // Idle callbacks can run later than settle()'s fixed post-frame delay on busy runners.
+      await vi.waitFor(() => expect(provider.records).toHaveLength(1), {
+        timeout: BROWSER_ASYNC_TIMEOUT_MS,
+      });
       history.pushState(null, "", "/after");
-      await settle();
+      await vi.waitFor(() => expect(provider.records).toHaveLength(2), {
+        timeout: BROWSER_ASYNC_TIMEOUT_MS,
+      });
 
       const secureRecord = attributesOf(provider.records[0] as LogRecord);
       expect(secureRecord[ATTR_URL_FULL]).toBe("/secure");
