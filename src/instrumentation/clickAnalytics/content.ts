@@ -4,6 +4,24 @@
 import { diag } from "@opentelemetry/api";
 import type { ClickAnalyticsInstrumentationConfig, ClickAnalyticsProperties } from "./types.js";
 
+/** Reads the actual DOM parent, bypassing form named properties. @internal */
+export function getParentElement(element: Element): Element | null {
+  return Reflect.get(Node.prototype, "parentElement", element);
+}
+
+function getAttributes(element: Element): Attr[] {
+  return Array.from(Reflect.get(Element.prototype, "attributes", element));
+}
+
+function getAttribute(element: Element, name: string): string | null {
+  return Element.prototype.getAttribute.call(element, name);
+}
+
+/** Reads and normalizes the native tag name despite form named properties. @internal */
+export function getTagName(element: Element): string {
+  return Reflect.get(Element.prototype, "tagName", element).toUpperCase();
+}
+
 function getDataPrefix(config: ClickAnalyticsInstrumentationConfig): string {
   const prefix = config.dataTags?.customDataPrefix;
   return typeof prefix === "string" && prefix.startsWith("data-") ? prefix : "data-";
@@ -71,7 +89,7 @@ function getHtmlContent(
   };
   const customizedName = config.callback?.contentName?.(element, true);
   let defaultName: string;
-  switch (element.tagName.toUpperCase()) {
+  switch (getTagName(element)) {
     case "A":
       defaultName = getText(html.text) || getText(html.innerHTML);
       break;
@@ -85,17 +103,17 @@ function getHtmlContent(
         getText(html.name) ||
         getText(html.alt) ||
         getText(html.innerText) ||
-        getText(element.id);
+        getText(getAttribute(element, "id"));
   }
   return {
-    id: element.id,
+    id: getAttribute(element, "id") ?? "",
     contentName:
-      customizedName || defaultName.substring(0, 200) || element.getAttribute("alt") || "",
+      customizedName || defaultName.substring(0, 200) || getAttribute(element, "alt") || "",
   };
 }
 
 function hasDataAttributes(element: Element, prefix: string): boolean {
-  return Array.from(element.attributes).some((attribute) => attribute.name.startsWith(prefix));
+  return getAttributes(element).some((attribute) => attribute.name.startsWith(prefix));
 }
 
 function collectContent(
@@ -108,7 +126,7 @@ function collectContent(
   let current: Element | null = element;
   while (current) {
     let boundaryFound = false;
-    for (const attribute of Array.from(current.attributes)) {
+    for (const attribute of getAttributes(current)) {
       if (!attribute.name.startsWith(prefix)) continue;
       // Include boundary-level attributes before stopping, even for an empty boundary value.
       if (attribute.name.startsWith(parentAttribute)) boundaryFound = true;
@@ -120,7 +138,7 @@ function collectContent(
       }
     }
     if (boundaryFound) break;
-    current = current.parentElement;
+    current = getParentElement(current);
   }
 }
 
@@ -138,26 +156,26 @@ function populateParentContent(
     return;
   }
   // Upstream parent identification is a separate search, not bounded by parentDataTag.
-  let parent = element.parentElement;
+  let parent = getParentElement(element);
   let parentId: ClickAnalyticsProperties[string];
   while (parent) {
     if (hasDataAttributes(parent, prefix)) {
-      const blob = parent.getAttribute(blobAttribute);
+      const blob = getAttribute(parent, blobAttribute);
       if (blob) {
         const parentContent = parseBlob(blob);
         if (Object.hasOwn(parentContent, "id")) parentId = parentContent.id;
       } else {
-        parentId = parent.getAttribute(`${prefix}id`) ?? undefined;
+        parentId = getAttribute(parent, `${prefix}id`) ?? undefined;
       }
       // Only the closest tagged ancestor participates, even if it has no identifier.
       break;
     }
-    parent = parent.parentElement;
+    parent = getParentElement(parent);
   }
   if (parentId) {
     content.parentid = parentId;
   } else {
-    const html = getHtmlContent(element.parentElement, config);
+    const html = getHtmlContent(getParentElement(element), config);
     content.parentid = html.id;
     content.parentname = html.contentName;
   }
@@ -183,14 +201,14 @@ export function getElementContent(
   const blobAttribute = prefix + (config.dataTags?.aiBlobAttributeTag ?? "ai-blob");
   const parentTag = config.dataTags?.parentDataTag;
   const parentAttribute = parentTag ? prefix + parentTag : "";
-  const blob = element.getAttribute(blobAttribute);
+  const blob = getAttribute(element, blobAttribute);
   let content = createContent();
 
   if (blob) {
     content = parseBlob(blob);
   } else {
     // An explicitly empty blob still selects upstream's untagged-element path.
-    const tracked = !element.hasAttribute(blobAttribute) && hasDataAttributes(element, prefix);
+    const tracked = blob === null && hasDataAttributes(element, prefix);
     const html = getHtmlContent(element, config);
     if (!tracked) {
       content.id = html.id;
@@ -199,7 +217,7 @@ export function getElementContent(
     if (parentAttribute) {
       collectContent(element, content, prefix, parentAttribute, blobAttribute);
     } else if (tracked) {
-      for (const attribute of Array.from(element.attributes)) {
+      for (const attribute of getAttributes(element)) {
         if (attribute.name.startsWith(prefix)) {
           content[attribute.name.substring(prefix.length)] = attribute.value;
         }
@@ -256,8 +274,8 @@ export function isDoNotTrack(
   const attribute = getDataPrefix(config) + (config.dataTags?.dntDataTag ?? "ai-dnt");
   let current: Element | null = element;
   while (current) {
-    if (isAssigned(Element.prototype.getAttribute.call(current, attribute))) return true;
-    current = includeAncestors ? current.parentElement : null;
+    if (isAssigned(getAttribute(current, attribute))) return true;
+    current = includeAncestors ? getParentElement(current) : null;
   }
   return false;
 }

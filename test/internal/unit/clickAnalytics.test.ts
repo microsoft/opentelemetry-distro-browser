@@ -90,6 +90,58 @@ afterEach(async () => {
 });
 
 describe("click analytics content", () => {
+  it.each(
+    ["name", "id"].flatMap((attribute) =>
+      ["content", "parent", "dnt"].map((mode) => ({ attribute, mode })),
+    ),
+  )(
+    "bounds $mode traversal when a form control has $attribute=parentElement",
+    ({ attribute, mode }) => {
+      const target = element(
+        `<section data-ai-dnt="true" data-id="outer"><form><input ${attribute}="parentElement"><button data-id="child"></button></form></section>`,
+      );
+      const form = target.closest("form")!;
+      const input = form.querySelector("input")!;
+      expect(form.parentElement).toBe(input);
+      // Bound the old form -> input -> form cycle so this regression cannot hang the runner.
+      let reads = 0;
+      Object.defineProperty(input, "parentElement", {
+        configurable: true,
+        get: () => {
+          if (++reads > 10) throw new Error("Cyclic parentElement traversal");
+          return form;
+        },
+      });
+      if (mode === "dnt") {
+        expect(isDoNotTrack(target, {})).toBe(true);
+      } else {
+        if (mode === "parent") target.setAttribute("data-ai-blob", '{"id":"child"}');
+        expect(
+          getElementContent(target, { dataTags: { parentDataTag: "boundary" } }).parentid,
+        ).toBe("outer");
+      }
+      expect(reads).toBe(0);
+      if (mode === "dnt") {
+        target.closest("section")!.removeAttribute("data-ai-dnt");
+        expect(isDoNotTrack(target, {})).toBe(false);
+      }
+    },
+  );
+
+  it.each(["name", "id"])(
+    "reads parent attributes despite %s-based form clobbering",
+    (attribute) => {
+      for (const blob of [false, true]) {
+        const target = element(
+          `<form ${blob ? 'data-ai-blob=\'{"id":"parent"}\'' : 'data-id="parent"'}><input ${attribute}="getAttribute"><input ${attribute}="attributes"><input ${attribute}="hasAttribute"><button data-id="child"></button></form>`,
+        );
+        expect(
+          getElementContent(target, { dataTags: { parentDataTag: "boundary" } }).parentid,
+        ).toBe("parent");
+      }
+    },
+  );
+
   it("does not collect untagged HTML identifiers, text or input values by default", () => {
     for (const target of mount(
       '<button id="private">Private text</button><input id="secret" value="private value">',
@@ -915,6 +967,78 @@ describe("ClickAnalyticsInstrumentation", () => {
   });
 
   describe("automatic actions", () => {
+    it.each(["name", "id"])(
+      "checks clobbered ancestry of off-path label controls (%s)",
+      async (attribute) => {
+        const { instrumentation, records } = createInstrumentation();
+        instrumentation.enable();
+        const root = mount(
+          `<label for="off-path-control"><span>Label</span></label><section data-ai-dnt="true"><form><input ${attribute}="parentElement"><input id="off-path-control" type="checkbox" data-id="control"></form></section>`,
+        );
+        const form = root.querySelector("form")!;
+        const input = form.querySelector("input")!;
+        let reads = 0;
+        Object.defineProperty(input, "parentElement", {
+          configurable: true,
+          get: () => {
+            if (++reads > 10) throw new Error("Cyclic parentElement traversal");
+            return form;
+          },
+        });
+        const target = root.querySelector("span")!;
+        for (const dnt of ["true", "false", ""]) {
+          root.querySelector("section")!.setAttribute("data-ai-dnt", dnt);
+          mouse(target);
+          keyboard(target, "Enter");
+          keyboard(target, " ");
+          expect(await records()).toHaveLength(dnt ? 0 : 3);
+        }
+        expect(reads).toBe(0);
+      },
+    );
+
+    it.each(["name", "id"])("handles %s-based structural form collisions", async (attribute) => {
+      const { instrumentation, records } = createInstrumentation({
+        dataTags: { parentDataTag: "boundary", useDefaultContentNameOrId: true },
+      });
+      instrumentation.enable();
+      const root = mount(
+        `<form id="parent"><input ${attribute}="tagName"><input ${attribute}="id"><input ${attribute}="control" type="submit" data-id="unrelated"><span>Text</span><button data-id="child">Action</button></form>`,
+      );
+      mouse(root.querySelector("span")!);
+      expect(await records()).toEqual([]);
+      const target = root.querySelector("button")!;
+      mouse(target);
+      keyboard(target, "Enter");
+      instrumentation.capturePageAction(target);
+      const exported = await records();
+      expect(exported).toHaveLength(3);
+      for (const record of exported) {
+        expect(record.attributes["browser.click.name"]).toBe("child");
+        expect(record.attributes["browser.click.parent_id"]).toBe("parent");
+      }
+    });
+
+    it("does not follow a clobbered form parent when searching for a supported ancestor", async () => {
+      const { instrumentation, records } = createInstrumentation({ trackElementTypes: "BUTTON" });
+      instrumentation.enable();
+      const target = element('<form><input name="parentElement"><span>Text</span></form>', "span");
+      const form = target.closest("form")!;
+      const input = form.querySelector("input")!;
+      let reads = 0;
+      Object.defineProperty(input, "parentElement", {
+        configurable: true,
+        get: () => {
+          if (++reads > 10) throw new Error("Cyclic parentElement traversal");
+          return form;
+        },
+      });
+      mouse(target);
+      keyboard(target, "Enter");
+      expect(await records()).toEqual([]);
+      expect(reads).toBe(0);
+    });
+
     it.each(["name", "id"])("honors form DNT when an input has %s=nodeType", async (attribute) => {
       const { instrumentation, records } = createInstrumentation();
       instrumentation.enable();
