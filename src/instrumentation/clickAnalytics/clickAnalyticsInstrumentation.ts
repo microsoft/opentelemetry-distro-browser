@@ -6,13 +6,7 @@ import { SeverityNumber, type LogRecord } from "@opentelemetry/api-logs";
 import { InstrumentationBase } from "@opentelemetry/instrumentation";
 import { OPENTELEMETRY_BROWSER_VERSION } from "../../shared/constants.js";
 import { redactUrl } from "../../shared/urlRedaction.js";
-import {
-  getElementContent,
-  getMetadata,
-  getParentElement,
-  getTagName,
-  isDoNotTrack,
-} from "./content.js";
+import { getElementContent, getMetadata, getTagName, isDoNotTrack } from "./content.js";
 import type {
   ClickAnalyticsInstrumentationConfig,
   ClickAnalyticsPageAction,
@@ -335,19 +329,18 @@ export class ClickAnalyticsInstrumentation extends InstrumentationBase<ClickAnal
         .split(",")
         .map((tag) => tag.trim()),
     );
-    let element = event.target as Element | null;
+    const path: Element[] = [];
     // Retargeting hides shadow descendants from event.target, but not from the composed path.
     // Form named controls can shadow nodeType; use the native getter on path nodes, not Window.
     const nodeType = Object.getOwnPropertyDescriptor(Node.prototype, "nodeType");
     for (const target of event.composedPath()) {
-      if (
-        target !== window &&
-        nodeType?.get?.call(target) === 1 &&
-        isDoNotTrack(target as Element, config, false)
-      )
-        return;
+      if (target !== window && nodeType?.get?.call(target) === 1) {
+        const element = target as Element;
+        if (isDoNotTrack(element, config, false)) return;
+        path.push(element);
+      }
     }
-    while (element?.tagName) {
+    for (let element of path) {
       const control =
         getTagName(element) === "LABEL" ? (element as HTMLLabelElement).control : null;
       if (control && elements.has(getTagName(control))) {
@@ -355,10 +348,7 @@ export class ClickAnalyticsInstrumentation extends InstrumentationBase<ClickAnal
         if (isDoNotTrack(control, config)) return;
         element = control;
       }
-      if (!elements.has(getTagName(element))) {
-        element = getParentElement(element);
-        continue;
-      }
+      if (!elements.has(getTagName(element))) continue;
       if (getTagName(element) !== "INPUT" || INPUT_TYPES.has((element as HTMLInputElement).type)) {
         this.capturePageAction(
           element,

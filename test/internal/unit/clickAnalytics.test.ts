@@ -1154,6 +1154,53 @@ describe("ClickAnalyticsInstrumentation", () => {
       },
     );
 
+    it.each(
+      [false, true].flatMap((outer) =>
+        ["button", "label", "text input"].map((kind) => ({ outer, kind })),
+      ),
+    )(
+      "resolves shadow $kind targets (supported outer ancestor: $outer)",
+      async ({ outer, kind }) => {
+        const { instrumentation, records } = createInstrumentation();
+        instrumentation.enable();
+        const root = mount(outer ? '<a data-id="outer"><span></span></a>' : "<span></span>");
+        const host = root.querySelector("span")!;
+        const shadow = host.attachShadow({ mode: "open" });
+        shadow.innerHTML =
+          kind === "button"
+            ? '<button data-id="inner"><span>Action</span></button>'
+            : kind === "label"
+              ? '<label for="shadow-control"><span>Action</span></label><input id="shadow-control" type="checkbox" data-id="inner">'
+              : '<input type="text" data-id="private" value="secret">';
+        const target = shadow.querySelector("span, input")!;
+        for (const event of [
+          new MouseEvent("mousedown", { bubbles: true, composed: true, button: 0 }),
+          new KeyboardEvent("keyup", { bubbles: true, composed: true, key: "Enter" }),
+          new KeyboardEvent("keyup", { bubbles: true, composed: true, key: " " }),
+        ])
+          target.dispatchEvent(event);
+        const exported = await records();
+        expect(exported).toHaveLength(kind === "text input" ? 0 : 3);
+        for (const record of exported)
+          expect(record.attributes["browser.click.name"]).toBe("inner");
+      },
+    );
+
+    it.each(["", "true", "false"])(
+      "honors DNT=%s on a shadow button's host after resolving its inner target",
+      async (dnt) => {
+        const { instrumentation, records } = createInstrumentation();
+        instrumentation.enable();
+        const host = element(`<span data-ai-dnt="${dnt}"></span>`, "span");
+        const shadow = host.attachShadow({ mode: "open" });
+        shadow.innerHTML = '<button data-id="inner">Action</button>';
+        shadow
+          .querySelector("button")!
+          .dispatchEvent(new MouseEvent("mousedown", { bubbles: true, composed: true, button: 0 }));
+        expect(await records()).toHaveLength(dnt ? 0 : 1);
+      },
+    );
+
     it.each(["", "true", "false"])(
       "honors composed-path DNT=%s inside nested shadow roots",
       async (dnt) => {
