@@ -6,7 +6,13 @@ import { SeverityNumber, type LogRecord } from "@opentelemetry/api-logs";
 import { InstrumentationBase } from "@opentelemetry/instrumentation";
 import { OPENTELEMETRY_BROWSER_VERSION } from "../../shared/constants.js";
 import { redactUrl } from "../../shared/urlRedaction.js";
-import { getElementContent, getMetadata, isDoNotTrack } from "./content.js";
+import {
+  getElementContent,
+  getMetadata,
+  getParentElement,
+  getTagName,
+  isDoNotTrack,
+} from "./content.js";
 import type {
   ClickAnalyticsInstrumentationConfig,
   ClickAnalyticsPageAction,
@@ -29,7 +35,7 @@ function contentName(value: unknown): string {
 }
 
 function targetUri(element: Element): string {
-  const tagName = element.tagName.toUpperCase();
+  const tagName = getTagName(element);
   let value: string | null;
   if (tagName === "A" || tagName === "AREA") {
     const href = (element as HTMLAnchorElement).href;
@@ -342,20 +348,18 @@ export class ClickAnalyticsInstrumentation extends InstrumentationBase<ClickAnal
         return;
     }
     while (element?.tagName) {
-      const control = (element as HTMLLabelElement).control;
-      if (control && elements.has(control.tagName.toUpperCase())) {
+      const control =
+        getTagName(element) === "LABEL" ? (element as HTMLLabelElement).control : null;
+      if (control && elements.has(getTagName(control))) {
         // An associated control can live outside the event path, so check its ancestors too.
         if (isDoNotTrack(control, config)) return;
         element = control;
       }
-      if (!elements.has(element.tagName.toUpperCase())) {
-        element = element.parentElement;
+      if (!elements.has(getTagName(element))) {
+        element = getParentElement(element);
         continue;
       }
-      if (
-        element.tagName.toUpperCase() !== "INPUT" ||
-        INPUT_TYPES.has((element as HTMLInputElement).type)
-      ) {
+      if (getTagName(element) !== "INPUT" || INPUT_TYPES.has((element as HTMLInputElement).type)) {
         this.capturePageAction(
           element,
           {
