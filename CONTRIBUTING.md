@@ -26,7 +26,7 @@ information, see the
 1. Install a [Node.js](https://nodejs.org/) version supported by `package.json`.
 2. Install Python 3.10 or newer, available as `python`, for the coverage artifact safety checks.
    These use only the Python standard library and do not affect the browser package.
-3. Install dependencies and Chromium.
+3. Install dependencies and the Playwright browsers: Chromium, Firefox, and WebKit.
 4. Run the repository checks before opening a pull request.
 
 Use Node.js 22.23.4+, 24.22.1+, or 26.12.1+ on a supported release line. These minimums
@@ -40,8 +40,13 @@ Keep self-hosted runners current as well: JavaScript actions use runner-managed 
 which `actions/setup-node` does not update.
 
 ```powershell
+# Install dependencies using the committed lockfile.
 npm ci
+
+# Install the Playwright-managed Chromium, Firefox, and WebKit builds used by the tests.
 npm run test:install-browsers
+
+# Run the full repository validation pipeline.
 npm run check
 ```
 
