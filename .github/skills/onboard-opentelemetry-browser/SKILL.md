@@ -157,11 +157,14 @@ Use the lifecycle handle resolved by `window.microsoftOpenTelemetry` for `forceF
 `shutdown()`, and user context. Do not read the global APIs or handle before the promise resolves.
 
 The helper also accepts `instrumentationOptions`, `resourceAttributes`, `session`, `userContext`,
-`storage`, `samplingPercentage`, `redactQueryParams`, `azureMonitor.disableBeacon` and data-only
+`storage`, `cookieCfg`, `samplingPercentage`, `redactQueryParams`, `azureMonitor.disableBeacon` and data-only
 `pageView` settings. Regenerate the snippet with those options rather than editing its loader body.
-Storage and identity persistence are enabled by default; `storage: { enabled: false }` blocks
-SDK-managed storage, not collection or export. If consent must precede collection or network
-activity, defer inserting the snippet until consent is granted.
+Web Storage and cookies are enabled by default. `storage: { enabled: false }` blocks only
+SDK-managed Web Storage, not identity or session cookies. When browser persistence is prohibited,
+also set `cookieCfg: { enabled: false, disableCookieDefer: true }` to disable cookie access and
+discard deferred cookie operations. These options do not stop collection or export or erase
+existing data. If consent must precede collection or network activity, defer inserting the snippet
+until consent is granted.
 
 Use npm initialization for functions or non-JSON settings, such as instrumentation hooks, custom
 processors/exporters, context managers and resource detectors. The snippet supports the listed
@@ -241,10 +244,13 @@ await telemetry.shutdown();
 
 Use `telemetry.userContext.setAuthenticatedUserContext(userId, accountId)` only with identifiers
 approved for telemetry. Do not use raw personal information, secrets, or tokens. Authenticated
-identity persists by default. Set `userContext: { enabled: false }` at startup for memory-only
-authenticated identity without managed anonymous-ID enrichment, or use `storage: { enabled: false }`
-to block all SDK-managed storage. Call
-`clearAuthenticatedUserContext()` during sign-out.
+identity is memory-only by default; pass `true` as the third argument
+(`telemetry.userContext.setAuthenticatedUserContext(userId, accountId, true)`) to opt into a session
+cookie. `userContext: { enabled: false }` disables managed anonymous-ID enrichment and identity
+persistence; it is not required for memory-only authenticated identity. To block both SDK-managed
+Web Storage and cookies, use `storage: { enabled: false }` together with
+`cookieCfg: { enabled: false, disableCookieDefer: true }`. Call
+`telemetry.userContext.clearAuthenticatedUserContext()` during sign-out.
 
 ## Validate the integration
 
