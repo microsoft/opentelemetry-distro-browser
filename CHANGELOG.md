@@ -23,10 +23,6 @@ All notable changes to this package are documented in this file.
   and span events, bounded to 8 KiB UTF-8 per attachment. Redact credentials and selected parameters
   in script URLs; preserve application-provided attributes.
 
-### Fixed
-
-- Clarify browser installation in contributor setup.
-
 ## 0.1.0-beta.2 - 2026-11-05
 
 ### Added
