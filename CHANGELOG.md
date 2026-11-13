@@ -10,6 +10,8 @@ All notable changes to this package are documented in this file.
 
 ### Added
 
+- Add an optional `/debug` entry with an in-page telemetry inspector, bounded snapshots, export
+  results, and opt-in SDK User Timing marks and measures.
 - Continue server-provided W3C trace context from HTML meta tags or navigation `Server-Timing`
   for initial page telemetry, with a `pageView.useServerTraceContext` opt-out. SPA routes retain
   independent traces.
