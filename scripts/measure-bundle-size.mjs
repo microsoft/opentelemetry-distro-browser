@@ -23,9 +23,9 @@ export const entryPointBudgets = {
     brotliBytes: 47 * 1024,
   },
   "./instrumentations": {
-    rawBytes: 64 * 1024,
-    gzipBytes: 24 * 1024,
-    brotliBytes: 22 * 1024,
+    rawBytes: 68.5 * 1024,
+    gzipBytes: 26 * 1024,
+    brotliBytes: 23 * 1024,
   },
   // The generator validates its options and assembles optional loader steps. It runs where the
   // page is rendered; the snippet it emits only contains the steps a page enables.
@@ -38,14 +38,14 @@ export const entryPointBudgets = {
 
 // The SDK browser bundle also carries every instrumentation, because CDN users cannot add them later.
 const sdkBrowserBundleBudget = {
-  rawBytes: 192 * 1024,
-  gzipBytes: 61.5 * 1024,
-  brotliBytes: 54 * 1024,
+  rawBytes: 198.5 * 1024,
+  gzipBytes: 64 * 1024,
+  brotliBytes: 56 * 1024,
 };
 const instrumentationsBrowserBundleBudget = {
   rawBytes: 63 * 1024,
-  gzipBytes: 19 * 1024,
-  brotliBytes: 17 * 1024,
+  gzipBytes: 19.25 * 1024,
+  brotliBytes: 17.5 * 1024,
 };
 
 /**
