@@ -23,7 +23,7 @@ const formats = [
   ["umd.js", "umd.js"],
 ];
 
-/** Returns the CDN release folder: `b` for stable releases, else the prerelease identifier. */
+/** Validates the release version and returns its channel, independently of the CDN destination. */
 export function getCdnChannel(version) {
   const match = /^\d+\.\d+\.\d+(?:-([a-z]+)(?:\.\d+)?)?$/.exec(version);
   if (!match) throw new Error(`Unsupported CDN release version ${version}.`);
@@ -34,10 +34,9 @@ export function getCdnChannel(version) {
   return channel;
 }
 
-/** Explicit destinations preserve the full release version; omission keeps legacy channel routing. */
-export function getCdnPath(version, destination) {
-  const channel = getCdnChannel(version);
-  if (destination === undefined) return `scripts/otel/${channel}`;
+/** Versioned files default to next; release channels never add a CDN subdirectory. */
+export function getCdnPath(version, destination = "next") {
+  getCdnChannel(version);
   if (destination === "next") return "next/otel";
   if (destination === "public") return "scripts/otel";
   throw new Error(`Unsupported CDN destination ${destination}; expected next or public.`);

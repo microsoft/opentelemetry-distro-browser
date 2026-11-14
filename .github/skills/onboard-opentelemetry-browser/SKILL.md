@@ -73,13 +73,15 @@ console.log(`<script>${loader}</script>`);
 
 Place the generated `<script>` as the first script in the page `<head>`, before application code
 that makes requests or emits telemetry. With no `src`, the helper selects the immutable CDN IIFE
-bundle matching the installed package version. Stable versions use the `b` CDN channel;
-prereleases use their identifier, such as `alpha`, `beta`, or `rc`.
+bundle matching the installed package version from `https://js.monitor.azure.com/next/otel/`.
+The full version, including any prerelease suffix, stays in the filename; do not add a release-channel
+subdirectory. The public destination is `https://js.monitor.azure.com/scripts/otel/`.
 
 For an application without npm, use the generated copy/paste block under **Snippet setup** in this
 [package README](https://github.com/microsoft/opentelemetry-distro-browser#snippet-setup). Replace
-`CHANNEL`, `VERSION`, `YOUR_CONNECTION_STRING`, and `YOUR_INTEGRITY` with values from one package
-release. Keep the bundle version and integrity manifest version identical.
+`YOUR_CONNECTION_STRING` and `YOUR_INTEGRITY`; the example uses the published `0.1.0-beta.2`
+preview bundle. Keep the bundle version and integrity manifest version identical when selecting
+another release. Do not substitute a major-only URL until its alias has been activated and verified.
 
 Basic `getSdkLoaderScript()` fields:
 
