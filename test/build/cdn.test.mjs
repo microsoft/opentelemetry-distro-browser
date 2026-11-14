@@ -44,11 +44,12 @@ test("maps release versions to CDN channels", () => {
   assert.throws(() => getCdnChannel("latest"), /Unsupported CDN release version/);
   assert.equal(
     getCdnUrl("1.2.3", "opentelemetry-browser.1.2.3.min.js"),
-    "https://js.monitor.azure.com/scripts/otel/b/opentelemetry-browser.1.2.3.min.js",
+    "https://js.monitor.azure.com/next/otel/opentelemetry-browser.1.2.3.min.js",
   );
 });
 
 for (const [destination, path] of [
+  [undefined, "next/otel"],
   ["next", "next/otel"],
   ["public", "scripts/otel"],
 ]) {
@@ -113,7 +114,7 @@ for (const [destination, path] of [
       const file = option("--file");
       const bytes = readFileSync(file);
       assert.equal(option("--content-md5"), sha("md5", bytes));
-      if (blob.endsWith(".integrity.json")) {
+      if (destination !== undefined && blob.endsWith(".integrity.json")) {
         assert.notEqual(file, resolve(cdnDirectory, basename(blob)));
         temporaryPaths.push(file);
       }
@@ -140,7 +141,9 @@ for (const [destination, path] of [
       container: "cdn",
       destination,
       run,
-      activate: async () => {},
+      activate: async () => {
+        assert.equal(destination, "next", "default publication must not activate aliases");
+      },
       log: () => {},
       verify: async (options) => {
         assert.equal(options.destination, destination);
@@ -178,7 +181,11 @@ for (const [destination, path] of [
     assert.equal(verifications, 2, "conflicting publish does not verify");
     stored.set(integrityUpload.blob, saved);
     const json = JSON.parse(saved.bytes);
-    json.ext["@min.js"].url = getCdnUrl(version, json.ext["@min.js"].file);
+    json.ext["@min.js"].url = getCdnUrl(
+      version,
+      json.ext["@min.js"].file,
+      destination === "public" ? "next" : "public",
+    );
     stored.set(integrityUpload.blob, { ...saved, bytes: Buffer.from(JSON.stringify(json)) });
     await assert.rejects(
       verifyCdn({ version, destination, fetch, remoteOnly: true, log: () => {} }),
@@ -208,7 +215,12 @@ for (const [destination, path] of [
       }),
       /Failed to upload .*upload failed/,
     );
-    await assert.rejects(readFile(failedPath), { code: "ENOENT" });
+    if (destination === undefined) {
+      assert.equal(failedPath, resolve(cdnDirectory, basename(failedPath)));
+      await readFile(failedPath);
+    } else {
+      await assert.rejects(readFile(failedPath), { code: "ENOENT" });
+    }
   });
 
   test(`${destination} dry-run is offline and tst uploads never verify production`, async () => {
@@ -220,7 +232,9 @@ for (const [destination, path] of [
       destination,
       log: (line) => logs.push(line),
       verify: () => assert.fail("must not verify production CDN"),
-      activate: async () => {},
+      activate: async () => {
+        assert.equal(destination, "next", "default publication must not activate aliases");
+      },
     };
     await publishCdn({
       ...options,
@@ -244,7 +258,13 @@ for (const [destination, path] of [
 
     const cli = spawnSync(
       process.execPath,
-      ["scripts/publish-cdn.mjs", "--account", "store", "--destination", destination, "--dry-run"],
+      [
+        "scripts/publish-cdn.mjs",
+        "--account",
+        "store",
+        ...(destination === undefined ? [] : ["--destination", destination]),
+        "--dry-run",
+      ],
       { cwd: root, encoding: "utf8", timeout: 30_000 },
     );
     assert.equal(cli.status, 0, cli.stderr);
@@ -310,7 +330,7 @@ test("the snippet loads this version's CDN bundle by default", async () => {
 test("the documented snippets match the generated loader", async () => {
   const { getSdkLoaderScript } = await import("../../dist/esm/snippet.js");
   const script = getSdkLoaderScript({
-    src: "https://js.monitor.azure.com/scripts/otel/CHANNEL/opentelemetry-browser.VERSION.min.js",
+    src: "https://js.monitor.azure.com/next/otel/opentelemetry-browser.0.1.0-beta.2.min.js",
     connectionString: "YOUR_CONNECTION_STRING",
     integrity: "YOUR_INTEGRITY",
   });
@@ -538,9 +558,7 @@ test("publishes immutable files without overwriting and uploads integrity files 
     uploads.filter(({ file }) => file.endsWith(".svg")).map(({ contentType }) => contentType),
     modules.map(() => "image/svg+xml; charset=utf-8"),
   );
-  assert.ok(
-    uploads.every(({ blob }) => blob.startsWith(`scripts/otel/${getCdnChannel(version)}/`)),
-  );
+  assert.ok(uploads.every(({ blob }) => blob.startsWith("next/otel/")));
 
   const calls = [];
   const existingMd5 = sha("md5", await readFile(resolve(cdnDirectory, uploads[1].file)));
