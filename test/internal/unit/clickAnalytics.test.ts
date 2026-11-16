@@ -915,6 +915,78 @@ describe("ClickAnalyticsInstrumentation", () => {
     },
   );
 
+  it.each(["manual", "capture", "hook"])(
+    "omits malformed absolute URLs from %s actions without dropping the event",
+    async (source) => {
+      const { instrumentation, records } = createInstrumentation();
+      instrumentation.enable();
+      const target = element('<button data-id="safe"></button>');
+      const urls = [
+        "https://user:password@example.test:invalid/path?token=secret",
+        "http://user:password@example.test:99999/path?token=secret",
+        " \nHTTPS://user:password@example.test:invalid/path?token=secret",
+        "ht\ttps://user:password@example.test:invalid/path?token=secret",
+      ];
+      for (const url of urls) {
+        if (source === "capture") {
+          instrumentation.setConfig({
+            enabled: true,
+            coreData: { requestUri: url },
+          });
+          instrumentation.capturePageAction(target, { refUri: url, targetUri: url });
+        } else {
+          if (source === "hook") {
+            instrumentation.setConfig({
+              enabled: true,
+              applyCustomLogRecordData: (record) => {
+                record.attributes = Object.freeze({
+                  "url.full": url,
+                  "url.referrer": url,
+                  "browser.click.target_url": url,
+                });
+              },
+            });
+          }
+          instrumentation.trackPageAction({ name: "safe", uri: url, refUri: url, targetUri: url });
+        }
+      }
+      const exported = await records();
+      expect(exported).toHaveLength(urls.length);
+      for (const record of exported) {
+        expect(record.eventName).toBe("browser.click");
+        for (const key of ["url.full", "url.referrer", "browser.click.target_url"]) {
+          expect(record.attributes).not.toHaveProperty(key);
+        }
+      }
+    },
+  );
+
+  it.each(["manual", "hook"])("preserves opaque URL labels from %s actions", async (source) => {
+    const attributes = {
+      "url.full": "page label",
+      "url.referrer": "/relative/referrer",
+      "browser.click.target_url": "target label",
+    };
+    const { instrumentation, records } = createInstrumentation({
+      applyCustomLogRecordData:
+        source === "hook"
+          ? (record) => {
+              record.attributes = attributes;
+            }
+          : undefined,
+    });
+    instrumentation.enable();
+    instrumentation.trackPageAction({
+      name: "labels",
+      uri: attributes["url.full"],
+      refUri: attributes["url.referrer"],
+      targetUri: attributes["browser.click.target_url"],
+    });
+    const exported = await records();
+    expect(exported).toHaveLength(1);
+    expect(exported[0].attributes).toMatchObject(attributes);
+  });
+
   it("redacts frozen hook attributes without mutating the hook-owned object", async () => {
     const attributes = Object.freeze({
       "url.full": "https://user:password@example.test/page?token=secret&keep=yes",
