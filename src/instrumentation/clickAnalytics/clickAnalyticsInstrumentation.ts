@@ -302,7 +302,12 @@ export class ClickAnalyticsInstrumentation extends InstrumentationBase<ClickAnal
         try {
           outputAttributes[key] = redactUrl(url);
         } catch {
-          // Upstream permits non-URL strings for explicit page-action fields.
+          // Preserve non-URL labels, but fail closed for malformed absolute URLs.
+          // eslint-disable-next-line no-control-regex -- URL parsing trims leading ASCII C0/space.
+          const normalized = url.replace(/^[\x00-\x20]+|[\t\n\r]/g, "");
+          if (/^(?:[a-z][a-z\d+.-]*:|[^\s/?#]*:\/\/)/i.test(normalized)) {
+            delete outputAttributes[key];
+          }
         }
       }
       if (this.enabledState) this.logger.emit(record);

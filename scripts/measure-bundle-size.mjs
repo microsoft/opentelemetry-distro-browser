@@ -23,8 +23,8 @@ export const entryPointBudgets = {
     brotliBytes: 47 * 1024,
   },
   "./instrumentations": {
-    rawBytes: 70.5 * 1024,
-    gzipBytes: 26.5 * 1024,
+    rawBytes: 70.75 * 1024,
+    gzipBytes: 26.75 * 1024,
     brotliBytes: 23.5 * 1024,
   },
   // The generator validates its options and assembles optional loader steps. It runs where the

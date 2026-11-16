@@ -1006,9 +1006,10 @@ page type feed their dedicated fields, while `market` is omitted.
 After `applyCustomLogRecordData`, built-in redaction applies to absolute URLs in `url.full`,
 `url.referrer` and `browser.click.target_url`, including supplied and hook-added values. It redacts
 credentials and the default sensitive query/fragment parameters listed under [page-view options](#page-view-options).
-Page-view sanitizer settings do not apply. Query/hash collection flags affect only the derived page
-URI. Relative or opaque non-URL strings are retained unchanged; content, properties and other fields
-are not sanitized. Review and sanitize those in application code or `applyCustomLogRecordData`.
+Malformed absolute URL values are omitted without dropping the click event. Page-view sanitizer
+settings do not apply. Query/hash collection flags affect only the derived page URI. Relative or
+opaque non-URL strings are retained unchanged; content, properties and other fields are not sanitized.
+Review and sanitize those in application code or `applyCustomLogRecordData`.
 
 #### Application Insights parity target and differences
 

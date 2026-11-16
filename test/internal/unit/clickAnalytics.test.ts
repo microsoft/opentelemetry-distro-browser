@@ -866,16 +866,20 @@ describe("ClickAnalyticsInstrumentation", () => {
     expect(record.attributes.custom).toBe("kept");
   });
 
-  it.each([false, true])(
-    "redacts secrets in every absolute URL field after the custom hook (hook=%s)",
-    async (hook) => {
+  it.each([
+    [false, false],
+    [true, false],
+    [false, true],
+    [true, true],
+  ])(
+    "redacts secrets in every absolute URL field after the custom hook (hook=%s, parser whitespace=%s)",
+    async (hook, whitespace) => {
+      const scheme = whitespace ? "\u0000 \nht\rt\tp\ns" : "https";
       const action: ClickAnalyticsPageAction = {
         name: "redacted",
-        uri: "https://user:password@example.test/page?token=page-secret&keep=page#access_token=page-fragment",
-        refUri:
-          "https://user:password@example.test/referrer?token=referrer-secret&keep=referrer#access_token=referrer-fragment",
-        targetUri:
-          "https://user:password@example.test/target?token=target-secret&keep=target#access_token=target-fragment",
+        uri: `${scheme}://user:password@example.test/page?token=page-secret&keep=page#access_token=page-fragment`,
+        refUri: `${scheme}://user:password@example.test/referrer?token=referrer-secret&keep=referrer#access_token=referrer-fragment`,
+        targetUri: `${scheme}://user:password@example.test/target?token=target-secret&keep=target#access_token=target-fragment`,
       };
       const applyCustomLogRecordData = vi.fn((record: LogRecord) => {
         expect(record.attributes).toMatchObject({
@@ -926,6 +930,14 @@ describe("ClickAnalyticsInstrumentation", () => {
         "http://user:password@example.test:99999/path?token=secret",
         " \nHTTPS://user:password@example.test:invalid/path?token=secret",
         "ht\ttps://user:password@example.test:invalid/path?token=secret",
+        "\u0000\u001fHTTPS://user:password@example.test:invalid/path?token=secret",
+        "ht\rtp\ns://user:password@example.test:invalid/path?token=secret",
+        "ftp://user:password@example.test:invalid/path?token=secret",
+        "wss://user:password@example.test:99999/path?token=secret",
+        "custom+v1.test://user:password@example.test:invalid/path?token=secret",
+        "1https://user:password@example.test:invalid/path?token=secret",
+        "ht*tp://user:password@example.test/path?token=secret",
+        "://user:password@example.test/path?token=secret",
       ];
       for (const url of urls) {
         if (source === "capture") {
@@ -933,27 +945,33 @@ describe("ClickAnalyticsInstrumentation", () => {
             enabled: true,
             coreData: { requestUri: url },
           });
-          instrumentation.capturePageAction(target, { refUri: url, targetUri: url });
+          instrumentation.capturePageAction(target, Object.freeze({ refUri: url, targetUri: url }));
         } else {
           if (source === "hook") {
             instrumentation.setConfig({
               enabled: true,
               applyCustomLogRecordData: (record) => {
                 record.attributes = Object.freeze({
+                  ...record.attributes,
                   "url.full": url,
                   "url.referrer": url,
                   "browser.click.target_url": url,
+                  custom: "kept",
                 });
               },
             });
           }
-          instrumentation.trackPageAction({ name: "safe", uri: url, refUri: url, targetUri: url });
+          instrumentation.trackPageAction(
+            Object.freeze({ name: "safe", uri: url, refUri: url, targetUri: url }),
+          );
         }
       }
       const exported = await records();
       expect(exported).toHaveLength(urls.length);
       for (const record of exported) {
         expect(record.eventName).toBe("browser.click");
+        expect(record.attributes["browser.click.name"]).toBe("safe");
+        if (source === "hook") expect(record.attributes.custom).toBe("kept");
         for (const key of ["url.full", "url.referrer", "browser.click.target_url"]) {
           expect(record.attributes).not.toHaveProperty(key);
         }
@@ -963,9 +981,9 @@ describe("ClickAnalyticsInstrumentation", () => {
 
   it.each(["manual", "hook"])("preserves opaque URL labels from %s actions", async (source) => {
     const attributes = {
-      "url.full": "page label",
+      "url.full": "page label: action",
       "url.referrer": "/relative/referrer",
-      "browser.click.target_url": "target label",
+      "browser.click.target_url": "target label://destination",
     };
     const { instrumentation, records } = createInstrumentation({
       applyCustomLogRecordData:

@@ -13,6 +13,7 @@ import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
 import {
   BatchLogRecordProcessor,
   InMemoryLogRecordExporter,
+  LoggerProvider,
   SimpleLogRecordProcessor,
 } from "@opentelemetry/sdk-logs";
 import {
@@ -216,6 +217,64 @@ test("click analytics exposes a type-only capture interface and matching factory
   }
   const snippetDeclarations = await readFile(new URL("dist/esm/snippet.d.ts", root), "utf8");
   assert.doesNotMatch(snippetDeclarations, /clickAnalytics|ClickAnalytics/);
+});
+
+test("ESM and CommonJS omit malformed click URLs after hooks without dropping events", async () => {
+  const urls = [
+    "\u0000 \nht\rt\tp\ns://user:password@example.test:invalid/path?token=secret",
+    "1https://user:password@example.test:invalid/path?token=secret",
+    "ht*tp://user:password@example.test/path?token=secret",
+    "://user:password@example.test/path?token=secret",
+  ];
+  for (const instrumentations of [
+    await import(`${pkg.name}/instrumentations`),
+    require(`${pkg.name}/instrumentations`),
+  ]) {
+    const exporter = new InMemoryLogRecordExporter();
+    const provider = new LoggerProvider({
+      processors: [new SimpleLogRecordProcessor({ exporter })],
+    });
+    const clicks = await instrumentations.createClickAnalyticsInstrumentation({
+      autoCapture: false,
+    });
+    try {
+      clicks.setLoggerProvider(provider);
+      clicks.enable();
+      for (const url of urls) {
+        const attributes = Object.freeze({
+          "url.full": url,
+          "url.referrer": url,
+          "browser.click.target_url": url,
+          custom: "kept",
+        });
+        clicks.setConfig({
+          enabled: true,
+          autoCapture: false,
+          applyCustomLogRecordData: (record) => {
+            record.attributes = Object.freeze({ ...record.attributes, ...attributes });
+          },
+        });
+        clicks.trackPageAction({ name: "safe" });
+        for (const key of ["url.full", "url.referrer", "browser.click.target_url"]) {
+          assert.equal(attributes[key], url);
+        }
+      }
+      await provider.forceFlush();
+      const records = exporter.getFinishedLogRecords();
+      assert.equal(records.length, urls.length);
+      for (const record of records) {
+        assert.equal(record.eventName, "browser.click");
+        assert.deepEqual(record.attributes, {
+          "browser.click.name": "safe",
+          "browser.click.properties": "{}",
+          custom: "kept",
+        });
+      }
+    } finally {
+      clicks.disable();
+      await provider.shutdown();
+    }
+  }
 });
 
 test("SDK stats expose root configuration without runtime exports or snippet configuration", async () => {
