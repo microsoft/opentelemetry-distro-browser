@@ -6,6 +6,7 @@ import type { RouterState } from "../routing/instanceRouter.js";
 import type { PageContextState } from "../routing/pageContext.js";
 import type { BrowserPatchState } from "../instrumentation/sharedBrowserPatches.js";
 import type { DependencyPatch } from "../instrumentation/browserInstrumentation/dependencyEnrichment.js";
+import type { SharedDiagnostics } from "../diagnostics.js";
 
 const distroKey = /* @__PURE__ */ Symbol.for("@microsoft/opentelemetry-browser");
 const apiKey = /* @__PURE__ */ Symbol.for("opentelemetry.js.api.1");
@@ -55,6 +56,7 @@ export function isConfigurationUrl(url: unknown): boolean {
 interface SharedRegistry {
   version: 1;
   diagInitialized?: boolean;
+  diagnostics?: SharedDiagnostics;
   reportingSdkStats?: boolean;
   pageContexts?: WeakSet<SpanContext>;
   /** Managed remote parents must not be treated as synthetic contexts by sampling or export. */
