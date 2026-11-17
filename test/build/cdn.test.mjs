@@ -87,12 +87,12 @@ for (const [destination, path] of [
       version,
       sourceDirectory: resolve(root, "dist", "browser"),
       outputDirectory: directory,
-      destination,
+      destination: destination === "public" ? "next" : "public",
     });
     const uploads = getCdnUploads(version, destination);
     const original = new Map(
       await Promise.all(
-        uploads.map(async ({ file }) => [file, await readFile(resolve(cdnDirectory, file))]),
+        uploads.map(async ({ file }) => [file, await readFile(resolve(directory, file))]),
       ),
     );
     const stored = new Map();
@@ -114,8 +114,8 @@ for (const [destination, path] of [
       const file = option("--file");
       const bytes = readFileSync(file);
       assert.equal(option("--content-md5"), sha("md5", bytes));
-      if (destination !== undefined && blob.endsWith(".integrity.json")) {
-        assert.notEqual(file, resolve(cdnDirectory, basename(blob)));
+      if (blob.endsWith(".integrity.json")) {
+        assert.notEqual(file, resolve(directory, basename(blob)));
         temporaryPaths.push(file);
       }
       stored.set(blob, {
@@ -140,6 +140,7 @@ for (const [destination, path] of [
       account: "store",
       container: "cdn",
       destination,
+      directory,
       run,
       activate: async () => {
         assert.equal(destination, "next", "default publication must not activate aliases");
@@ -156,17 +157,20 @@ for (const [destination, path] of [
     assert.equal(verifications, 1);
     for (const upload of uploads) {
       const bytes = stored.get(upload.blob).bytes;
-      assert.deepEqual(bytes, await readFile(resolve(directory, upload.file)));
-      assert.deepEqual(
-        await readFile(resolve(cdnDirectory, upload.file)),
-        original.get(upload.file),
-      );
+      assert.deepEqual(await readFile(resolve(directory, upload.file)), original.get(upload.file));
       if (upload.file.endsWith(".integrity.json")) {
         const json = JSON.parse(bytes);
+        const expected = JSON.parse(original.get(upload.file));
+        for (const entry of Object.values(expected.ext)) {
+          entry.url = `https://js.monitor.azure.com/${path}/${entry.file}`;
+        }
+        assert.deepEqual(json, expected);
         for (const entry of Object.values(json.ext)) {
           assert.equal(entry.url, `https://js.monitor.azure.com/${path}/${entry.file}`);
           assert.equal(entry.hashes.sha384, sha("sha384", original.get(entry.file)));
         }
+      } else {
+        assert.deepEqual(bytes, original.get(upload.file));
       }
     }
     for (const file of temporaryPaths) await assert.rejects(readFile(file), { code: "ENOENT" });
@@ -215,12 +219,7 @@ for (const [destination, path] of [
       }),
       /Failed to upload .*upload failed/,
     );
-    if (destination === undefined) {
-      assert.equal(failedPath, resolve(cdnDirectory, basename(failedPath)));
-      await readFile(failedPath);
-    } else {
-      await assert.rejects(readFile(failedPath), { code: "ENOENT" });
-    }
+    await assert.rejects(readFile(failedPath), { code: "ENOENT" });
   });
 
   test(`${destination} dry-run is offline and tst uploads never verify production`, async () => {
@@ -308,16 +307,20 @@ test("rejects malformed destination integrity metadata", async (t) => {
   const json = JSON.parse(await readFile(resolve(cdnDirectory, file)));
   delete json.ext["@min.js"];
   await writeFile(resolve(directory, file), JSON.stringify(json));
-  await assert.rejects(
-    readCdnFile(version, file, directory, "next"),
-    /Invalid CDN integrity metadata/,
-  );
+  for (const destination of [undefined, "next", "public"]) {
+    await assert.rejects(
+      readCdnFile(version, file, directory, destination),
+      /Invalid CDN integrity metadata/,
+    );
+  }
   json.ext["@min.js"] = { file: "wrong.js" };
   await writeFile(resolve(directory, file), JSON.stringify(json));
-  await assert.rejects(
-    readCdnFile(version, file, directory, "public"),
-    /Invalid CDN integrity entry/,
-  );
+  for (const destination of [undefined, "next", "public"]) {
+    await assert.rejects(
+      readCdnFile(version, file, directory, destination),
+      /Invalid CDN integrity entry/,
+    );
+  }
 });
 
 test("the snippet loads this version's CDN bundle by default", async () => {

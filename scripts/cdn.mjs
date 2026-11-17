@@ -147,10 +147,10 @@ export function getCdnUploads(version, destination) {
   }));
 }
 
-/** Reads prepared bytes, adapting only integrity URLs for an explicit publishing destination. */
+/** Reads prepared bytes, adapting integrity URLs to the effective publishing destination. */
 export async function readCdnFile(version, file, directory = cdnDirectory, destination) {
   const bytes = await readFile(resolve(directory, file));
-  if (destination === undefined || !file.endsWith(".integrity.json")) return bytes;
+  if (!file.endsWith(".integrity.json")) return bytes;
   const json = JSON.parse(bytes.toString("utf8"));
   const artifacts = getCdnArtifacts(version).filter(
     ({ module }) => file === `${module}.${version}.integrity.json`,

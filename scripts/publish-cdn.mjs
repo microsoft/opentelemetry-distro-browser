@@ -388,7 +388,7 @@ export async function publishCdn({
         throw new Error(`Unable to check ${upload.url}: ${existing.stderr.trim()}`);
       }
 
-      if (destination !== undefined && upload.file.endsWith(".integrity.json")) {
+      if (upload.file.endsWith(".integrity.json")) {
         temporaryDirectory ??= await mkdtemp(resolve(tmpdir(), "otel-cdn-"));
         path = resolve(temporaryDirectory, upload.file);
         await writeFile(path, bytes);

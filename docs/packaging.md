@@ -237,9 +237,12 @@ audit an earlier release.
 Use `--major --destination public --version <full-version>` to audit promoted aliases after CDN
 caches expire; it checks their short cache policy, full activated version and alias-specific hashes.
 
-The `./snippet` helper generates the copy/paste loader. Without `src`, it loads the `min.js` IIFE
-bundle for the package version from `next/otel/`, so the snippet and the bundle versions
-always match, including prerelease suffixes. Set `src` to an explicit public versioned URL or a
+The `./snippet` helper generates the copy/paste loader. The published `0.1.0-beta.2` helper still
+defaults to the obsolete `/scripts/otel/beta/` path. When using that package, set
+`src: "https://js.monitor.azure.com/next/otel/opentelemetry-browser.0.1.0-beta.2.min.js"`
+explicitly. The corrected default requires a release containing the CDN-path fix: without `src`,
+that helper loads the `min.js` IIFE bundle for its package version from `next/otel/`, retaining
+the full version including prerelease suffixes. Set `src` to an explicit public versioned URL or a
 verified, activated major-alias URL to override it.
 A fixed `integrity` value pins the current bytes; omit it for an auto-updating alias
 or update it together with the alias. It enables the
