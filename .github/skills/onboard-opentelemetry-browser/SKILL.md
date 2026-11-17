@@ -59,7 +59,9 @@ Use the snippet when the customer wants Azure Monitor telemetry with page views 
 and XHR dependency collection and does not need custom initialization options.
 
 Add exactly one loader snippet per page. Import the ESM-only snippet helper from the package version
-used by the application:
+used by the application. This example assumes `@microsoft/opentelemetry-browser@0.1.0-beta.2` is
+installed. For another installed version, use that release's published bundle URL and matching
+integrity manifest instead of the beta.2 URL:
 
 ```javascript
 import { getSdkLoaderScript } from "@microsoft/opentelemetry-browser/snippet";
@@ -101,7 +103,10 @@ artifact does not set this global when an AMD loader is present, so the snippet 
 environment.
 
 For Subresource Integrity, read the `@min.js` entry from the release's
-`opentelemetry-browser.<version>.integrity.json` file and pass its `integrity` value:
+`opentelemetry-browser.<version>.integrity.json` file and pass its `integrity` value. This example
+also assumes the installed package is beta.2 and uses its published bundle URL; replace `sha384-...`
+with that bundle's integrity value. For another installed version, use its published bundle URL
+and matching manifest together:
 
 ```javascript
 const loader = getSdkLoaderScript({
