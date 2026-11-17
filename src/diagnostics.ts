@@ -168,12 +168,13 @@ function createDiagnostics(options: ReturnType<typeof captureDiagnostics>) {
       const previous = flushPromise ?? Promise.resolve();
       const operation = previous
         .catch(() => {})
-        .then(() =>
-          runLifecycleTasks(
+        .then(() => {
+          if (!provider) return;
+          return runLifecycleTasks(
             processors.map((processor) => () => lifecycle(() => processor.forceFlush())),
             "Diagnostic flush failed",
-          ),
-        );
+          );
+        });
       const tracked = operation.finally(() => {
         if (flushPromise === tracked) flushPromise = undefined;
       });

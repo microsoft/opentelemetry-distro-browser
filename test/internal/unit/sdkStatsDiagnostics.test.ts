@@ -28,6 +28,7 @@ import {
   reportWithoutTelemetry,
 } from "../../../src/shared/globalOwnership.js";
 import { TEST_INSTRUMENTATION_KEY } from "../../fixtures/azureMonitor.js";
+import { installFakeClock } from "../../fixtures/clock.js";
 import { createConsolePipeline, createInMemoryPipeline } from "../../fixtures/telemetry.js";
 
 const owners: Array<{ shutdown(): Promise<void> }> = [];
@@ -800,6 +801,54 @@ it("serializes shared flushes so a later handle flush includes intervening diagn
   complete();
   await Promise.all([flushing, later]);
   expect(processor.forceFlush).toHaveBeenCalledTimes(2);
+});
+
+it("skips queued diagnostic flushes that outlive the shutdown deadline", async () => {
+  const clock = installFakeClock();
+  const processor = diagnosticProcessor();
+  processor.forceFlush.mockImplementation(
+    () => new Promise<void>((resolve) => setTimeout(resolve, 25_000)),
+  );
+  let completeShutdown!: () => void;
+  processor.shutdown.mockImplementation(
+    () =>
+      new Promise<void>((resolve) => {
+        completeShutdown = resolve;
+      }),
+  );
+  const handles = await Promise.all(
+    Array.from({ length: 4 }, () =>
+      useMicrosoftOpenTelemetry({
+        ...diagnosticDefaults,
+        diagnostics: { consoleLogLevel: DiagLogLevel.NONE, logRecordProcessors: [processor] },
+      }),
+    ),
+  );
+  const flushes = Promise.allSettled(handles.map((handle) => handle.forceFlush()));
+  let stops: Promise<PromiseSettledResult<void>[]> | undefined;
+  try {
+    await clock.advance(30_000);
+    expect(await flushes).toMatchObject([
+      { status: "fulfilled" },
+      { status: "rejected" },
+      { status: "rejected" },
+      { status: "rejected" },
+    ]);
+    expect(processor.forceFlush).toHaveBeenCalledTimes(2);
+    stops = Promise.allSettled(handles.map((handle) => handle.shutdown()));
+    // The old queue starts its fourth flush at 75s, after shutdown's 60s wait deadline.
+    await clock.advance(45_000);
+    expect(processor.shutdown).toHaveBeenCalledOnce();
+    expect(processor.forceFlush).toHaveBeenCalledTimes(2);
+  } finally {
+    completeShutdown?.();
+    stops ??= Promise.allSettled(handles.map((handle) => handle.shutdown()));
+    await clock.advance(60_000);
+    await stops;
+  }
+  expect(processor.forceFlush).toHaveBeenCalledTimes(2);
+  expect(processor.shutdown).toHaveBeenCalledOnce();
+  expect(vi.getTimerCount()).toBe(0);
 });
 
 it("keeps first diagnostic ownership when a previous logger re-enters initialization", async () => {
