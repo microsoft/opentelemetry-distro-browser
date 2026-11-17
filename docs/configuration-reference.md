@@ -33,7 +33,7 @@ only in client-side code, before importing application code to instrument.
 | `traces`              | `MicrosoftOpenTelemetryBrowserTraceOptions`       | Synchronous context tracking, W3C Trace Context and Baggage propagation.                                                                                                                                                  |
 | `spanProcessors`      | `SpanProcessor[]`                                 | Additional trace processors. They run before the Azure Monitor default when configured, unless `[]` disables traces. Without Azure Monitor, only supplied processors export. See [enrichment](#enrichment-and-filtering). |
 | `logRecordProcessors` | `LogRecordProcessor[]`                            | Additional log processors. They run before the Azure Monitor default when configured, unless `[]` disables logs. Without Azure Monitor, only supplied processors export. See [enrichment](#enrichment-and-filtering).     |
-| `diagnostics`         | `MicrosoftOpenTelemetryBrowserDiagnosticsOptions` | **Unreleased.** Page-wide SDK diagnostics: console `INFO`, telemetry `NONE`. See [SDK diagnostics](#sdk-diagnostics-unreleased).                                                                                          |
+| `diagnostics`         | `MicrosoftOpenTelemetryBrowserDiagnosticsOptions` | **Unreleased.** Page-wide SDK diagnostics: console `INFO`, telemetry `NONE`. See [SDK diagnostics](#sdk-diagnostics).                                                                                                     |
 | `instrumentations`    | `readonly BrowserInstrumentation[]`               | Empty. Pass instances returned by `getInstrumentations()` or compatible upstream instances. Built-in page views are configured separately.                                                                                |
 | `pageView`            | `PageViewInstrumentationConfig`                   | Collection and page-operation correlation enabled. Requires a log pipeline to export page-view records.                                                                                                                   |
 | `expCfg`              | `MicrosoftOpenTelemetryBrowserExceptionOptions`   | Omitted: no exception attachments. Opt in to script URLs and application-supplied recent logs. See [exception attachments](#exception-attachments).                                                                       |
@@ -63,6 +63,14 @@ handles share the diagnostic lifetime. Only the last handle's shutdown stops the
 processors; diagnostic export then stays off for the rest of the page, including later
 initializations. The first console settings remain. An application `diag.setLogger()` override
 after initialization is preserved. Handle `forceFlush()` includes diagnostic processors.
+
+Copies predating diagnostic lifetime tracking use registry protocol version 1 and cannot share
+a page with this revision's version 2 registry. Mixed copies reject initialization with
+`distribution-version-conflict` in either order; use compatible copies throughout the page.
+Current standalone exporters can read existing version 1 page-correlation metadata without
+initializing a distribution. Older standalone exporters do not recognize version 2 metadata;
+they also cannot set its diagnostic feedback guard. Upgrade those exporters too when sharing
+a page with the current distribution.
 
 Diagnostic telemetry uses a separate, non-global `LoggerProvider`, without application processors,
 the application's resource, or managed user/session/page enrichment. Records use `ROOT_CONTEXT`
@@ -1177,7 +1185,7 @@ It generates a script; it does not itself initialize telemetry in the current pa
 | `cdnFallback`                                                                | `false`. Retry backup Azure Monitor CDN hosts; requires a recognized CDN source URL.                                                                              |
 | `reportLoadFailure`                                                          | `false`. Report an `SDKLoadFailed` exception after bundle load attempts fail.                                                                                     |
 | `samplingPercentage`, `azureMonitor.disableBeacon`, `session`, `userContext` | Same meanings as initialization options above.                                                                                                                    |
-| `diagnostics.consoleLogLevel`                                                | **Unreleased.** Native `DiagLogLevel` values only; omitted uses `INFO`. Other diagnostic keys are rejected. See [SDK diagnostics](#sdk-diagnostics-unreleased).   |
+| `diagnostics.consoleLogLevel`                                                | **Unreleased.** Native `DiagLogLevel` values only; omitted uses `INFO`. Other diagnostic keys are rejected. See [SDK diagnostics](#sdk-diagnostics).              |
 | `storage`                                                                    | Same `enabled` and `namePrefix` settings as initialization options above.                                                                                         |
 | `redactQueryParams`                                                          | Same additional sensitive parameter names as initialization options above.                                                                                        |
 | `cookieCfg`                                                                  | Data-only settings: `enabled`, `domain`, `path`, `ignoreCookies`, `blockedCookies`, `disableCookieDefer`. Cookie hooks are not supported by the snippet.          |

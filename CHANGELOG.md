@@ -6,6 +6,8 @@ All notable changes to this package are documented in this file.
 
 ### Fixed
 
+- Reject mixed pre-diagnostics and current distribution registry protocols in either initialization
+  order, preventing an older instance from bypassing shared diagnostic lifetime tracking.
 - Preserve attributes added by later log processors when Azure Monitor sampling adds metadata.
 
 ### Added

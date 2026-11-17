@@ -54,7 +54,7 @@ export function isConfigurationUrl(url: unknown): boolean {
 }
 
 interface SharedRegistry {
-  version: 1;
+  version: 2;
   diagInitialized?: boolean;
   diagnostics?: SharedDiagnostics;
   reportingSdkStats?: boolean;
@@ -127,18 +127,20 @@ export function getPageContexts(
   key: "pageContexts" | "pageParents" = "pageContexts",
 ): WeakSet<SpanContext> | undefined {
   const registry = realm[distroKey] as SharedRegistry | undefined;
-  return registry?.version === 1 ? registry[key] : undefined;
+  // Correlation data is read-only and has the same shape in both registry protocols.
+  return registry && [1, 2].includes(registry.version) ? registry[key] : undefined;
 }
 
 /** Prevents diagnostic feedback into telemetry. */
 export function isReportingSdkStats(): boolean {
   const registry = realm[distroKey] as SharedRegistry | undefined;
-  return registry?.version === 1 && registry.reportingSdkStats === true;
+  return registry?.reportingSdkStats === true && [1, 2].includes(registry.version);
 }
 
 export function reportWithoutTelemetry(report: () => void): void {
   const existing = realm[distroKey] as SharedRegistry | undefined;
-  const registry = existing?.version === 1 ? existing : undefined;
+  // Standalone exporters preserve the stable feedback guard in either protocol.
+  const registry = existing && [1, 2].includes(existing.version) ? existing : undefined;
   const previous = registry?.reportingSdkStats;
   if (registry) registry.reportingSdkStats = true;
   const restore: (() => void)[] = [];
@@ -187,7 +189,9 @@ export function reportWithoutTelemetry(report: () => void): void {
 /** Exporter-only consumers may read operation names without initializing a distribution. */
 export function getOperationName(record: object): string | undefined {
   const registry = realm[distroKey] as SharedRegistry | undefined;
-  return registry?.version === 1 ? registry.operationNames?.get(record) : undefined;
+  return registry && [1, 2].includes(registry.version)
+    ? registry.operationNames?.get(record)
+    : undefined;
 }
 
 /** One versioned, realm-local registry shared by separately bundled distribution copies. */
@@ -198,13 +202,14 @@ export function getSharedRegistry(): SharedRegistry {
       typeof existing !== "object" ||
       existing === null ||
       !("version" in existing) ||
-      existing.version !== 1
+      existing.version !== 2
     ) {
       conflict("distribution-version-conflict", "Incompatible browser distribution registry");
     }
     return existing as SharedRegistry;
   }
-  const registry: SharedRegistry = { version: 1 };
+  // Version 1 copies do not participate in the shared diagnostic processor lifetime.
+  const registry: SharedRegistry = { version: 2 };
   realm[distroKey] = registry;
   return registry;
 }

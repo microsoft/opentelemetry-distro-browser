@@ -375,20 +375,33 @@ it("restores console instrumentation when a stats diagnostic logger throws", () 
   expect(console.warn).toBe(wrappedWarn);
 });
 
-it("preserves an outer diagnostic guard when a nested diagnostic throws", () => {
-  getSharedRegistry();
-  expect(isReportingSdkStats()).toBe(false);
-  reportWithoutTelemetry(() => {
-    expect(isReportingSdkStats()).toBe(true);
+it.each([1, 2, 3].flatMap((version) => [false, true].map((previous) => ({ version, previous }))))(
+  "restores version $version diagnostic guards after nested errors with previous value $previous",
+  ({ version, previous }) => {
+    const registry = { version, reportingSdkStats: previous };
+    Reflect.set(globalThis, Symbol.for("@microsoft/opentelemetry-browser"), registry);
+    const compatible = version === 1 || version === 2;
+    expect(isReportingSdkStats()).toBe(compatible && previous);
     expect(() =>
       reportWithoutTelemetry(() => {
-        throw new Error("nested diagnostic");
+        // Legacy application providers read this flag directly, including custom diag loggers.
+        expect(registry.reportingSdkStats).toBe(compatible ? true : previous);
+        expect(isReportingSdkStats()).toBe(compatible);
+        expect(() =>
+          reportWithoutTelemetry(() => {
+            expect(registry.reportingSdkStats).toBe(compatible ? true : previous);
+            throw new Error("nested diagnostic");
+          }),
+        ).toThrow("nested diagnostic");
+        expect(registry.reportingSdkStats).toBe(compatible ? true : previous);
+        expect(isReportingSdkStats()).toBe(compatible);
+        throw new Error("outer diagnostic");
       }),
-    ).toThrow("nested diagnostic");
-    expect(isReportingSdkStats()).toBe(true);
-  });
-  expect(isReportingSdkStats()).toBe(false);
-});
+    ).toThrow("outer diagnostic");
+    expect(registry.reportingSdkStats).toBe(previous);
+    expect(isReportingSdkStats()).toBe(compatible && previous);
+  },
+);
 
 const diagnosticDefaults = {
   spanProcessors: [],
