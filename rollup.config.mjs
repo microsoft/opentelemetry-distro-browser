@@ -17,7 +17,7 @@ const compile = () => typescript({ tsconfig: "./tsconfig.src.json" });
 
 const unsafeIdleCallbackCheck = 'typeof window.requestIdleCallback === "function"';
 // Upstream resource timing reads `window` when its module is evaluated, which throws in a worker.
-// The global bundles inline every instrumentation, so guard the check until upstream does.
+// The global bundles inline supported instrumentations, so guard the check until upstream does.
 const workerSafeIdleCallback = {
   name: "worker-safe-idle-callback",
   transform(code, id) {
@@ -36,14 +36,13 @@ const cdnFeatures = {
   name: "cdn-features",
   transform(code, id) {
     if (!/[\\/]src[\\/]shared[\\/]buildFeatures\.ts$/.test(id)) return null;
-    const declaration = "export const CUSTOMER_SDK_STATS_ENABLED = true;";
-    const index = code.indexOf(declaration);
-    if (index === -1) this.error("Customer SDK Stats build flag was not found.");
-    const source = new MagicString(code).overwrite(
-      index,
-      index + declaration.length,
-      "export const CUSTOMER_SDK_STATS_ENABLED = false;",
-    );
+    const source = new MagicString(code);
+    for (const name of ["CUSTOMER_SDK_STATS_ENABLED", "CLICK_ANALYTICS_ENABLED"]) {
+      const declaration = `export const ${name} = true;`;
+      const index = code.indexOf(declaration);
+      if (index === -1) this.error(`${name} build flag was not found.`);
+      source.overwrite(index, index + declaration.length, `export const ${name} = false;`);
+    }
     return { code: source.toString(), map: source.generateMap({ hires: true }) };
   },
 };
@@ -118,6 +117,23 @@ const commonJsDeclarationImports = {
 
 export default [
   {
+    input: "src/debug/index.ts",
+    external: externalOpenTelemetry,
+    plugins: [compile()],
+    output: [
+      { ...esmOutput, file: "dist/esm/debug.js" },
+      { file: "dist/commonjs/debug.cjs", format: "cjs", exports: "named", sourcemap: true },
+    ],
+  },
+  {
+    input: "src/debug/index.ts",
+    plugins: [dts({ tsconfig: "./tsconfig.src.json" })],
+    output: [
+      { file: "dist/esm/debug.d.ts", format: "es" },
+      { file: "dist/commonjs/debug.d.cts", format: "es", plugins: [commonJsDeclarationImports] },
+    ],
+  },
+  {
     input: "src/index.ts",
     // Share APIs with npm consumers and let their bundler select the SDK platform.
     external: externalOpenTelemetry,
@@ -133,10 +149,12 @@ export default [
     // split out the instrumentations they enable.
     input: "src/instrumentation/browserInstrumentation/index.ts",
     external: externalOpenTelemetry,
-    plugins: [compile()],
+    plugins: [typescript({ tsconfig: "./tsconfig.src.json", outDir: "dist/esm" })],
     output: {
       ...esmOutput,
-      file: "dist/esm/instrumentations.js",
+      dir: "dist/esm",
+      entryFileNames: "instrumentations.js",
+      chunkFileNames: "click-analytics.js",
     },
   },
   {
@@ -153,9 +171,11 @@ export default [
   {
     input: "src/instrumentation/browserInstrumentation/index.ts",
     external: externalOpenTelemetry,
-    plugins: [compile()],
+    plugins: [typescript({ tsconfig: "./tsconfig.src.json", outDir: "dist/commonjs" })],
     output: {
-      file: "dist/commonjs/instrumentations.cjs",
+      dir: "dist/commonjs",
+      entryFileNames: "instrumentations.cjs",
+      chunkFileNames: "click-analytics.cjs",
       format: "cjs",
       exports: "named",
       sourcemap: true,
@@ -184,7 +204,7 @@ export default [
   },
   globalBundle("src/browser.ts", "opentelemetry-browser", "Microsoft.OpenTelemetry"),
   globalBundle(
-    "src/instrumentation/browserInstrumentation/index.ts",
+    "src/instrumentation/browserInstrumentation/browser.ts",
     "opentelemetry-browser-instrumentations",
     "Microsoft.OpenTelemetryInstrumentations",
   ),

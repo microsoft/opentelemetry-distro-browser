@@ -11,12 +11,27 @@ import {
   type MicrosoftOpenTelemetryBrowserInstrumentations,
   type MicrosoftOpenTelemetryBrowserOptions,
 } from "@microsoft/opentelemetry-browser";
-import { getInstrumentations } from "@microsoft/opentelemetry-browser/instrumentations";
+import {
+  getInstrumentations,
+  type DependencyInstrumentationOptions,
+} from "@microsoft/opentelemetry-browser/instrumentations";
+import { createTelemetryDebugger } from "@microsoft/opentelemetry-browser/debug";
 import type { AzureMonitorSdkStatsOptions } from "@microsoft/opentelemetry-browser";
+
+const dependencies: DependencyInstrumentationOptions = {
+  captureRequestHeaders: true,
+  captureResponseHeaders: true,
+  ignoreHeaders: ["x-secret"],
+  includeErrorStatusText: true,
+  maxDependenciesPerView: 500,
+  enableResourceTiming: true,
+};
+void getInstrumentations({ dependencies });
 
 void OPENTELEMETRY_BROWSER_VERSION;
 void useMicrosoftOpenTelemetry;
 void getInstrumentations;
+void createTelemetryDebugger;
 
 export const options: AzureMonitorOptions = {
   connectionString: "InstrumentationKey=00000000-0000-0000-0000-000000000000",
