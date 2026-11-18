@@ -78,11 +78,14 @@ and does not opt out of checkout safety checks. The exporter independently requi
 `pull_request` merge event and rejects dirty results or a source SHA that differs from
 the exact merged revision.
 
-A repository administrator must set `SDK_PERF_COLLECTOR_ENDPOINT` under **Settings > Secrets
-and variables > Actions > Variables** to the approved HTTPS collector URL ending in
-`/otlp/v1/logs`. This must be an Actions variable, not a secret. Missing configuration,
-measurement failures, and export failures fail the post-merge job explicitly. The workflow
-does not publish from unmerged PRs, fork repositories, direct pushes, or manual dispatches.
+The approved, non-secret HTTPS collector URL ending in `/otlp/v1/logs` is committed as
+`SDK_PERF_COLLECTOR_ENDPOINT` in the publishing step of `.github/workflows/performance.yml`.
+Update that workflow through review when changing the collector. Do not use repository or
+organization Actions variables for this endpoint: they are unavailable to fork-origin
+`pull_request` runs, even after merge. No administrator configuration or secrets are required.
+Invalid endpoints, measurement failures, and export failures fail the post-merge job explicitly.
+The workflow does not publish from unmerged PRs, fork repositories, direct pushes, or manual
+dispatches.
 
 The measurement step writes a GitHub job summary with the run UUID, measured commit, SDK
 version, and bundle sizes before publishing. Use the UUID in the **MOT for Browser** page's

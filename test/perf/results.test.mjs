@@ -467,7 +467,7 @@ test("only exact upstream merged revisions qualify, including reviewed fork, squ
   assert.throws(() => mergedRevision(mergeEvent(), "contributor/fork", "pull_request"));
 });
 
-test("workflow binds exact merged commit and explicit variable, without extra uploads or broad triggers", async () => {
+test("workflow binds exact merged commit and fork-accessible endpoint, without extra uploads or broad triggers", async () => {
   const workflow = await readFile(
     new URL("../../.github/workflows/performance.yml", import.meta.url),
     "utf8",
@@ -488,11 +488,22 @@ test("workflow binds exact merged commit and explicit variable, without extra up
   assert.match(workflow, /ref: \$\{\{ github\.event\.pull_request\.merge_commit_sha \}\}/);
   assert.match(workflow, /persist-credentials: false/);
   assert.match(workflow, /permissions:\s+contents: read\s+jobs:/);
-  assert.match(workflow, /vars.SDK_PERF_COLLECTOR_ENDPOINT/);
+  const publish = workflow.slice(
+    workflow.indexOf("      - name: Publish measured performance results"),
+  );
+  const endpoint = publish.match(/^          SDK_PERF_COLLECTOR_ENDPOINT: (https:\/\/\S+)$/m);
+  assert.ok(
+    endpoint,
+    "Publishing must use a literal non-secret endpoint available to fork PR runs",
+  );
+  const url = new URL(endpoint[1]);
+  assert.equal(url.pathname, "/otlp/v1/logs");
+  assert.equal(url.username + url.password + url.search + url.hash, "");
+  assert.match(publish, /--endpoint "\$SDK_PERF_COLLECTOR_ENDPOINT"/);
   assert.match(workflow, /run: npm run perf -- --cdn\n/);
   assert.doesNotMatch(
     workflow,
-    /pull_request_target|allow-unsafe-pr-checkout|workflow_dispatch|upload-artifact|secrets\.|push:|pull_request\.head|refs\/pull\//,
+    /pull_request_target|allow-unsafe-pr-checkout|workflow_dispatch|upload-artifact|secrets\.|vars\.|push:|pull_request\.head|refs\/pull\//,
   );
   assert.equal([...workflow.matchAll(/uses: .*@[0-9a-f]{40}/g)].length, 2);
 });

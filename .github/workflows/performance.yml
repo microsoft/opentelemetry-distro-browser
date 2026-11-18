@@ -34,15 +34,6 @@ jobs:
           check-latest: true
           cache: npm
 
-      - name: Check collector configuration
-        env:
-          SDK_PERF_COLLECTOR_ENDPOINT: ${{ vars.SDK_PERF_COLLECTOR_ENDPOINT }}
-        run: |
-          if [ -z "$SDK_PERF_COLLECTOR_ENDPOINT" ]; then
-            echo "::error::Configure the SDK_PERF_COLLECTOR_ENDPOINT Actions variable before publishing performance results."
-            exit 1
-          fi
-
       - name: Install dependencies
         run: npm ci
 
@@ -61,6 +52,7 @@ jobs:
 
       - name: Publish measured performance results
         env:
-          SDK_PERF_COLLECTOR_ENDPOINT: ${{ vars.SDK_PERF_COLLECTOR_ENDPOINT }}
+          # Fork-origin PR runs cannot read upstream Actions variables.
+          SDK_PERF_COLLECTOR_ENDPOINT: https://perftest-collector-tst.jollyfield-f95f40a3.westus2.azurecontainerapps.io/otlp/v1/logs
           BENCHMARK_RUN_ID: ${{ steps.measure.outputs.run-id }}
         run: npm run perf:export -- --input "artifacts/performance/$BENCHMARK_RUN_ID" --endpoint "$SDK_PERF_COLLECTOR_ENDPOINT"
