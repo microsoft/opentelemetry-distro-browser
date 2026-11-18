@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+import type { DiagLogLevel } from "@opentelemetry/api";
 import { OPENTELEMETRY_BROWSER_VERSION } from "./shared/constants.js";
 
 /**
@@ -53,6 +54,11 @@ export interface SdkLoaderConfig {
   readonly azureMonitor?: {
     /** Same as `AzureMonitorOptions.disableBeacon`. */
     readonly disableBeacon?: boolean;
+  };
+  /** Page-wide SDK diagnostics. Telemetry settings require direct SDK initialization. */
+  readonly diagnostics?: {
+    /** OpenTelemetry diagnostic console threshold. Defaults to INFO; NONE disables output. */
+    readonly consoleLogLevel?: DiagLogLevel;
   };
   /** Same as `MicrosoftOpenTelemetryBrowserOptions.session`. */
   readonly session?: {
@@ -340,6 +346,7 @@ export function getSdkLoaderScript(config: SdkLoaderConfig): string {
   );
   for (const name of [
     ...Object.keys(optionFields),
+    "diagnostics",
     "instrumentationOptions",
     "resourceAttributes",
   ]) {
@@ -360,6 +367,19 @@ export function getSdkLoaderScript(config: SdkLoaderConfig): string {
     !azureMonitor || !("sdkStats" in azureMonitor),
     "azureMonitor.sdkStats",
     "omitted (npm-only)",
+  );
+  const { diagnostics } = config;
+  check(
+    diagnostics === undefined ||
+      Reflect.ownKeys(diagnostics).every((key) => key === "consoleLogLevel"),
+    "diagnostics",
+    "an object containing only consoleLogLevel",
+  );
+  const consoleLogLevel = diagnostics?.consoleLogLevel;
+  check(
+    consoleLogLevel === undefined || [0, 30, 50, 60, 70, 80, 9999].includes(consoleLogLevel),
+    "diagnostics.consoleLogLevel",
+    "a DiagLogLevel (0, 30, 50, 60, 70, 80 or 9999) when provided",
   );
   for (const [name, value] of Object.entries(instrumentationOptions ?? {})) {
     if (value === undefined) continue;
@@ -402,6 +422,7 @@ export function getSdkLoaderScript(config: SdkLoaderConfig): string {
     cfg: {
       azureMonitor: { ...azureMonitor, connectionString: config.connectionString },
       samplingPercentage,
+      diagnostics: diagnostics === undefined ? undefined : { consoleLogLevel },
       redactQueryParams: config.redactQueryParams,
       session: config.session,
       userContext: config.userContext,

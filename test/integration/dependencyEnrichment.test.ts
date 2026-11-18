@@ -280,16 +280,19 @@ describe.each<Transport>(["fetch", "xhr"])("%s dependency enrichment", (transpor
   it.each(["throws", "does not record"])(
     "releases pending timing when span creation %s",
     async (outcome) => {
-      vi.spyOn(performance, "now").mockReturnValue(100);
-      const url = `${endpoint}?span-creation=${encodeURIComponent(outcome)}`;
-      // Timing availability is best-effort; isolate pending-request cleanup from browser scheduling.
+      // Exercise pending-request cleanup independently of native resource-timing publication.
+      let now = 100;
+      vi.spyOn(performance, "now").mockImplementation(() => now);
+      const url = new URL(`${endpoint}?span-creation=${outcome}`).href;
       const entry = {
         entryType: "resource",
         name: url,
         initiatorType: transport === "fetch" ? "fetch" : "xmlhttprequest",
-        startTime: 100,
-        duration: 0,
-        responseEnd: 100,
+        startTime: 215,
+        duration: 15,
+        requestStart: 220,
+        responseStart: 225,
+        responseEnd: 230,
       } as PerformanceResourceTiming;
       vi.spyOn(performance, "getEntriesByName").mockImplementation((name) =>
         name === url ? [entry] : [],
@@ -305,9 +308,12 @@ describe.each<Transport>(["fetch", "xhr"])("%s dependency enrichment", (transpor
       await send(transport, url);
       await pipeline.captured(0);
       await pipeline.handle.updateCfg({ samplingPercentage: 100 });
-      await send(transport, url);
+      now = 200;
+      const recorded = send(transport, url);
+      now = 250;
+      await recorded;
       const [span] = await pipeline.captured(1);
-      expect(span.attributes["browser.dependency.duration"]).toBe(0);
+      expect(span.attributes["browser.dependency.duration"]).toBe(15);
     },
   );
 
