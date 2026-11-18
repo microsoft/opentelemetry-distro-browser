@@ -491,7 +491,7 @@ test("workflow binds exact merged commit and fork-accessible endpoint, without e
   const publish = workflow.slice(
     workflow.indexOf("      - name: Publish measured performance results"),
   );
-  const endpoint = publish.match(/^          SDK_PERF_COLLECTOR_ENDPOINT: (https:\/\/\S+)$/m);
+  const endpoint = publish.match(/^ {10}SDK_PERF_COLLECTOR_ENDPOINT: (https:\/\/\S+)$/m);
   assert.ok(
     endpoint,
     "Publishing must use a literal non-secret endpoint available to fork PR runs",
