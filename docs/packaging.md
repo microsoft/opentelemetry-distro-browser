@@ -233,10 +233,12 @@ unless each returns 200 with the expected `Content-Type`, the immutable `Cache-C
 `Access-Control-Allow-Origin: *`, bytes identical to `cdn/`, and integrity files whose hashes match
 the served bundles. Local integrity URLs are adapted for comparison to the selected destination.
 Use `npm run cdn:verify -- --destination next` or `--destination public` to verify that destination;
-omitting the option verifies `next/otel/`. `--remote-only` skips the local comparison to
-audit an earlier release.
+omitting the option verifies versioned files under `next/otel/`. `--remote-only` skips the local
+comparison to audit an earlier release.
 Use `--major --destination public --version <full-version>` to audit promoted aliases after CDN
 caches expire; it checks their short cache policy, full activated version and alias-specific hashes.
+Major-alias audits require an explicit `--destination next|public`; the versioned-file default
+does not apply.
 
 The `./snippet` helper generates the copy/paste loader. The published `0.1.0-beta.2` helper still
 defaults to the obsolete `/scripts/otel/beta/` path. When using that package, set
