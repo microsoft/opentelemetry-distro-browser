@@ -19,25 +19,28 @@ supports [pause/resume for supported instrumentations](#runtime-instrumentation-
 options remain startup-only. Importing the package has no initialization side effects. Initialize
 only in client-side code, before importing application code to instrument.
 
-| Option                | Type                                              | Default and behavior                                                                                                                                                                                                      |
-| --------------------- | ------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `azureMonitor`        | `AzureMonitorOptions`                             | Omitted: no default Azure Monitor exporters. See [destination](#azure-monitor-destination).                                                                                                                               |
-| `resource`            | OpenTelemetry `Resource`                          | SDK defaults. Supplied attributes merge over defaults; use `service.name` and `service.version` to identify the application. Attributes resolve once; the resource schema URL is not carried through.                     |
-| `samplingPercentage`  | `number`                                          | Omitted: parent-based always-on trace sampling and no percentage sampling of Azure Monitor logs. See [sampling](#sampling).                                                                                               |
-| `session`             | `MicrosoftOpenTelemetryBrowserSessionOptions`     | Enabled and persisted, with 30-minute inactivity expiry and 24-hour maximum lifetime.                                                                                                                                     |
-| `sessionRenewalMs`    | `number`, milliseconds                            | Application Insights alias for `session.inactivityTimeout`. Default: `1800000` (30 minutes); `0` restores this default. See [session options](#session-options).                                                          |
-| `sessionExpirationMs` | `number`, milliseconds                            | Application Insights alias for `session.maxDuration`. Default: `86400000` (24 hours); `0` restores this default. See [session options](#session-options).                                                                 |
-| `storage`             | `{ enabled?: boolean; namePrefix?: string }`      | Enabled, with unprefixed keys. See [browser storage](#browser-storage).                                                                                                                                                   |
-| `cookieCfg`           | `MicrosoftOpenTelemetryBrowserCookieConfig`       | Enabled independently of Web Storage. See [cookie configuration](#cookie-configuration-and-controls).                                                                                                                     |
-| `userContext`         | `{ enabled?: boolean }`                           | Enabled: managed anonymous identity persists in a cookie; authenticated identity is memory-only unless explicitly opted into a cookie.                                                                                    |
-| `traces`              | `MicrosoftOpenTelemetryBrowserTraceOptions`       | Synchronous context tracking, W3C Trace Context and Baggage propagation.                                                                                                                                                  |
-| `spanProcessors`      | `SpanProcessor[]`                                 | Additional trace processors. They run before the Azure Monitor default when configured, unless `[]` disables traces. Without Azure Monitor, only supplied processors export. See [enrichment](#enrichment-and-filtering). |
-| `logRecordProcessors` | `LogRecordProcessor[]`                            | Additional log processors. They run before the Azure Monitor default when configured, unless `[]` disables logs. Without Azure Monitor, only supplied processors export. See [enrichment](#enrichment-and-filtering).     |
-| `diagnostics`         | `MicrosoftOpenTelemetryBrowserDiagnosticsOptions` | **Unreleased.** Page-wide SDK diagnostics: console `INFO`, telemetry `NONE`. See [SDK diagnostics](#sdk-diagnostics).                                                                                                     |
-| `instrumentations`    | `readonly BrowserInstrumentation[]`               | Empty. Pass instances returned by `getInstrumentations()` or compatible upstream instances. Built-in page views are configured separately.                                                                                |
-| `pageView`            | `PageViewInstrumentationConfig`                   | Collection and page-operation correlation enabled. Requires a log pipeline to export page-view records.                                                                                                                   |
-| `expCfg`              | `MicrosoftOpenTelemetryBrowserExceptionOptions`   | Omitted: no exception attachments. Opt in to script URLs and application-supplied recent logs. See [exception attachments](#exception-attachments).                                                                       |
-| `redactQueryParams`   | `readonly string[]`                               | Additional sensitive parameter names for fetch/XHR and page-view URLs/referrers. Extends built-in protection. See [URL redaction](#url-redaction).                                                                        |
+| Option                 | Type                                              | Default and behavior                                                                                                                                                                                                      |
+| ---------------------- | ------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `azureMonitor`         | `AzureMonitorOptions`                             | Omitted: no default Azure Monitor exporters. See [destination](#azure-monitor-destination).                                                                                                                               |
+| `resource`             | OpenTelemetry `Resource`                          | SDK defaults. Supplied attributes merge over defaults; use `service.name` and `service.version` to identify the application. Attributes resolve once; the resource schema URL is not carried through.                     |
+| `samplingPercentage`   | `number`                                          | Omitted: parent-based always-on trace sampling and no percentage sampling of Azure Monitor logs. See [sampling](#sampling).                                                                                               |
+| `session`              | `MicrosoftOpenTelemetryBrowserSessionOptions`     | Enabled and persisted, with 30-minute inactivity expiry and 24-hour maximum lifetime.                                                                                                                                     |
+| `sessionRenewalMs`     | `number`, milliseconds                            | Application Insights alias for `session.inactivityTimeout`. Default: `1800000` (30 minutes); `0` restores this default. See [session options](#session-options).                                                          |
+| `sessionExpirationMs`  | `number`, milliseconds                            | Application Insights alias for `session.maxDuration`. Default: `86400000` (24 hours); `0` restores this default. See [session options](#session-options).                                                                 |
+| `namePrefix`           | `string`                                          | Application Insights session-cookie suffix fallback, not a prefix. See [cookie naming](#application-insights-cookie-naming-unreleased).                                                                   |
+| `userCookiePostfix`    | `string`                                          | Suffix appended to `ai_user`. Defaults to empty.                                                                                                                                                          |
+| `sessionCookiePostfix` | `string`                                          | Suffix appended to `ai_session`; empty falls back to root `namePrefix`.                                                                                                                                   |
+| `storage`              | `{ enabled?: boolean; namePrefix?: string }`      | Enabled, with unprefixed keys. See [browser storage](#browser-storage).                                                                                                                                                   |
+| `cookieCfg`            | `MicrosoftOpenTelemetryBrowserCookieConfig`       | Enabled independently of Web Storage. See [cookie configuration](#cookie-configuration-and-controls).                                                                                                                     |
+| `userContext`          | `{ enabled?: boolean }`                           | Enabled: managed anonymous identity persists in a cookie; authenticated identity is memory-only unless explicitly opted into a cookie.                                                                                    |
+| `traces`               | `MicrosoftOpenTelemetryBrowserTraceOptions`       | Synchronous context tracking, W3C Trace Context and Baggage propagation.                                                                                                                                                  |
+| `spanProcessors`       | `SpanProcessor[]`                                 | Additional trace processors. They run before the Azure Monitor default when configured, unless `[]` disables traces. Without Azure Monitor, only supplied processors export. See [enrichment](#enrichment-and-filtering). |
+| `logRecordProcessors`  | `LogRecordProcessor[]`                            | Additional log processors. They run before the Azure Monitor default when configured, unless `[]` disables logs. Without Azure Monitor, only supplied processors export. See [enrichment](#enrichment-and-filtering).     |
+| `diagnostics`          | `MicrosoftOpenTelemetryBrowserDiagnosticsOptions` | **Unreleased.** Page-wide SDK diagnostics: console `INFO`, telemetry `NONE`. See [SDK diagnostics](#sdk-diagnostics).                                                                                                     |
+| `instrumentations`     | `readonly BrowserInstrumentation[]`               | Empty. Pass instances returned by `getInstrumentations()` or compatible upstream instances. Built-in page views are configured separately.                                                                                |
+| `pageView`             | `PageViewInstrumentationConfig`                   | Collection and page-operation correlation enabled. Requires a log pipeline to export page-view records.                                                                                                                   |
+| `expCfg`               | `MicrosoftOpenTelemetryBrowserExceptionOptions`   | Omitted: no exception attachments. Opt in to script URLs and application-supplied recent logs. See [exception attachments](#exception-attachments).                                                                       |
+| `redactQueryParams`    | `readonly string[]`                               | Additional sensitive parameter names for fetch/XHR and page-view URLs/referrers. Extends built-in protection. See [URL redaction](#url-redaction).                                                                        |
 
 ### SDK diagnostics
 
@@ -511,6 +514,30 @@ Implementation references: Application Insights JavaScript's
 [Web Storage helpers](https://github.com/microsoft/ApplicationInsights-JS/blob/main/shared/AppInsightsCore/src/utils/StorageHelperFuncs.ts)
 and [send buffer](https://github.com/microsoft/ApplicationInsights-JS/blob/main/channels/applicationinsights-channel-js/src/SendBuffer.ts).
 
+### Application Insights cookie naming
+
+To retain customized ApplicationInsights-JS cookie names, pass its startup settings unchanged:
+`userCookiePostfix` produces `ai_user` plus that suffix, and `sessionCookiePostfix` produces
+`ai_session` plus that suffix. An empty or omitted `sessionCookiePostfix` falls back to root
+`namePrefix`, then to an empty suffix. Root `namePrefix` does not affect the anonymous user or
+authenticated cookie; authenticated identity always uses `ai_authUser` with this naming style.
+For example, `namePrefix: "-shop"` and `userCookiePostfix: "-users"` select `ai_session-shop`,
+`ai_user-users` and `ai_authUser`. The generated loader accepts the same three options.
+
+These settings control both reads and writes, not a one-time migration fallback. They are
+startup-only strings containing cookie-name token characters; empty strings are allowed. A
+nonempty `storage.namePrefix` cannot be combined with any nonempty AI-style naming option.
+Mixed naming styles reject initialization or loader generation before browser persistence access.
+Existing `storage.namePrefix`-only configurations retain their literal-prefix behavior.
+
+When the resolved session suffix is nonempty, the session's JSON backup uses
+`opentelemetry-session:` plus that suffix. The colon separates this namespace from existing
+literal-prefix backups; an empty suffix keeps `opentelemetry-session`. Other Web Storage keys
+are unchanged. This avoids mixing backups for different session suffixes and
+never reads or overwrites ApplicationInsights-JS's pipe-delimited `ai_session` localStorage backup.
+No alternate cookie names or previous namespaces are scanned. These options do not change cookie
+scope, storage permission or consent; configure the existing controls separately.
+
 ### Cookie configuration and controls
 
 | Option                         | Type                                    | Default          | Behavior                                                                                                               |
@@ -589,8 +616,8 @@ retry. Cookie lifetime is bounded by the remaining maximum duration and inactivi
 Runtime lifetime updates do not access persistence; the next activity refreshes the cookie using
 the new policy without waiting for the previous write throttle.
 
-When Web Storage is enabled, the latest session is backed up as JSON under the unchanged prefixed
-`opentelemetry-session` localStorage key on unload and
+When Web Storage is enabled, the latest session is backed up as JSON under the prefixed
+`opentelemetry-session` localStorage key (or the suffixed key described above) on unload and
 shutdown, not on each activity update. A missing cookie can restore a valid, unexpired backup,
 including when cookies are disabled. A present malformed cookie does not fall back to the backup.
 If neither backend is available, session correlation stays in memory.
@@ -614,10 +641,9 @@ context restores a valid authenticated cookie on initialization. User identity d
 Authenticated cookies use `encodeURI(userId + optional '|' + accountId)` and are read with
 `decodeURI()` before splitting. With `storage.namePrefix` omitted, valid default Application Insights
 cookies retain identity and session continuity when switching SDKs within the same domain/path.
-For customized names, match the complete cookie names: Application Insights appends
-`userCookiePostfix` to `ai_user` and `sessionCookiePostfix` (or `namePrefix`) to `ai_session`, and
-leaves `ai_authUser` unprefixed. This distribution instead prepends `storage.namePrefix` to all
-three names, so setting the same prefix in both SDKs does not produce matching names.
+For customized names, use the unreleased [AI-style naming options](#application-insights-cookie-naming-unreleased).
+The existing `storage.namePrefix` instead prepends to all three names; copying an Application
+Insights `namePrefix` into `storage.namePrefix` does not produce matching names.
 Cookie values use the Application Insights formats, not URI-encoded JSON records.
 Legacy anonymous Web Storage cleanup keeps the unchanged
 prefixed `opentelemetry-user` key. Old `opentelemetry-*` cookie names are not restored. Auth cookies

@@ -192,11 +192,13 @@ export interface MicrosoftOpenTelemetryBrowserOptions {
     };
     instrumentations?: readonly BrowserInstrumentation[];
     logRecordProcessors?: LogRecordProcessor[];
+    namePrefix?: string;
     pageView?: PageViewInstrumentationConfig;
     redactQueryParams?: readonly string[];
     resource?: Resource;
     samplingPercentage?: number;
     session?: MicrosoftOpenTelemetryBrowserSessionOptions;
+    sessionCookiePostfix?: string;
     sessionExpirationMs?: number | undefined;
     sessionRenewalMs?: number | undefined;
     spanProcessors?: SpanProcessor[];
@@ -208,6 +210,7 @@ export interface MicrosoftOpenTelemetryBrowserOptions {
     userContext?: {
         enabled?: boolean;
     };
+    userCookiePostfix?: string;
 }
 
 // @public

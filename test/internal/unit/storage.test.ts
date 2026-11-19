@@ -76,12 +76,15 @@ afterEach(async () => {
   saved.clear();
 });
 
-async function initialize(options: MicrosoftOpenTelemetryBrowserOptions = {}) {
+async function initialize(
+  options: MicrosoftOpenTelemetryBrowserOptions = {},
+  afterStart?: (options: MicrosoftOpenTelemetryBrowserOptions) => void,
+) {
   const spans: Span[] = [];
   const records: ReadWriteLogRecord[] = [];
   let tracer: Tracer;
   let logger: Logger;
-  const handle = await useMicrosoftOpenTelemetry({
+  const initializationOptions: MicrosoftOpenTelemetryBrowserOptions = {
     ...options,
     pageView: { enabled: false },
     instrumentations: [
@@ -118,7 +121,10 @@ async function initialize(options: MicrosoftOpenTelemetryBrowserOptions = {}) {
         async shutdown() {},
       },
     ],
-  });
+  };
+  const startup = useMicrosoftOpenTelemetry(initializationOptions);
+  afterStart?.(initializationOptions);
+  const handle = await startup;
   handles.push(handle);
   return {
     handle,
@@ -560,6 +566,209 @@ it("keeps cookies independent of disabled Web Storage for both signals and resto
   expect(session).not.toHaveBeenCalled();
 });
 
+it.each([
+  { options: {}, user: "ai_user", session: "ai_session" },
+  { options: { namePrefix: "-shop" }, user: "ai_user", session: "ai_session-shop" },
+  { options: { userCookiePostfix: "-user" }, user: "ai_user-user", session: "ai_session" },
+  { options: { sessionCookiePostfix: "-session" }, user: "ai_user", session: "ai_session-session" },
+  {
+    options: { namePrefix: "-shop", sessionCookiePostfix: "" },
+    user: "ai_user",
+    session: "ai_session-shop",
+  },
+  {
+    options: { namePrefix: "-shop", userCookiePostfix: "-user", sessionCookiePostfix: "-session" },
+    user: "ai_user-user",
+    session: "ai_session-session",
+  },
+  {
+    options: {
+      namePrefix: "",
+      userCookiePostfix: "",
+      sessionCookiePostfix: "",
+      storage: { namePrefix: "shop-" },
+    },
+    user: "shop-ai_user",
+    session: "shop-ai_session",
+  },
+])(
+  "uses AI naming and precedence without changing existing prefix behavior ($options)",
+  async ({ options, user, session }) => {
+    const now = Date.now();
+    vi.spyOn(Date, "now").mockReturnValue(now);
+    const acquired = now - 1000;
+    const auth = user.startsWith("shop-") ? "shop-ai_authUser" : "ai_authUser";
+    const values = new Map([
+      [user, `AI+user/id|${new Date(acquired).toISOString()}`],
+      [session, `AI+session/id|${acquired}|${acquired}`],
+      [auth, encodeURI("login|account")],
+      ["unrelated-ai_user", "untouched"],
+    ]);
+    const cookieCfg = {
+      getCookie: vi.fn((name: string) => values.get(name) ?? ""),
+      setCookie: vi.fn((name: string, value: string) => values.set(name, value.split(";")[0]!)),
+      delCookie: vi.fn((name: string) => values.delete(name)),
+    };
+    const consumer = await initialize({
+      ...options,
+      storage: { ...options.storage, enabled: false },
+      cookieCfg,
+    });
+    expect(consumer.emit()).toMatchObject({
+      "enduser.pseudo.id": "AI+user/id",
+      "session.id": "AI+session/id",
+      "user.id": "login",
+      "user.account.id": "account",
+    });
+    expect(cookieCfg.getCookie.mock.calls.map(([name]) => name)).toEqual([user, auth, session]);
+    expect(values.get(user)).toBe(`AI+user/id|${new Date(acquired).toISOString()}`);
+    expect(values.get(session)).toBe(`AI+session/id|${acquired}|${now}`);
+    consumer.handle.userContext.setAuthenticatedUserContext("replacement", undefined, true);
+    expect(values.get(auth)).toBe("replacement");
+    consumer.handle.userContext.clearAuthenticatedUserContext();
+    expect(cookieCfg.delCookie).toHaveBeenLastCalledWith(auth, expect.any(String));
+    consumer.handle.userContext.setEnabled(false);
+    expect(values.has(user)).toBe(false);
+    expect(values.get("unrelated-ai_user")).toBe("untouched");
+  },
+);
+
+it("isolates suffixed session backups without reading or overwriting AI's backup format", async () => {
+  const storage = new MemoryStorage();
+  vi.spyOn(window, "localStorage", "get").mockReturnValue(storage);
+  const now = Date.now();
+  const values = new Map([["ai_user", `existing-user|${new Date(now).toISOString()}`]]);
+  const cookieCfg = {
+    getCookie: (name: string) => values.get(name) ?? "",
+    setCookie: (name: string, value: string) => {
+      values.set(name, value.split(";")[0]!);
+    },
+  };
+  storage.setItem("ai_session-a", `AI-backup|${now}|${now}`);
+  const first = await initialize({ namePrefix: "-a", cookieCfg });
+  const a = first.emit()["session.id"];
+  await first.handle.shutdown();
+  const second = await initialize({ sessionCookiePostfix: "-b", cookieCfg });
+  const b = second.emit()["session.id"];
+  expect(b).not.toBe(a);
+  await second.handle.shutdown();
+  for (const [suffix, id] of [
+    ["-a", a],
+    ["-b", b],
+  ] as const) {
+    expect(JSON.parse(storage.getItem(`opentelemetry-session:${suffix}`)!).id).toBe(id);
+    values.delete(`ai_session${suffix}`);
+    const restored = await initialize({ sessionCookiePostfix: suffix, cookieCfg });
+    expect(restored.emit()["session.id"]).toBe(id);
+    await restored.handle.shutdown();
+  }
+  values.delete("ai_user");
+  values.delete("ai_session-a");
+  const reset = await initialize({ namePrefix: "-a", cookieCfg });
+  expect(reset.emit()["session.id"]).not.toBe(a);
+  expect(storage.getItem("opentelemetry-session:-a")).toBeNull();
+  expect(JSON.parse(storage.getItem("opentelemetry-session:-b")!).id).toBe(b);
+  expect(storage.getItem("opentelemetry-session")).toBeNull();
+  expect(storage.getItem("ai_session-a")).toBe(`AI-backup|${now}|${now}`);
+});
+
+it("keeps AI suffix backups separate from existing literal-prefix backups", async () => {
+  const storage = new MemoryStorage();
+  vi.spyOn(window, "localStorage", "get").mockReturnValue(storage);
+  const now = Date.now();
+  const suffix = "-opentelemetry-session";
+  const prefix = "opentelemetry-session-";
+  const prefixedBackup = `${prefix}opentelemetry-session`;
+  const suffixedBackup = `opentelemetry-session:${suffix}`;
+  const values = new Map([
+    ["ai_user", `existing-user|${new Date(now).toISOString()}`],
+    [`${prefix}ai_user`, `other-user|${new Date(now).toISOString()}`],
+  ]);
+  const cookieCfg = {
+    getCookie: (name: string) => values.get(name) ?? "",
+    setCookie: (name: string, value: string) => {
+      values.set(name, value.split(";")[0]!);
+    },
+  };
+  const backup = JSON.stringify({ id: "prefix-session", startTimestamp: now });
+  storage.setItem(prefixedBackup, backup);
+  const suffixed = await initialize({ namePrefix: suffix, cookieCfg });
+  const id = suffixed.emit()["session.id"];
+  expect(id).not.toBe("prefix-session");
+  expect(storage.getItem(prefixedBackup)).toBe(backup);
+  await suffixed.handle.shutdown();
+  expect(JSON.parse(storage.getItem(suffixedBackup)!).id).toBe(id);
+  const prefixed = await initialize({ storage: { namePrefix: prefix }, cookieCfg });
+  expect(prefixed.emit()["session.id"]).toBe("prefix-session");
+  await prefixed.handle.shutdown();
+  const otherBackup = storage.getItem(prefixedBackup);
+  values.delete("ai_user");
+  values.delete(`ai_session${suffix}`);
+  const reset = await initialize({ namePrefix: suffix, cookieCfg });
+  expect(reset.emit()["session.id"]).not.toBe(id);
+  expect(storage.getItem(suffixedBackup)).toBeNull();
+  expect(storage.getItem(prefixedBackup)).toBe(otherBackup);
+});
+
+it("snapshots AI cookie naming before initialization yields", async () => {
+  const values = new Map<string, string>();
+  const options = {
+    namePrefix: "-fallback",
+    userCookiePostfix: "-user",
+    sessionCookiePostfix: "-session",
+    storage: { enabled: false },
+    cookieCfg: {
+      getCookie: (name: string) => values.get(name) ?? "",
+      setCookie: (name: string, value: string) => {
+        values.set(name, value.split(";")[0]!);
+      },
+    },
+  };
+  const startup = initialize(options, (captured) => {
+    captured.namePrefix = captured.userCookiePostfix = captured.sessionCookiePostfix = "-changed";
+  });
+  const { handle, emit } = await startup;
+  emit();
+  handle.userContext.setEnabled(false);
+  handle.userContext.setEnabled(true);
+  expect([...values.keys()].sort()).toEqual(["ai_session-session", "ai_user-user"]);
+});
+
+it("does not read suffixed cookies or hooks when cookie access is disabled", async () => {
+  const getCookie = vi.fn(() => "must-not-be-read");
+  const setCookie = vi.fn();
+  const read = vi.spyOn(document, "cookie", "get");
+  const { handle, emit } = await initialize({
+    namePrefix: "-shop",
+    userCookiePostfix: "-user",
+    storage: { enabled: false },
+    cookieCfg: { enabled: false, disableCookieDefer: true, getCookie, setCookie },
+  });
+  expect(emit()["enduser.pseudo.id"]).toBeUndefined();
+  await handle.forceFlush();
+  await handle.shutdown();
+  for (const operation of [getCookie, setCookie, read]) expect(operation).not.toHaveBeenCalled();
+});
+
+it("honors ignored suffixed anonymous cookies without discarding the session backup", async () => {
+  const storage = new MemoryStorage();
+  vi.spyOn(window, "localStorage", "get").mockReturnValue(storage);
+  storage.setItem(
+    "opentelemetry-session:-shop",
+    JSON.stringify({ id: "backup", startTimestamp: Date.now() }),
+  );
+  const getCookie = vi.fn((_name: string) => "");
+  const { emit } = await initialize({
+    namePrefix: "-shop",
+    userCookiePostfix: "-user",
+    cookieCfg: { ignoreCookies: ["ai_user-user", "ai_session-shop"], getCookie },
+  });
+  expect(emit()).toMatchObject({ "session.id": "backup" });
+  expect(emit()["enduser.pseudo.id"]).toBeUndefined();
+  expect(getCookie.mock.calls.map(([name]) => name)).not.toContain("ai_user-user");
+  expect(storage.getItem("opentelemetry-session:-shop")).not.toBeNull();
+});
+
 it.each(["", "app-a-"])(
   "discards the session backup when both identity and session cookies are missing (prefix=%j)",
   async (namePrefix) => {
@@ -679,6 +888,36 @@ it.each(["invalid prefix", "invalid;prefix", "invalid=prefix", "invalid\nprefix"
     }
   },
 );
+
+it.each([
+  ...["namePrefix", "userCookiePostfix", "sessionCookiePostfix"].flatMap((key) =>
+    [null, 42, false, {}, "invalid prefix", "bad;name", "bad=name", "bad\nname", "雪"].map(
+      (value) => ({ [key]: value }),
+    ),
+  ),
+  ...["namePrefix", "userCookiePostfix", "sessionCookiePostfix"].map((key) => ({
+    [key]: "-shop",
+    storage: { namePrefix: "shop-" },
+  })),
+])("rejects invalid or mixed AI cookie naming before persistence access (%j)", async (options) => {
+  const operations = [
+    vi.spyOn(window, "localStorage", "get"),
+    vi.spyOn(window, "sessionStorage", "get"),
+    vi.spyOn(document, "cookie", "get"),
+    vi.spyOn(document, "cookie", "set"),
+  ];
+  const getCookie = vi.fn(() => "");
+  const setCookie = vi.fn();
+  const delCookie = vi.fn();
+  await expect(
+    initialize({
+      ...options,
+      cookieCfg: { getCookie, setCookie, delCookie },
+    } as MicrosoftOpenTelemetryBrowserOptions),
+  ).rejects.toThrow(TypeError);
+  for (const operation of [...operations, getCookie, setCookie, delCookie])
+    expect(operation).not.toHaveBeenCalled();
+});
 
 it("disables cookies without touching them and writes only a session Web Storage backup", async () => {
   for (const key of keys) preserve(key);
