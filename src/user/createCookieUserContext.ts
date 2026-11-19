@@ -23,7 +23,8 @@ function generateAnonymousId(): string {
 /**
  * Creates cookie-backed identity without accessing Web Storage during construction.
  * The caller supplies anonymous-cookie read permission from validated, snapshotted policy.
- * Optional legacy cleanup must honor Web Storage permission and this instance's name prefix:
+ * Cookie names are fully resolved by the caller. Optional legacy cleanup must honor Web Storage
+ * permission and this instance's storage prefix:
  * clear retains stored anonymous identity; purge removes the whole record. Never restore it.
  */
 export function createCookieUserContext(
@@ -31,7 +32,10 @@ export function createCookieUserContext(
   cookies: MicrosoftOpenTelemetryBrowserCookieManager & {
     read?: (name: string) => CookieReadResult;
   },
-  namePrefix = "",
+  { user: anonymousCookie, authenticated: authenticatedCookie } = {
+    user: "ai_user",
+    authenticated: "ai_authUser",
+  },
   onNewUser?: () => void,
   canReadAnonymousCookie = true,
   onLegacyCleanup?: (action: "clear" | "purge") => void,
@@ -40,8 +44,6 @@ export function createCookieUserContext(
   provider: UserContextProvider;
   shutdown(): void;
 } {
-  const anonymousCookie = `${namePrefix}ai_user`;
-  const authenticatedCookie = `${namePrefix}ai_authUser`;
   let enabled = initialEnabled !== false;
   let stopped = false;
   let anonymousValue = "";

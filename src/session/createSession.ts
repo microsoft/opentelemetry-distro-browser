@@ -42,6 +42,7 @@ export function createSession(
   },
   cookieName = "ai_session",
   readLifetimes?: () => { readonly inactivityTimeout: number; readonly maxDuration: number },
+  backupKey = storageKey,
 ) {
   const inactivityTimeout = lifetimeSeconds(
     options.inactivityTimeout,
@@ -78,7 +79,7 @@ export function createSession(
     // Keep errors synchronous because upstream does not await saves.
     if (!persist || readFailed) return;
     if (!cookies) {
-      storage?.setItem(storageKey, serialize(session));
+      storage?.setItem(backupKey, serialize(session));
       return;
     }
     const now = Date.now();
@@ -156,7 +157,7 @@ export function createSession(
     let lastActivity: unknown;
     if (value === null) {
       if (ignoreBackup) return null;
-      const result = storage?.getItem(storageKey);
+      const result = storage?.getItem(backupKey);
       if (!result?.success || result.value === null) return null;
       try {
         const session: unknown = JSON.parse(result.value);
@@ -233,12 +234,12 @@ export function createSession(
         manager.shutdown();
         manager = createManager();
       }
-      if (persist) storage?.removeItem(storageKey);
+      if (persist) storage?.removeItem(backupKey);
     },
     /** Saves the latest activity to the optional Web Storage backup without creating a session. */
     backup() {
       if (persist && !readFailed && currentSession) {
-        storage?.setItem(storageKey, serialize(currentSession));
+        storage?.setItem(backupKey, serialize(currentSession));
       }
     },
     getSessionId() {

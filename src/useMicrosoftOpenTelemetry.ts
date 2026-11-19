@@ -12,6 +12,7 @@ import { createKeyValueStorage } from "./storage/keyValueStorage.js";
 import { createSessionBufferStorage, sessionBufferStorage } from "./exporter/sessionBuffer.js";
 import { createCookieUserContext } from "./user/createCookieUserContext.js";
 import { createCookieManager } from "./storage/cookieManager.js";
+import { resolveCookieNames } from "./storage/cookieNaming.js";
 import { isNonEmptyString } from "./shared/isNonEmptyString.js";
 import type { LogRecordProcessor } from "@opentelemetry/sdk-logs";
 import type { SpanProcessor } from "@opentelemetry/sdk-trace-base";
@@ -244,12 +245,10 @@ export async function useMicrosoftOpenTelemetry(
   if (typeof storageEnabled !== "boolean" || typeof namePrefix !== "string") {
     throw new TypeError("storage.enabled must be a boolean and storage.namePrefix a string.");
   }
-  if (!/^[!#$%&'*+\-.^_`|~0-9A-Za-z]*$/.test(namePrefix)) {
-    throw new TypeError("storage.namePrefix must contain only cookie-name token characters.");
-  }
+  const cookieNames = resolveCookieNames(options, namePrefix);
   const cookies = createCookieManager(options.cookieCfg);
   cookies.setReplayFailureHandler((name, removeSuperseded) => {
-    if (name === `${namePrefix}ai_authUser`) removeSuperseded();
+    if (name === cookieNames.authenticated) removeSuperseded();
   });
   const sessionStorage = storageEnabled
     ? createKeyValueStorage(
@@ -267,8 +266,9 @@ export async function useMicrosoftOpenTelemetry(
           },
           sessionStorage,
           cookies,
-          `${namePrefix}ai_session`,
+          cookieNames.session,
           () => configuration.snapshot().session,
+          cookieNames.sessionBackup,
         )
       : undefined;
   getSharedRegistry();
@@ -568,9 +568,9 @@ export async function useMicrosoftOpenTelemetry(
     userContext = createCookieUserContext(
       userContextEnabled,
       cookies,
-      namePrefix,
+      cookieNames,
       () => session?.discardBackup(),
-      cookies.canRead(`${namePrefix}ai_user`),
+      cookies.canRead(cookieNames.user),
       (action) => {
         // Explicit privacy controls also clean records written by older versions. Never restore
         // legacy authentication or access Web Storage when the caller has disabled it.

@@ -35,6 +35,7 @@ export interface SdkLoaderConfig {
     };
     readonly integrity?: string;
     readonly loadDelay?: number;
+    readonly namePrefix?: string;
     readonly pageView?: {
         readonly enabled?: boolean;
         readonly autoTrackPageVisitTime?: boolean;
@@ -54,6 +55,7 @@ export interface SdkLoaderConfig {
         readonly inactivityTimeout?: number;
         readonly maxDuration?: number;
     };
+    readonly sessionCookiePostfix?: string;
     readonly src?: string;
     readonly storage?: {
         readonly enabled?: boolean;
@@ -62,6 +64,7 @@ export interface SdkLoaderConfig {
     readonly userContext?: {
         readonly enabled?: boolean;
     };
+    readonly userCookiePostfix?: string;
 }
 
 // @public
