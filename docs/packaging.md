@@ -82,7 +82,7 @@ Every executable published entry point has absolute minified, gzip and Brotli bu
 | `.`                  |   174 kB |    55 kB |   48 kB |
 | `./instrumentations` | 78.25 kB | 29.75 kB | 26.5 kB |
 | `./debug`            |    16 kB |     6 kB |    5 kB |
-| `./snippet`          |     7 kB |     3 kB | 2.75 kB |
+| `./snippet`          |     8 kB | 3.375 kB |    3 kB |
 
 The generated JSON and Markdown reports show the measured values, ceilings and result for each
 entry point. During alpha releases, violations are report-only so the baselines can stabilize.
@@ -102,8 +102,9 @@ including alpha:
 Instrumentation budgets include the opt-in dependency enrichment adapter, retryable patch cleanup,
 and conservative timing-overlap tracking. The self-contained SDK bundles include the instrumentation
 preset too. The npm instrumentations budget also includes the lazy Click Analytics chunk.
-The root and SDK browser budgets additionally include the isolated SDK diagnostics pipeline;
-the snippet's minified budget includes diagnostic console-level validation.
+The root and SDK browser budgets additionally include the isolated SDK diagnostics pipeline.
+The snippet generator budget includes diagnostic console-level validation and opt-in startup
+error capture. Neither the default inline snippet nor the CDN bundles include the early error queue.
 
 Click Analytics is available only through the npm instrumentations entry, including its factory and
 behavior validators. Its implementation remains a lazy npm chunk; neither the root SDK nor either
@@ -284,6 +285,15 @@ that are not configured are omitted from the generated script. The helper throws
 value of the wrong type or one that JSON cannot represent, such as a function or regular expression.
 Hooks, processors, exporters, context managers, propagators and resource detectors require the npm
 package.
+
+With `instrumentationOptions.errors.enabled: true`, the loader keeps the first 20 unhandled
+errors and promise rejections while the SDK starts, including during `loadDelay` and CDN retries.
+It snapshots the time, type, message, and stack at capture. After initialization it reports them
+through the same instrumentation that handles live errors. Use a matching loader and CDN bundle.
+A custom or older bundle that does not support replay can still initialize and collect live errors.
+The loader warns if it has queued errors that such a bundle cannot replay.
+It leaves application error handlers intact and discards the queue if initialization fails.
+Exception collection is still off by default.
 
 Three loader options mirror the Application Insights loader and add code to the generated script
 only when set, so the default snippet stays small:

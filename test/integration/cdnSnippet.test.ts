@@ -20,7 +20,9 @@ const openSnippetPage = async (
 
 interface CapturedEnvelope {
   name?: string;
+  time?: string;
   tags?: Record<string, string>;
+  data?: { baseData?: { exceptions?: { typeName: string; message: string; stack?: string }[] } };
 }
 
 async function waitForEnvelopes(
@@ -79,6 +81,9 @@ it("loads the CDN bundle into a plain HTML page under CSP and sends page view, s
       httpDependency("snippet-xhr"),
     ]),
   );
+  expect(envelopes).not.toContainEqual(
+    expect.objectContaining({ name: "Microsoft.ApplicationInsights.Exception" }),
+  );
 });
 
 it("applies snippet configuration: opt-in instrumentations and resource attributes", async () => {
@@ -91,18 +96,29 @@ it("applies snippet configuration: opt-in instrumentations and resource attribut
       captured.some(({ name }) => name === "Microsoft.ApplicationInsights.Exception") &&
       captured.some(({ name }) => name === "Microsoft.ApplicationInsights.PageView"),
   )) as CapturedEnvelope[];
-  expect(envelopes).toEqual(
-    expect.arrayContaining([
-      expect.objectContaining({
-        name: "Microsoft.ApplicationInsights.Exception",
-        data: expect.objectContaining({
-          baseData: expect.objectContaining({
-            exceptions: [expect.objectContaining({ message: "cdn snippet failure" })],
-          }),
-        }),
-      }),
-    ]),
+  const exceptions = envelopes.filter(
+    ({ name }) => name === "Microsoft.ApplicationInsights.Exception",
   );
+  const details = exceptions.map(({ data }) => data?.baseData?.exceptions?.[0]);
+  // The first 20 startup events and the live error appear once. The last startup event is dropped.
+  expect(details.map((item) => item?.message).sort()).toEqual(
+    [
+      "startup failure",
+      "startup rejection",
+      ...Array.from({ length: 18 }, (_, i) => `startup message ${i}`),
+      "cdn snippet failure",
+    ].sort(),
+  );
+  for (const [message, typeName, stack, time] of [
+    ["startup failure", "TypeError", "first startup stack", "2026-01-01T00:00:01.000Z"],
+    ["startup rejection", "RangeError", "second startup stack", "2026-01-01T00:00:21.000Z"],
+  ]) {
+    const event = exceptions.find(
+      ({ data }) => data?.baseData?.exceptions?.[0]?.message === message,
+    );
+    expect(event?.time).toBe(time);
+    expect(event?.data?.baseData?.exceptions?.[0]).toMatchObject({ typeName, stack });
+  }
   expect(envelopes.length).toBeGreaterThan(0);
   for (const envelope of envelopes) {
     expect(envelope.tags?.["ai.cloud.role"], envelope.name).toBe("cdn-snippet-service");

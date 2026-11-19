@@ -291,7 +291,7 @@ async function writeSnippetPage(
     pathToFileURL(resolve(root, "dist/esm/snippet.js")).href
   )) as typeof import("../../src/snippet.js");
 
-  const snippet = getSdkLoaderScript({
+  const loader = getSdkLoaderScript({
     src: `${cdnOrigin}/${scenario === "missing" || scenario === "reported" ? `missing-${bundle.file}` : bundle.file}`,
     connectionString:
       "InstrumentationKey=00000000-0000-0000-0000-000000000000;" +
@@ -304,6 +304,29 @@ async function writeSnippetPage(
       resourceAttributes: { "service.name": "cdn-snippet-service", "service.version": "1.2.3" },
     }),
   });
+  // Run in the same parser script as the loader so even a cached bundle cannot win the race.
+  const snippet = `window.onerror = () => { window.applicationErrors++; return true; };
+window.applicationErrors = 0;
+${loader}
+const originalNow = Date.now;
+const failure = new TypeError("startup failure");
+try {
+  Date.now = () => Date.UTC(2026, 0, 1, 0, 0, 1);
+  failure.stack = "first startup stack";
+  window.dispatchEvent(new ErrorEvent("error", { error: failure }));
+  Date.now = () => Date.UTC(2026, 0, 1, 0, 0, 21);
+  failure.name = "RangeError";
+  failure.message = "startup rejection";
+  failure.stack = "second startup stack";
+  window.dispatchEvent(new PromiseRejectionEvent("unhandledrejection", {
+    promise: Promise.resolve(), reason: failure
+  }));
+  failure.message = "changed after dispatch";
+} finally {
+  Date.now = originalNow;
+}
+for (let i = 0; i < 19; i++)
+  window.dispatchEvent(new ErrorEvent("error", { message: "startup message " + i }));`;
   // Reported only when the snippet enabled the opt-in errors instrumentation.
   const reportError =
     scenario === "configured"
@@ -313,6 +336,7 @@ async function writeSnippetPage(
   const dependencyUrl = (runId: string) =>
     `${new URL(ingestionEndpoint).origin}/captured?runId=${runId}`;
   const application = `window.microsoftOpenTelemetry.then(function (handle) {
+  if (window.applicationErrors !== 20) throw new Error("Startup error handler was replaced or called twice");
   window.Microsoft.OpenTelemetry.trace
     .getTracer("cdn-snippet-test")
     .startSpan("cdn-snippet-span", { attributes: { "test.run_id": ${JSON.stringify(runId)} } })
