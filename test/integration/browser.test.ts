@@ -369,6 +369,36 @@ it.each(
 );
 
 it.each(["index.js", "index.min.js"])(
+  "does not reuse another anonymous user's suffixed session backup through %s",
+  async (file) => {
+    const firstA = await initializeCookieConsumer(file, { sessionCookiePostfix: "-fallback" });
+    const a = await firstA.emit();
+    await firstA.handle.shutdown();
+    const firstB = await initializeCookieConsumer(file, { sessionCookiePostfix: "-session" });
+    const b = await firstB.emit();
+    expect(b["enduser.pseudo.id"]).toBe(a["enduser.pseudo.id"]);
+    await firstB.handle.shutdown();
+    expect(JSON.parse(localStorage.getItem("opentelemetry-session:-session")!)).toMatchObject({
+      id: b["session.id"],
+      anonymousId: b["enduser.pseudo.id"],
+    });
+
+    clearCookies();
+    const secondA = await initializeCookieConsumer(file, { sessionCookiePostfix: "-fallback" });
+    const nextA = await secondA.emit();
+    expect(nextA["enduser.pseudo.id"]).not.toBe(a["enduser.pseudo.id"]);
+    await secondA.handle.shutdown();
+    const secondB = await initializeCookieConsumer(file, { sessionCookiePostfix: "-session" });
+    const nextB = await secondB.emit();
+    expect(nextB["enduser.pseudo.id"]).toBe(nextA["enduser.pseudo.id"]);
+    expect(nextB["session.id"]).not.toBe(b["session.id"]);
+    await secondB.handle.shutdown();
+    const restored = await initializeCookieConsumer(file, { sessionCookiePostfix: "-session" });
+    expect(await restored.emit()).toMatchObject(nextB);
+  },
+);
+
+it.each(["index.js", "index.min.js"])(
   "rejects mixed cookie naming before persistence access through %s",
   async (file) => {
     const artifact =

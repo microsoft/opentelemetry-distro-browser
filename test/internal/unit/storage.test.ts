@@ -166,6 +166,7 @@ function sessionRecoveryFixture(prefix: string, failedCookie: "session" | "user"
     id: "0123456789abcdef0123456789abcdef",
     startTimestamp: now - 2000,
     lastActivityTimestamp: now - 1000,
+    anonymousId: "existing-user",
   };
   const cookieSession = {
     id: "fedcba9876543210fedcba9876543210",
@@ -272,7 +273,7 @@ it.each(["", "shop-"])(
 );
 
 it.each(["", "shop-"])(
-  "invalidates an already restored backup before first enrichment when late anonymous recovery finds no cookies (prefix=%j)",
+  "defers backup restoration before first enrichment when late anonymous recovery finds no cookies (prefix=%j)",
   async (prefix) => {
     const fixture = sessionRecoveryFixture(prefix, "user");
     const { sessionKey, sessionCookie, userKey, backupSession, backup, cookies, cookieCfg } =
@@ -672,6 +673,227 @@ it("isolates suffixed session backups without reading or overwriting AI's backup
   expect(storage.getItem("ai_session-a")).toBe(`AI-backup|${now}|${now}`);
 });
 
+it.each(["span", "log"] as const)(
+  "does not reconnect a different session suffix to the old user's backup (%s first)",
+  async (firstSignal) => {
+    const storage = new MemoryStorage();
+    vi.spyOn(window, "localStorage", "get").mockReturnValue(storage);
+    const values = new Map<string, string>();
+    const cookieCfg = {
+      getCookie: vi.fn((name: string) => values.get(name) ?? ""),
+      setCookie: (name: string, value: string) => {
+        values.set(name, value.split(";")[0]!);
+      },
+    };
+    const start = (suffix: string) => initialize({ sessionCookiePostfix: suffix, cookieCfg });
+    const firstA = await start("-a");
+    const a = firstA.emit({}, firstSignal);
+    await firstA.handle.shutdown();
+    const firstB = await start("-b");
+    const b = firstB.emit({}, firstSignal);
+    expect(b["enduser.pseudo.id"]).toBe(a["enduser.pseudo.id"]);
+    await firstB.handle.shutdown();
+    expect(JSON.parse(storage.getItem("opentelemetry-session:-b")!)).toMatchObject({
+      id: b["session.id"],
+      anonymousId: b["enduser.pseudo.id"],
+    });
+
+    values.clear();
+    const secondA = await start("-a");
+    const nextA = secondA.emit({}, firstSignal);
+    expect(nextA["enduser.pseudo.id"]).not.toBe(a["enduser.pseudo.id"]);
+    const secondB = await start("-b");
+    const nextB = secondB.emit({}, firstSignal);
+    expect(nextB["enduser.pseudo.id"]).toBe(nextA["enduser.pseudo.id"]);
+    expect(nextB["session.id"]).not.toBe(b["session.id"]);
+    cookieCfg.getCookie.mockClear();
+    await secondB.handle.shutdown();
+    expect(cookieCfg.getCookie).not.toHaveBeenCalled();
+    expect(JSON.parse(storage.getItem("opentelemetry-session:-b")!)).toMatchObject({
+      id: nextB["session.id"],
+      anonymousId: nextA["enduser.pseudo.id"],
+    });
+  },
+);
+
+it("keeps a still-live app's backup bound to its original anonymous user", async () => {
+  const storage = new MemoryStorage();
+  vi.spyOn(window, "localStorage", "get").mockReturnValue(storage);
+  const values = new Map<string, string>();
+  const cookieCfg = {
+    getCookie: (name: string) => values.get(name) ?? "",
+    setCookie: (name: string, value: string) => {
+      values.set(name, value.split(";")[0]!);
+    },
+  };
+  const live = await initialize({ sessionCookiePostfix: "-b", cookieCfg });
+  const before = live.emit();
+  values.clear();
+  const other = await initialize({ sessionCookiePostfix: "-a", cookieCfg });
+  const next = other.emit();
+  expect(next["enduser.pseudo.id"]).not.toBe(before["enduser.pseudo.id"]);
+  await live.handle.shutdown();
+  expect(JSON.parse(storage.getItem("opentelemetry-session:-b")!)).toMatchObject({
+    id: before["session.id"],
+    anonymousId: before["enduser.pseudo.id"],
+  });
+  const restored = await initialize({ sessionCookiePostfix: "-b", cookieCfg });
+  expect(restored.emit()["session.id"]).not.toBe(before["session.id"]);
+});
+
+it.each([false, true])(
+  "removes session-backup identity on explicit user opt-out (after shutdown: %s)",
+  async (afterShutdown) => {
+    const storage = new MemoryStorage();
+    vi.spyOn(window, "localStorage", "get").mockReturnValue(storage);
+    const consumer = await initialize();
+    const before = consumer.emit();
+    window.dispatchEvent(new PageTransitionEvent("pagehide"));
+    expect(JSON.parse(storage.getItem("opentelemetry-session")!)).toMatchObject({
+      anonymousId: before["enduser.pseudo.id"],
+    });
+    if (afterShutdown) await consumer.handle.shutdown();
+    consumer.handle.userContext.setEnabled(false);
+    expect(storage.getItem("opentelemetry-session")).toBeNull();
+    if (!afterShutdown) await consumer.handle.shutdown();
+    expect(storage.getItem("opentelemetry-session") ?? "").not.toContain(
+      before["enduser.pseudo.id"] as string,
+    );
+  },
+);
+
+it("does not replay a different user's backup when disabled cookies are later enabled", async () => {
+  const storage = new MemoryStorage();
+  vi.spyOn(window, "localStorage", "get").mockReturnValue(storage);
+  const values = new Map<string, string>();
+  storage.setItem(
+    "opentelemetry-session",
+    JSON.stringify({ id: "old-session", startTimestamp: Date.now(), anonymousId: "old-user" }),
+  );
+  const consumer = await initialize({
+    cookieCfg: {
+      enabled: false,
+      getCookie: (name) => values.get(name) ?? "",
+      setCookie: (name, value) => {
+        values.set(name, value.split(";")[0]!);
+      },
+    },
+  });
+  const next = consumer.emit();
+  expect(next["session.id"]).not.toBe("old-session");
+  consumer.handle.getCookieMgr().setEnabled(true);
+  expect(values.get("ai_session")!.split("|")[0]).toBe(next["session.id"]);
+  await consumer.handle.shutdown();
+  expect(JSON.parse(storage.getItem("opentelemetry-session")!)).toMatchObject({
+    id: next["session.id"],
+    anonymousId: next["enduser.pseudo.id"],
+  });
+});
+
+it("does not persist the previous owner after an unsuccessful identity re-enable", async () => {
+  const storage = new MemoryStorage();
+  vi.spyOn(window, "localStorage", "get").mockReturnValue(storage);
+  let failing = false;
+  const values = new Map<string, string>();
+  const consumer = await initialize({
+    cookieCfg: {
+      getCookie(name) {
+        if (failing && name === "ai_user") throw new Error("unavailable");
+        return values.get(name) ?? "";
+      },
+      setCookie: (name, value) => {
+        values.set(name, value.split(";")[0]!);
+      },
+      delCookie: (name) => {
+        values.delete(name);
+      },
+    },
+  });
+  consumer.emit();
+  window.dispatchEvent(new PageTransitionEvent("pagehide"));
+  consumer.handle.userContext.setEnabled(false);
+  failing = true;
+  consumer.handle.userContext.setEnabled(true);
+  await consumer.handle.shutdown();
+  expect(storage.getItem("opentelemetry-session")).toBeNull();
+});
+
+it("cancels a backup-derived deferred cookie before identity opt-in and cookie enable", async () => {
+  const storage = new MemoryStorage();
+  vi.spyOn(window, "localStorage", "get").mockReturnValue(storage);
+  storage.setItem(
+    "opentelemetry-session",
+    JSON.stringify({ id: "old-session", startTimestamp: Date.now(), anonymousId: "old-user" }),
+  );
+  const values = new Map<string, string>();
+  const cookieCfg = {
+    getCookie: (name: string) => values.get(name) ?? "",
+    setCookie: (name: string, value: string) => {
+      values.set(name, value.split(";")[0]!);
+    },
+    delCookie: (name: string) => {
+      values.delete(name);
+    },
+  };
+  const consumer = await initialize({
+    userContext: { enabled: false },
+    cookieCfg: { ...cookieCfg, enabled: false },
+  });
+  expect(consumer.emit()["session.id"]).toBe("old-session");
+  consumer.handle.userContext.setEnabled(true);
+  consumer.handle.getCookieMgr().setEnabled(true);
+  await consumer.handle.shutdown();
+  expect(values.get("ai_session") ?? "").not.toContain("old-session");
+  const restored = await initialize({ cookieCfg });
+  expect(restored.emit()["session.id"]).not.toBe("old-session");
+});
+
+it("recovers after a failed redundant identity enable without keeping backup writes deferred", async () => {
+  const storage = new MemoryStorage();
+  vi.spyOn(window, "localStorage", "get").mockReturnValue(storage);
+  let failing = false;
+  const values = new Map<string, string>();
+  const consumer = await initialize({
+    cookieCfg: {
+      getCookie(name) {
+        if (failing && name === "ai_user") throw new Error("unavailable");
+        return values.get(name) ?? "";
+      },
+      setCookie: (name, value) => {
+        values.set(name, value.split(";")[0]!);
+      },
+    },
+  });
+  const before = consumer.emit();
+  failing = true;
+  consumer.handle.userContext.setEnabled(true);
+  failing = false;
+  expect(consumer.emit()).toMatchObject(before);
+  await consumer.handle.shutdown();
+  expect(JSON.parse(storage.getItem("opentelemetry-session")!)).toMatchObject({
+    id: before["session.id"],
+    anonymousId: before["enduser.pseudo.id"],
+  });
+});
+
+it("binds a previously identity-disabled session to the user on opt-in", async () => {
+  const storage = new MemoryStorage();
+  vi.spyOn(window, "localStorage", "get").mockReturnValue(storage);
+  const consumer = await initialize({ userContext: { enabled: false } });
+  const id = consumer.emit()["session.id"];
+  consumer.handle.userContext.setEnabled(true);
+  const user = consumer.emit()["enduser.pseudo.id"];
+  expect(consumer.emit()["session.id"]).toBe(id);
+  await consumer.handle.shutdown();
+  expect(JSON.parse(storage.getItem("opentelemetry-session")!)).toMatchObject({
+    id,
+    anonymousId: user,
+  });
+  document.cookie = "ai_session=; max-age=0; path=/";
+  const restored = await initialize();
+  expect(restored.emit()["session.id"]).toBe(id);
+});
+
 it("keeps AI suffix backups separate from existing literal-prefix backups", async () => {
   const storage = new MemoryStorage();
   vi.spyOn(window, "localStorage", "get").mockReturnValue(storage);
@@ -690,7 +912,11 @@ it("keeps AI suffix backups separate from existing literal-prefix backups", asyn
       values.set(name, value.split(";")[0]!);
     },
   };
-  const backup = JSON.stringify({ id: "prefix-session", startTimestamp: now });
+  const backup = JSON.stringify({
+    id: "prefix-session",
+    startTimestamp: now,
+    anonymousId: "other-user",
+  });
   storage.setItem(prefixedBackup, backup);
   const suffixed = await initialize({ namePrefix: suffix, cookieCfg });
   const id = suffixed.emit()["session.id"];
