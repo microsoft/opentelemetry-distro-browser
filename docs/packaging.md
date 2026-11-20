@@ -77,12 +77,12 @@ in each Node job's check summary and uploads all three files as build artifacts.
 
 Every executable published entry point has absolute minified, gzip and Brotli budgets:
 
-| Entry point          | Minified |     Gzip |  Brotli |
-| -------------------- | -------: | -------: | ------: |
-| `.`                  |   174 kB |    55 kB |   48 kB |
-| `./instrumentations` | 78.25 kB | 29.75 kB | 26.5 kB |
-| `./debug`            |    16 kB |     6 kB |    5 kB |
-| `./snippet`          |     7 kB |     3 kB | 2.75 kB |
+| Entry point          | Minified |     Gzip |   Brotli |
+| -------------------- | -------: | -------: | -------: |
+| `.`                  | 174.5 kB |    55 kB |    48 kB |
+| `./instrumentations` | 78.25 kB | 29.75 kB |  26.5 kB |
+| `./debug`            |    16 kB |     6 kB |     5 kB |
+| `./snippet`          | 7.625 kB |  3.25 kB | 2.875 kB |
 
 The generated JSON and Markdown reports show the measured values, ceilings and result for each
 entry point. During alpha releases, violations are report-only so the baselines can stabilize.
@@ -94,15 +94,16 @@ comparison remains informational and does not replace the absolute gate.
 emits them, so it must run after a production build. Their budgets block in every release channel,
 including alpha:
 
-| Artifact                                                   |  Minified |     Gzip |  Brotli |
-| ---------------------------------------------------------- | --------: | -------: | ------: |
-| `opentelemetry-browser.{iife,umd}.min.js`                  | 202.75 kB |    66 kB |   57 kB |
-| `opentelemetry-browser-instrumentations.{iife,umd}.min.js` |     63 kB | 19.25 kB | 17.5 kB |
+| Artifact                                                   | Minified |     Gzip |  Brotli |
+| ---------------------------------------------------------- | -------: | -------: | ------: |
+| `opentelemetry-browser.{iife,umd}.min.js`                  | 203.5 kB |    66 kB |   57 kB |
+| `opentelemetry-browser-instrumentations.{iife,umd}.min.js` |    63 kB | 19.25 kB | 17.5 kB |
 
 Instrumentation budgets include the opt-in dependency enrichment adapter, retryable patch cleanup,
 and conservative timing-overlap tracking. The self-contained SDK bundles include the instrumentation
 preset too. The npm instrumentations budget also includes the lazy Click Analytics chunk.
-The root and SDK browser budgets additionally include the isolated SDK diagnostics pipeline;
+The root and SDK browser budgets additionally include the isolated SDK diagnostics pipeline and
+anonymous-user ownership validation for session backups, including opt-out and deferred-cookie cleanup;
 the snippet's minified budget includes diagnostic console-level validation.
 
 Click Analytics is available only through the npm instrumentations entry, including its factory and

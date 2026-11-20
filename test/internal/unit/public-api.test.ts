@@ -50,6 +50,9 @@ it("exposes distro-owned configuration and lifecycle contracts", () => {
     | "sessionRenewalMs"
     | "sessionExpirationMs"
     | "storage"
+    | "namePrefix"
+    | "userCookiePostfix"
+    | "sessionCookiePostfix"
     | "cookieCfg"
     | "userContext"
     | "traces"
@@ -110,6 +113,16 @@ it("exposes distro-owned configuration and lifecycle contracts", () => {
   expectTypeOf<MicrosoftOpenTelemetryBrowserOptions["storage"]>().toEqualTypeOf<
     { enabled?: boolean; namePrefix?: string } | undefined
   >();
+  expectTypeOf<
+    Pick<
+      MicrosoftOpenTelemetryBrowserOptions,
+      "namePrefix" | "userCookiePostfix" | "sessionCookiePostfix"
+    >
+  >().toEqualTypeOf<{
+    namePrefix?: string;
+    userCookiePostfix?: string;
+    sessionCookiePostfix?: string;
+  }>();
   expectTypeOf<MicrosoftOpenTelemetryBrowserOptions["cookieCfg"]>().toEqualTypeOf<
     MicrosoftOpenTelemetryBrowserCookieConfig | undefined
   >();

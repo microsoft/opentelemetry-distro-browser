@@ -15,8 +15,20 @@ import type {
   MicrosoftOpenTelemetryBrowserOptions,
 } from "../../src/index.js";
 
-const cookieKeys = ["ai_user", "ai_authUser", "ai_session"];
-const storageKeys = ["opentelemetry-user", "opentelemetry-session"];
+const cookieKeys = [
+  "ai_user",
+  "ai_authUser",
+  "ai_session",
+  "ai_user-user",
+  "ai_session-session",
+  "ai_session-fallback",
+];
+const storageKeys = [
+  "opentelemetry-user",
+  "opentelemetry-session",
+  "opentelemetry-session:-session",
+  "opentelemetry-session:-fallback",
+];
 const prefixes = ["", "browser-a-", "browser-b-"];
 const savedStorage = new Map<string, string | null>();
 const cookieHandles = new Set<MicrosoftOpenTelemetryBrowser>();
@@ -264,11 +276,31 @@ it.each(["index.js", "index.min.js"])(
 
 it.each(
   ["index.js", "index.min.js"].flatMap((file) =>
-    ["", "browser-a-"].map((namePrefix) => ({ file, namePrefix })),
+    [
+      { storagePrefix: "", namePrefix: "", userCookiePostfix: "", sessionCookiePostfix: "" },
+      {
+        storagePrefix: "browser-a-",
+        namePrefix: "",
+        userCookiePostfix: "",
+        sessionCookiePostfix: "",
+      },
+      {
+        storagePrefix: "",
+        namePrefix: "-fallback",
+        userCookiePostfix: "-user",
+        sessionCookiePostfix: "",
+      },
+      {
+        storagePrefix: "",
+        namePrefix: "-fallback",
+        userCookiePostfix: "-user",
+        sessionCookiePostfix: "-session",
+      },
+    ].map((naming) => ({ file, ...naming })),
   ),
 )(
-  "continues Application Insights cookies and roundtrips canonical identities through $file (prefix=$namePrefix)",
-  async ({ file, namePrefix }) => {
+  "continues Application Insights cookies through $file (prefix=$storagePrefix, fallback=$namePrefix, session=$sessionCookiePostfix)",
+  async ({ file, storagePrefix, namePrefix, userCookiePostfix, sessionCookiePostfix }) => {
     const now = Date.now();
     const anonymousId = "AI+anonymous/id";
     const sessionId = "AI+session/id";
@@ -276,19 +308,26 @@ it.each(
     const start = now - 2000;
     const userId = "用户 雪%2F%7C%";
     const accountId = "tenant/雪%25#?";
-    const anonymousName = `${namePrefix}ai_user`;
-    const sessionName = `${namePrefix}ai_session`;
-    const authName = `${namePrefix}ai_authUser`;
+    const anonymousName = `${storagePrefix}ai_user${userCookiePostfix}`;
+    const sessionName = `${storagePrefix}ai_session${sessionCookiePostfix || namePrefix}`;
+    const authName = `${storagePrefix}ai_authUser`;
+    const suffix = sessionCookiePostfix || namePrefix;
+    const backupKey = `${storagePrefix}opentelemetry-session${suffix ? `:${suffix}` : ""}`;
     document.cookie = `${anonymousName}=${anonymousId}|${acquired}; path=/`;
     document.cookie = `${sessionName}=${sessionId}|${start}|${now - 1000}; path=/`;
     document.cookie = `${authName}=${encodeURI(`${userId}|${accountId}`)}; path=/`;
     const legacyUser = JSON.stringify({ anonymousId: "old-storage-user" });
-    localStorage.setItem(`${namePrefix}opentelemetry-user`, legacyUser);
+    localStorage.setItem(`${storagePrefix}opentelemetry-user`, legacyUser);
     localStorage.setItem(
-      `${namePrefix}opentelemetry-session`,
+      backupKey,
       JSON.stringify({ id: "superseded-backup", startTimestamp: start }),
     );
-    const options = { storage: { namePrefix } };
+    const options = {
+      storage: { namePrefix: storagePrefix },
+      namePrefix,
+      userCookiePostfix,
+      sessionCookiePostfix,
+    };
     const first = await initializeCookieConsumer(file, options);
     const expected = {
       "enduser.pseudo.id": anonymousId,
@@ -301,13 +340,13 @@ it.each(
     expect(manager.get(anonymousName)).toBe(`${anonymousId}|${acquired}`);
     expect(manager.get(sessionName)).toMatch(new RegExp(`^AI\\+session/id\\|${start}\\|\\d+$`));
     expect(manager.get(authName)).toBe(encodeURI(`${userId}|${accountId}`));
-    expect(localStorage.getItem(`${namePrefix}opentelemetry-user`)).toBe(legacyUser);
+    expect(localStorage.getItem(`${storagePrefix}opentelemetry-user`)).toBe(legacyUser);
 
     const replacement = "replacement 雪%2F%7C%";
     first.handle.userContext.setAuthenticatedUserContext(replacement, accountId, true);
     expect(manager.get(authName)).toBe(encodeURI(`${replacement}|${accountId}`));
     await first.handle.shutdown();
-    expect(JSON.parse(localStorage.getItem(`${namePrefix}opentelemetry-session`)!)).toMatchObject({
+    expect(JSON.parse(localStorage.getItem(backupKey)!)).toMatchObject({
       id: sessionId,
       startTimestamp: start,
       lastActivityTimestamp: expect.any(Number),
@@ -326,6 +365,66 @@ it.each(
     expect(attributes["user.id"]).toBeUndefined();
     expect(attributes["session.id"]).toBe(sessionId);
     expect(attributes["enduser.pseudo.id"]).toBe(anonymousId);
+  },
+);
+
+it.each(["index.js", "index.min.js"])(
+  "does not reuse another anonymous user's suffixed session backup through %s",
+  async (file) => {
+    const firstA = await initializeCookieConsumer(file, { sessionCookiePostfix: "-fallback" });
+    const a = await firstA.emit();
+    await firstA.handle.shutdown();
+    const firstB = await initializeCookieConsumer(file, { sessionCookiePostfix: "-session" });
+    const b = await firstB.emit();
+    expect(b["enduser.pseudo.id"]).toBe(a["enduser.pseudo.id"]);
+    await firstB.handle.shutdown();
+    expect(JSON.parse(localStorage.getItem("opentelemetry-session:-session")!)).toMatchObject({
+      id: b["session.id"],
+      anonymousId: b["enduser.pseudo.id"],
+    });
+
+    clearCookies();
+    const secondA = await initializeCookieConsumer(file, { sessionCookiePostfix: "-fallback" });
+    const nextA = await secondA.emit();
+    expect(nextA["enduser.pseudo.id"]).not.toBe(a["enduser.pseudo.id"]);
+    await secondA.handle.shutdown();
+    const secondB = await initializeCookieConsumer(file, { sessionCookiePostfix: "-session" });
+    const nextB = await secondB.emit();
+    expect(nextB["enduser.pseudo.id"]).toBe(nextA["enduser.pseudo.id"]);
+    expect(nextB["session.id"]).not.toBe(b["session.id"]);
+    await secondB.handle.shutdown();
+    const restored = await initializeCookieConsumer(file, { sessionCookiePostfix: "-session" });
+    expect(await restored.emit()).toMatchObject(nextB);
+  },
+);
+
+it.each(["index.js", "index.min.js"])(
+  "rejects mixed cookie naming before persistence access through %s",
+  async (file) => {
+    const artifact =
+      file === "index.js"
+        ? new URL("../../dist/esm/index.js", import.meta.url).href
+        : new URL("../../dist/esm/index.min.js", import.meta.url).href;
+    const distro: typeof import("../../src/index.js") = await import(/* @vite-ignore */ artifact);
+    const readCookie = vi.spyOn(document, "cookie", "get");
+    const writeCookie = vi.spyOn(document, "cookie", "set");
+    const local = vi.spyOn(window, "localStorage", "get");
+    const session = vi.spyOn(window, "sessionStorage", "get");
+    const getCookie = vi.fn(() => "");
+    const setCookie = vi.fn();
+    for (const key of ["namePrefix", "userCookiePostfix", "sessionCookiePostfix"] as const) {
+      await expect(
+        distro.useMicrosoftOpenTelemetry({
+          ...createInMemoryPipeline().options,
+          [key]: "-suffix",
+          storage: { namePrefix: "browser-a-" },
+          cookieCfg: { getCookie, setCookie },
+        }),
+      ).rejects.toThrow("AI cookie naming cannot be combined with storage.namePrefix.");
+    }
+    for (const operation of [readCookie, writeCookie, local, session, getCookie, setCookie]) {
+      expect(operation).not.toHaveBeenCalled();
+    }
   },
 );
 

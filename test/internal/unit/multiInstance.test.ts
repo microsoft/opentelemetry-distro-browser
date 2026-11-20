@@ -723,6 +723,9 @@ describe("page visit time through useMicrosoftOpenTelemetry", () => {
     storage = sessionStorage;
     savedVisits = new Map(visitKeys().map((key) => [key, storage.getItem(key)!]));
     for (const key of savedVisits.keys()) storage.removeItem(key);
+    // Keep the document origin consistent with the mocked wall clock across browser reads.
+    const origin = performance.timeOrigin;
+    vi.spyOn(performance, "timeOrigin", "get").mockReturnValue(origin);
     now = performance.timeOrigin + 1_000;
     vi.spyOn(Date, "now").mockImplementation(() => now);
     vi.spyOn(performance, "getEntriesByType").mockReturnValue([

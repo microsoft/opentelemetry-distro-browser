@@ -384,6 +384,16 @@ export interface MicrosoftOpenTelemetryBrowserOptions {
   resource?: Resource;
   /** Session tracking, enabled by default. Disabled sessions do not access storage. */
   session?: MicrosoftOpenTelemetryBrowserSessionOptions;
+  /**
+   * Startup-only Application Insights session-cookie suffix; sessionCookiePostfix takes precedence.
+   * Does not affect user cookies or other Web Storage. Cannot combine nonempty AI naming options
+   * with a nonempty storage.namePrefix. Defaults to an empty string.
+   */
+  namePrefix?: string;
+  /** Startup-only suffix appended to ai_user, as in Application Insights. Defaults to empty. */
+  userCookiePostfix?: string;
+  /** Startup-only suffix appended to ai_session; empty falls back to namePrefix. */
+  sessionCookiePostfix?: string;
   /** Instance cookie controls, independent of Web Storage. Defaults to enabled. */
   cookieCfg?: MicrosoftOpenTelemetryBrowserCookieConfig;
   /** Web Storage controls, captured at initialization. Applies only to this handle. */
