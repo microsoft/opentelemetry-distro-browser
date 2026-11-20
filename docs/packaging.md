@@ -94,17 +94,18 @@ comparison remains informational and does not replace the absolute gate.
 emits them, so it must run after a production build. Their budgets block in every release channel,
 including alpha:
 
-| Artifact                                                   |  Minified |     Gzip |  Brotli |
-| ---------------------------------------------------------- | --------: | -------: | ------: |
-| `opentelemetry-browser.{iife,umd}.min.js`                  | 202.75 kB |    66 kB |   57 kB |
-| `opentelemetry-browser-instrumentations.{iife,umd}.min.js` |     63 kB | 19.25 kB | 17.5 kB |
+| Artifact                                                   | Minified |     Gzip |  Brotli |
+| ---------------------------------------------------------- | -------: | -------: | ------: |
+| `opentelemetry-browser.{iife,umd}.min.js`                  | 203.5 kB |    66 kB |   57 kB |
+| `opentelemetry-browser-instrumentations.{iife,umd}.min.js` |    63 kB | 19.25 kB | 17.5 kB |
 
 Instrumentation budgets include the opt-in dependency enrichment adapter, retryable patch cleanup,
 and conservative timing-overlap tracking. The self-contained SDK bundles include the instrumentation
 preset too. The npm instrumentations budget also includes the lazy Click Analytics chunk.
-The root and SDK browser budgets additionally include the isolated SDK diagnostics pipeline.
-The snippet generator budget includes diagnostic console-level validation and opt-in startup
-error capture. Neither the default inline snippet nor the CDN bundles include the early error queue.
+
+The root and SDK browser budgets additionally include the isolated SDK diagnostics pipeline and
+anonymous-user ownership validation for session backups, including opt-out and deferred-cookie cleanup;
+the snippet's minified budget includes diagnostic console-level validation.
 
 Click Analytics is available only through the npm instrumentations entry, including its factory and
 behavior validators. Its implementation remains a lazy npm chunk; neither the root SDK nor either

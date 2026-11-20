@@ -20,6 +20,7 @@ export function createCookieManager(
   config?: MicrosoftOpenTelemetryBrowserCookieConfig,
 ): MicrosoftOpenTelemetryBrowserCookieManager & {
   read(name: string): CookieReadResult;
+  isAccessEnabled(): boolean;
   canRead(name: string): boolean;
   setReplayFailureHandler(
     handler: ((name: string, removeSuperseded: () => boolean) => void) | undefined,
@@ -180,6 +181,8 @@ export function createCookieManager(
 
   return {
     read,
+    // Policy only: unlike isEnabled(), this does not probe browser cookie availability.
+    isAccessEnabled: () => enabled && !stopped,
     // Internal policy query: availability is checked separately, without re-reading caller config.
     canRead: (name) => !ignored.has(name),
     // Internal coordination only: generic cookie failures do not authorize destructive cleanup.

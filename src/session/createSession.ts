@@ -43,6 +43,8 @@ export function createSession(
   cookieName = "ai_session",
   readLifetimes?: () => { readonly inactivityTimeout: number; readonly maxDuration: number },
   backupKey = storageKey,
+  // Null opts out of owner validation; undefined defers it until identity-read recovery.
+  readOwner: () => string | null | undefined = () => null,
 ) {
   const inactivityTimeout = lifetimeSeconds(
     options.inactivityTimeout,
@@ -59,6 +61,7 @@ export function createSession(
   let ignoreBackup = false;
   let readFailed = false;
   let restoredFromBackup = false;
+  let sessionOwner: string | null | undefined;
 
   function expired(session: Session, now: number): boolean {
     const policy = readLifetimes?.() ?? { inactivityTimeout, maxDuration };
@@ -72,7 +75,13 @@ export function createSession(
   }
 
   function serialize(session: Session): string {
-    return JSON.stringify({ ...session, lastActivityTimestamp });
+    return JSON.stringify({
+      ...session,
+      lastActivityTimestamp,
+      ...(readOwner() !== null && typeof sessionOwner === "string"
+        ? { anonymousId: sessionOwner }
+        : {}),
+    });
   }
 
   function save(session: Session, force = false): void {
@@ -155,6 +164,7 @@ export function createSession(
     let id: unknown;
     let startTimestamp: unknown;
     let lastActivity: unknown;
+    let backupOwner: unknown;
     if (value === null) {
       if (ignoreBackup) return null;
       const result = storage?.getItem(backupKey);
@@ -162,6 +172,9 @@ export function createSession(
       try {
         const session: unknown = JSON.parse(result.value);
         if (typeof session === "object" && session !== null) {
+          backupOwner = Object.hasOwn(session, "anonymousId")
+            ? (session as { anonymousId: unknown }).anonymousId
+            : undefined;
           id = "id" in session ? session.id : undefined;
           startTimestamp = "startTimestamp" in session ? session.startTimestamp : undefined;
           lastActivity =
@@ -193,6 +206,18 @@ export function createSession(
       lastActivityTimestamp = lastActivity;
       const restored = { id, startTimestamp };
       if (expired(restored, Date.now())) return null;
+      const owner = readOwner();
+      if (fromBackup) {
+        // A shared user cookie may have been recreated by another app, whose new-user cleanup
+        // cannot clear this suffix's backup. Unresolved reads are not evidence of a mismatch.
+        if (owner === undefined) {
+          readFailed = true;
+          return null;
+        }
+        if (typeof owner === "string" && owner !== backupOwner) return null;
+      }
+      sessionOwner =
+        fromBackup && owner === null && typeof backupOwner === "string" ? backupOwner : owner;
       currentSession = restored;
       restoredFromBackup = fromBackup;
       return restored;
@@ -210,6 +235,7 @@ export function createSession(
       // over unresolved cookies or backups. Later enrichment retries authoritative restoration.
       currentSession = session;
       restoredFromBackup = false;
+      sessionOwner = readOwner();
       lastActivityTimestamp = session.startTimestamp;
       save(session, true);
       return Promise.resolve();
@@ -222,13 +248,36 @@ export function createSession(
       sessionStore: store,
     });
   let manager = createManager();
+  function refreshOwner(): void {
+    const owner = readOwner();
+    if (restoredFromBackup && typeof owner === "string" && owner !== sessionOwner) {
+      currentSession = undefined;
+      restoredFromBackup = false;
+      manager.shutdown();
+      manager = createManager();
+      // Cancel a deferred backup-derived cookie before enabling browser access can replay it.
+      try {
+        cookies?.del(cookieName);
+      } catch {
+        // Custom cookie managers must not interrupt identity controls.
+      }
+    }
+    // Bind previously identity-disabled sessions, but never relabel an already known owner.
+    if (sessionOwner == null) sessionOwner = owner;
+  }
   return {
     start: () => manager.start(),
     shutdown: () => manager.shutdown(),
+    refreshOwner,
     /** A missing user cookie must not resurrect the previous user's session backup. */
     discardBackup() {
       ignoreBackup = true;
       if (restoredFromBackup) {
+        try {
+          cookies?.del(cookieName);
+        } catch {
+          // A custom cookie manager may throw during cleanup.
+        }
         currentSession = undefined;
         restoredFromBackup = false;
         manager.shutdown();
@@ -238,7 +287,8 @@ export function createSession(
     },
     /** Saves the latest activity to the optional Web Storage backup without creating a session. */
     backup() {
-      if (persist && !readFailed && currentSession) {
+      refreshOwner();
+      if (persist && !readFailed && currentSession && readOwner() !== undefined) {
         storage?.setItem(backupKey, serialize(currentSession));
       }
     },
@@ -252,6 +302,7 @@ export function createSession(
           manager = createManager();
         }
       }
+      refreshOwner();
       const session = currentSession ?? manager.getSession();
       const now = Date.now();
       if (expired(session, now)) {

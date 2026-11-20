@@ -269,6 +269,10 @@ export async function useMicrosoftOpenTelemetry(
           cookieNames.session,
           () => configuration.snapshot().session,
           cookieNames.sessionBackup,
+          () => {
+            const owner = userContext.getSessionOwner();
+            return owner === undefined && !cookies.isAccessEnabled() ? null : owner;
+          },
         )
       : undefined;
   getSharedRegistry();
@@ -575,6 +579,8 @@ export async function useMicrosoftOpenTelemetry(
         // Explicit privacy controls also clean records written by older versions. Never restore
         // legacy authentication or access Web Storage when the caller has disabled it.
         if (!sessionStorage) return;
+        // Explicit identity opt-out also removes the anonymous owner kept in session backup.
+        if (action === "purge") session?.discardBackup();
         const key = "opentelemetry-user";
         if (action === "clear") {
           const stored = sessionStorage.getItem(key);
@@ -599,6 +605,7 @@ export async function useMicrosoftOpenTelemetry(
         }
         sessionStorage.removeItem(key);
       },
+      () => session?.refreshOwner(),
     );
     // Capture explicit context, identity policy and processor configuration before yielding.
     const sessionStartup = session?.start();
