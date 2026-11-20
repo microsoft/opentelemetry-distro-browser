@@ -1,5 +1,4 @@
-import { SpanStatusCode, trace } from "@opentelemetry/api";
-import { logs } from "@opentelemetry/api-logs";
+import { logs, SpanStatusCode, trace } from "@opentelemetry/api";
 
 const tracer = trace.getTracer("otlp-sample", "0.1.0");
 const logger = logs.getLogger("otlp-sample", "0.1.0");

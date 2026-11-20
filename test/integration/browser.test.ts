@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 import { ROOT_CONTEXT, context, diag, propagation, trace } from "@opentelemetry/api";
-import { logs } from "@opentelemetry/api-logs";
+import { logs } from "@opentelemetry/api";
 import { afterEach, beforeEach, expect, inject, it, vi } from "vitest";
 import { commands, server } from "vitest/browser";
 import { resourceFromAttributes } from "@opentelemetry/resources";

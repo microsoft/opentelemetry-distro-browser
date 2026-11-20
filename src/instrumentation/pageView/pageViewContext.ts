@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 import { diag, isValidTraceId } from "@opentelemetry/api";
-import { RandomIdGenerator } from "@opentelemetry/sdk-trace-base";
+import { RandomIdGenerator } from "@opentelemetry/sdk-trace";
 import { type PageView, type PageViewContext, type PageViewListener } from "./types.js";
 
 /**

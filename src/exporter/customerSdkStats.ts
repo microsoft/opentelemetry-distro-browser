@@ -3,7 +3,7 @@
 
 import { SpanKind, type Attributes } from "@opentelemetry/api";
 import type { LogRecordExporter, ReadableLogRecord } from "@opentelemetry/sdk-logs";
-import type { ReadableSpan, SpanExporter } from "@opentelemetry/sdk-trace-base";
+import type { ReadableSpan, SpanExporter } from "@opentelemetry/sdk-trace";
 import { isRetriable } from "./breezeUtils.js";
 import { createEnvelopeBatches, createTags, getSdkVersion, isUnloading } from "./common.js";
 import { MAX_BATCH_SIZE_IN_BYTES } from "./constants.js";

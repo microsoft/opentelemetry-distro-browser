@@ -2,14 +2,16 @@
 // Licensed under the MIT License.
 
 import { context, diag, propagation, trace, type TracerProvider } from "@opentelemetry/api";
-import { logs, type LoggerProvider as ApiLoggerProvider } from "@opentelemetry/api-logs";
+import { logs, type LoggerProvider as ApiLoggerProvider } from "@opentelemetry/api";
 import { W3CTraceContextPropagator } from "@opentelemetry/core";
 import { resourceFromAttributes } from "@opentelemetry/resources";
 import { LoggerProvider } from "@opentelemetry/sdk-logs";
 import { BrowserBatchLogRecordProcessor } from "../../../src/browserBatchLogRecordProcessor.js";
 import { BatchSpanProcessor } from "@opentelemetry/sdk-trace";
-import { BasicTracerProvider } from "@opentelemetry/sdk-trace-base";
-import { StackContextManager } from "@opentelemetry/sdk-trace-web";
+import {
+  TracerProvider as BasicTracerProvider,
+  StackContextManager,
+} from "@opentelemetry/sdk-trace";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import {
   getManagedOperationName,
@@ -153,7 +155,7 @@ it.each(["trace", "logs", "context", "propagation"] as const)(
 
 it("diagnoses an incompatible logs registry without invoking it or adopting its providers", async () => {
   const foreign = vi.fn(() => undefined);
-  realm[Symbol.for("io.opentelemetry.js.api.logs")] = foreign;
+  realm[apiKey] = { logs: foreign };
   const warning = vi.spyOn(diag, "warn").mockImplementation(() => {});
   const pipeline = createInMemoryPipeline();
   const instrumentation = probe();
@@ -168,7 +170,7 @@ it("diagnoses an incompatible logs registry without invoking it or adopting its 
   expect(pipeline.logExporter.getFinishedLogRecords()).toHaveLength(1);
   expect(foreign).not.toHaveBeenCalled();
   expect(warning).toHaveBeenCalledWith(expect.stringContaining("[logger-provider-conflict]"));
-  expect(getRegisteredGlobal("logs")).toBe(foreign);
+  expect(getRegisteredGlobal("logs")).toBe((realm[apiKey] as { logs?: unknown }).logs);
 });
 
 it.each(["1.8.0", "1.9.0", "1.9.2", "1.10.0"])(
@@ -848,7 +850,7 @@ it.each(["setTracerProvider", "setLoggerProvider", "getConfig", "enable"] as con
       () => foreignLogs.shutdown(),
     );
     expect(trace.setGlobalTracerProvider(foreignTrace)).toBe(true);
-    expect(logs.setGlobalLoggerProvider(foreignLogs)).toBe(foreignLogs);
+    expect(logs.setGlobalLoggerProvider(foreignLogs)).toBe(true);
     expect(context.setGlobalContextManager(new StackContextManager().enable())).toBe(true);
     expect(propagation.setGlobalPropagator(new W3CTraceContextPropagator())).toBe(true);
   },

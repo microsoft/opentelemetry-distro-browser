@@ -15,23 +15,6 @@ const esmOutput = {
 const externalOpenTelemetry = (id) => id.startsWith("@opentelemetry/");
 const compile = () => typescript({ tsconfig: "./tsconfig.src.json" });
 
-const unsafeIdleCallbackCheck = 'typeof window.requestIdleCallback === "function"';
-// Upstream resource timing reads `window` when its module is evaluated, which throws in a worker.
-// The global bundles inline supported instrumentations, so guard the check until upstream does.
-const workerSafeIdleCallback = {
-  name: "worker-safe-idle-callback",
-  transform(code, id) {
-    if (!/[\\/]@opentelemetry[\\/]browser-instrumentation[\\/].*idle-callback-shim\.js$/.test(id)) {
-      return null;
-    }
-    const index = code.indexOf(unsafeIdleCallbackCheck);
-    if (index === -1) {
-      this.error(`${id} no longer contains the guarded requestIdleCallback check.`);
-    }
-    const source = new MagicString(code).appendLeft(index, 'typeof window !== "undefined" && ');
-    return { code: source.toString(), map: source.generateMap({ hires: true }) };
-  },
-};
 const cdnFeatures = {
   name: "cdn-features",
   transform(code, id) {
@@ -46,12 +29,7 @@ const cdnFeatures = {
     return { code: source.toString(), map: source.generateMap({ hires: true }) };
   },
 };
-const bundleForBrowser = () => [
-  nodeResolve({ browser: true }),
-  workerSafeIdleCallback,
-  commonjs(),
-  compile(),
-];
+const bundleForBrowser = () => [nodeResolve({ browser: true }), commonjs(), compile()];
 
 /**
  * Instrumentation members that the distro reads or replaces by name on
@@ -59,12 +37,14 @@ const bundleForBrowser = () => [
  */
 const crossBundleProperties = [
   "_active",
+  "_config",
   "_isEnabled",
   "_isFetchPatched",
   "_isHistoryPatched",
   "_isPatched",
   "_isXhrPatched",
   "_onErrorHandler",
+  "_state",
   "_unwrap",
   "_wrap",
   "_xhrSpanMap",
@@ -167,7 +147,7 @@ export default [
   {
     input: "src/index.ts",
     // Retain the application's API singletons, including pre-initialization handles.
-    external: ["@opentelemetry/api", "@opentelemetry/api-logs"],
+    external: ["@opentelemetry/api"],
     plugins: bundleForBrowser(),
     output: {
       ...esmOutput,

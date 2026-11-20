@@ -1,20 +1,51 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-import type { ContextManager, TextMapPropagator, TracerProvider } from "@opentelemetry/api";
-import type { LoggerProvider } from "@opentelemetry/api-logs";
+import type {
+  ContextManager,
+  LoggerProvider,
+  TextMapPropagator,
+  TracerProvider,
+} from "@opentelemetry/api";
 import type { LogRecordProcessor } from "@opentelemetry/sdk-logs";
 import type { Resource } from "@opentelemetry/resources";
-import type { SpanProcessor } from "@opentelemetry/sdk-trace-base";
-import type { ConsoleInstrumentationConfig } from "@opentelemetry/browser-instrumentation/experimental/console";
-import type { ErrorsInstrumentationConfig } from "@opentelemetry/browser-instrumentation/experimental/errors";
-import type { FetchInstrumentationConfig } from "@opentelemetry/browser-instrumentation/experimental/fetch";
-import type { NavigationInstrumentationConfig } from "@opentelemetry/browser-instrumentation/experimental/navigation";
-import type { NavigationTimingInstrumentationConfig } from "@opentelemetry/browser-instrumentation/experimental/navigation-timing";
-import type { ResourceTimingInstrumentationConfig } from "@opentelemetry/browser-instrumentation/experimental/resource-timing";
-import type { UserActionInstrumentationConfig } from "@opentelemetry/browser-instrumentation/experimental/user-action";
-import type { WebVitalsInstrumentationConfig } from "@opentelemetry/browser-instrumentation/experimental/web-vitals";
-import type { XhrInstrumentationConfig } from "@opentelemetry/browser-instrumentation/experimental/xhr";
+import type { SpanProcessor } from "@opentelemetry/sdk-trace";
+import type {
+  ConsoleInstrumentation,
+  ConsoleInstrumentationConfig,
+} from "@opentelemetry/browser-instrumentation/experimental/console";
+import type {
+  ErrorsInstrumentation,
+  ErrorsInstrumentationConfig,
+} from "@opentelemetry/browser-instrumentation/experimental/errors";
+import type {
+  FetchInstrumentation,
+  FetchInstrumentationConfig,
+} from "@opentelemetry/browser-instrumentation/experimental/fetch";
+import type {
+  NavigationInstrumentation,
+  NavigationInstrumentationConfig,
+} from "@opentelemetry/browser-instrumentation/experimental/navigation";
+import type {
+  NavigationTimingInstrumentation,
+  NavigationTimingInstrumentationConfig,
+} from "@opentelemetry/browser-instrumentation/experimental/navigation-timing";
+import type {
+  ResourceTimingInstrumentation,
+  ResourceTimingInstrumentationConfig,
+} from "@opentelemetry/browser-instrumentation/experimental/resource-timing";
+import type {
+  UserActionInstrumentation,
+  UserActionInstrumentationConfig,
+} from "@opentelemetry/browser-instrumentation/experimental/user-action";
+import type {
+  WebVitalsInstrumentation,
+  WebVitalsInstrumentationConfig,
+} from "@opentelemetry/browser-instrumentation/experimental/web-vitals";
+import type {
+  XhrInstrumentation,
+  XhrInstrumentationConfig,
+} from "@opentelemetry/browser-instrumentation/experimental/xhr";
 import type { AzureMonitorOptions } from "./exporter/base.js";
 import type { PageViewInstrumentationConfig } from "./instrumentation/pageView/types.js";
 import type { ClickAnalyticsInstrumentationConfig } from "./instrumentation/clickAnalytics/types.js";
@@ -107,34 +138,34 @@ export interface InstrumentationOptions {
   dependencies?: DependencyInstrumentationOptions;
 
   /** Configuration for `@opentelemetry/browser-instrumentation/experimental/errors`. */
-  errors?: ErrorsInstrumentationConfig;
+  errors?: ErrorsInstrumentationConfig & { enabled?: boolean };
 
   /** Configuration for `@opentelemetry/browser-instrumentation/experimental/fetch`. */
-  fetch?: FetchInstrumentationConfig;
+  fetch?: FetchInstrumentationConfig & { enabled?: boolean };
 
   /** Configuration for `@opentelemetry/browser-instrumentation/experimental/xhr`. */
-  xhr?: XhrInstrumentationConfig;
+  xhr?: XhrInstrumentationConfig & { enabled?: boolean };
 
   /** Configuration for `@opentelemetry/browser-instrumentation/experimental/navigation`. */
-  navigation?: NavigationInstrumentationConfig;
+  navigation?: NavigationInstrumentationConfig & { enabled?: boolean };
 
   /** Configuration for `@opentelemetry/browser-instrumentation/experimental/navigation-timing`. */
-  navigationTiming?: NavigationTimingInstrumentationConfig;
+  navigationTiming?: NavigationTimingInstrumentationConfig & { enabled?: boolean };
 
   /** Configuration for `@opentelemetry/browser-instrumentation/experimental/resource-timing`. */
-  resourceTiming?: ResourceTimingInstrumentationConfig;
+  resourceTiming?: ResourceTimingInstrumentationConfig & { enabled?: boolean };
 
   /** Configuration for `@opentelemetry/browser-instrumentation/experimental/user-action`. */
-  userAction?: UserActionInstrumentationConfig;
+  userAction?: UserActionInstrumentationConfig & { enabled?: boolean };
 
   /** npm-only Application Insights-compatible click content. Prefer this or `userAction`, not both. */
   clickAnalytics?: ClickAnalyticsInstrumentationConfig;
 
   /** Configuration for `@opentelemetry/browser-instrumentation/experimental/web-vitals`. */
-  webVitals?: WebVitalsInstrumentationConfig;
+  webVitals?: WebVitalsInstrumentationConfig & { enabled?: boolean };
 
   /** Configuration for `@opentelemetry/browser-instrumentation/experimental/console`. */
-  console?: ConsoleInstrumentationConfig;
+  console?: ConsoleInstrumentationConfig & { enabled?: boolean };
 }
 
 /**
@@ -159,6 +190,23 @@ export interface BrowserInstrumentation {
   /** Stops observing before telemetry providers shut down. */
   disable(): void;
 }
+
+/**
+ * The nine pinned upstream browser instrumentations supported by the native lifecycle bridge.
+ * Construct 0.12.1 instances without enabling them before registration. Other native classes
+ * are not supported; custom classic instances can implement BrowserInstrumentation instead.
+ * @public
+ */
+export type BrowserNativeInstrumentation =
+  | ConsoleInstrumentation
+  | ErrorsInstrumentation
+  | FetchInstrumentation
+  | NavigationInstrumentation
+  | NavigationTimingInstrumentation
+  | ResourceTimingInstrumentation
+  | UserActionInstrumentation
+  | WebVitalsInstrumentation
+  | XhrInstrumentation;
 
 /**
  * Advanced configuration for browser trace context and propagation.
@@ -415,11 +463,11 @@ export interface MicrosoftOpenTelemetryBrowserOptions {
   logRecordProcessors?: LogRecordProcessor[];
   /**
    * Instrumentations owned and disabled by this handle. Do not share instances.
-   * Construct upstream fetch, XHR, console and navigation with `enabled: false` before registration.
+   * Construct native upstream instances without enabling them; classic instances use `enabled: false`.
    * Shared patches keep settings isolated. Fetch/XHR require an enabled trace pipeline.
    * Fetch uses the last writer's trace headers. XHR preserves existing headers.
    */
-  instrumentations?: readonly BrowserInstrumentation[];
+  instrumentations?: readonly (BrowserInstrumentation | BrowserNativeInstrumentation)[];
   /**
    * Page-view collection, which this distribution owns and turns on by itself.
    *
@@ -486,7 +534,7 @@ export interface MicrosoftOpenTelemetryBrowserUserContext {
  * @remarks
  * IDs use upstream module suffixes (fetch, xhr, console, errors, user-action, web-vitals),
  * full custom names or "instrumentation". Repeated IDs receive #2, #3, and so on.
- * Runtime pause/resume supports upstream 0.8.1 fetch, XHR, console, errors, user-action and
+ * Runtime pause/resume supports adapted upstream 0.12.1 fetch, XHR, console, errors, user-action and
  * the same Web Vitals object only. Page views, navigation, timing and custom modules are
  * startup/shutdown-only. Web Vitals callbacks remain registered while emission is paused.
  * Runtime add/remove/replace supports only fetch, XHR, console, errors and user-action.
@@ -500,7 +548,10 @@ export interface MicrosoftOpenTelemetryBrowserInstrumentations {
    * Binds this instance's providers, then enables collection subject to its network gate.
    * Fetch/XHR require an enabled trace pipeline. No modules are imported or constructed.
    */
-  add(id: string, instrumentation: BrowserInstrumentation): Promise<void>;
+  add(
+    id: string,
+    instrumentation: BrowserInstrumentation | BrowserNativeInstrumentation,
+  ): Promise<void>;
   /**
    * Disables and removes a supported entry, releasing ownership only after successful cleanup.
    * In-flight requests can still complete; removing Web Vitals or startup-only modules rejects.
@@ -511,7 +562,10 @@ export interface MicrosoftOpenTelemetryBrowserInstrumentations {
    * requested enablement. The candidate's kind determines its gate. Lifecycle failures attempt
    * rollback; uncertain objects remain owned for shutdown. Web Vitals replacement rejects.
    */
-  replace(id: string, instrumentation: BrowserInstrumentation): Promise<void>;
+  replace(
+    id: string,
+    instrumentation: BrowserInstrumentation | BrowserNativeInstrumentation,
+  ): Promise<void>;
   /**
    * Pauses/resumes collection for this instance. Serialized with updateCfg. Rejects unknown IDs,
    * unsupported modules and operations after shutdown. Resuming never opens a closed network

@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 import { context, diag, propagation, trace } from "@opentelemetry/api";
-import { logs } from "@opentelemetry/api-logs";
+import { logs } from "@opentelemetry/api";
 import type { LogRecordProcessor } from "@opentelemetry/sdk-logs";
 import { afterEach, expect, it, vi } from "vitest";
 import type { AzureMonitorEnvelope } from "../../src/exporter/telemetryModels.js";

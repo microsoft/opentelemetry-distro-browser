@@ -11,9 +11,9 @@ import {
   type Context,
   type TextMapPropagator,
 } from "@opentelemetry/api";
-import { logs } from "@opentelemetry/api-logs";
+import { logs } from "@opentelemetry/api";
 import { W3CBaggagePropagator, W3CTraceContextPropagator } from "@opentelemetry/core";
-import { StackContextManager } from "@opentelemetry/sdk-trace-web";
+import { StackContextManager } from "@opentelemetry/sdk-trace";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   useMicrosoftOpenTelemetry,

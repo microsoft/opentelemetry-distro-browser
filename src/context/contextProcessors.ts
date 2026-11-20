@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 import type { LogRecordProcessor, ReadWriteLogRecord } from "@opentelemetry/sdk-logs";
-import type { Span, SpanProcessor } from "@opentelemetry/sdk-trace-base";
+import type { Span, SpanProcessor } from "@opentelemetry/sdk-trace";
 import { isNonEmptyString } from "../shared/isNonEmptyString.js";
 import { setManagedOperationName } from "./operationName.js";
 import {

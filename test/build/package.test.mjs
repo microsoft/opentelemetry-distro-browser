@@ -5,8 +5,7 @@ import { createServer } from "node:http";
 import { createRequire } from "node:module";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { context, diag, propagation, SpanKind, trace } from "@opentelemetry/api";
-import { logs } from "@opentelemetry/api-logs";
+import { context, diag, logs, propagation, SpanKind, trace } from "@opentelemetry/api";
 import { startBrowserSdk } from "@opentelemetry/browser-sdk";
 import { OTLPLogExporter } from "@opentelemetry/exporter-logs-otlp-http";
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
@@ -20,7 +19,7 @@ import {
   BatchSpanProcessor,
   InMemorySpanExporter,
   SimpleSpanProcessor,
-} from "@opentelemetry/sdk-trace-base";
+} from "@opentelemetry/sdk-trace";
 import commonjs from "@rollup/plugin-commonjs";
 import { nodeResolve } from "@rollup/plugin-node-resolve";
 import { parse as parseScript } from "acorn";
@@ -32,7 +31,7 @@ const root = new URL("../../", import.meta.url);
 const pkg = JSON.parse(await readFile(new URL("package.json", root), "utf8"));
 const require = createRequire(import.meta.url);
 const esmBundle = "dist/esm/index";
-const sharedApiPackages = ["@opentelemetry/api", "@opentelemetry/api-logs"];
+const sharedApiPackages = ["@opentelemetry/api"];
 
 function findUndeclaredRequireCalls(code) {
   const source = ts.createSourceFile("bundle.js", code, ts.ScriptTarget.Latest, true);
@@ -88,6 +87,48 @@ test("the package is configured for a public beta release", () => {
     access: "public",
     tag: "beta",
   });
+});
+
+test("the package targets the SDK3 dependency set", () => {
+  assert.equal(pkg.peerDependencies["@opentelemetry/api"], ">=1.10.0 <1.11.0");
+  assert.equal(pkg.devDependencies["@opentelemetry/api"], "1.10.0");
+  assert.deepEqual(
+    Object.fromEntries(
+      [
+        "@opentelemetry/browser-api",
+        "@opentelemetry/browser-instrumentation",
+        "@opentelemetry/browser-sdk",
+        "@opentelemetry/core",
+        "@opentelemetry/exporter-logs-otlp-http",
+        "@opentelemetry/exporter-trace-otlp-http",
+        "@opentelemetry/instrumentation",
+        "@opentelemetry/resources",
+        "@opentelemetry/sdk-logs",
+        "@opentelemetry/sdk-trace",
+        "@opentelemetry/semantic-conventions",
+      ].map((name) => [name, pkg.dependencies[name]]),
+    ),
+    {
+      "@opentelemetry/browser-api": "0.2.1",
+      "@opentelemetry/browser-instrumentation": "0.12.1",
+      "@opentelemetry/browser-sdk": "0.9.1",
+      "@opentelemetry/core": "3.1.1",
+      "@opentelemetry/exporter-logs-otlp-http": "0.301.2",
+      "@opentelemetry/exporter-trace-otlp-http": "0.301.2",
+      "@opentelemetry/instrumentation": "0.301.2",
+      "@opentelemetry/resources": "3.1.1",
+      "@opentelemetry/sdk-logs": "3.1.1",
+      "@opentelemetry/sdk-trace": "3.1.1",
+      "@opentelemetry/semantic-conventions": "1.45.0",
+    },
+  );
+  for (const removed of [
+    "@opentelemetry/api-logs",
+    "@opentelemetry/sdk-trace-base",
+    "@opentelemetry/sdk-trace-web",
+  ]) {
+    assert.equal(Object.hasOwn(pkg.dependencies, removed), false);
+  }
 });
 
 async function bundleConsumer(source, external = []) {
@@ -200,6 +241,9 @@ test("click analytics exposes a type-only capture interface and matching factory
     }
     const clicks = await instrumentations.createClickAnalyticsInstrumentation();
     assert.equal(clicks.getConfig().enabled, false);
+    assert.equal(typeof clicks.setLoggerProvider, "function");
+    assert.equal(typeof clicks.setConfig, "function");
+    assert.equal(clicks.enable.length, 0);
     assert.equal(typeof clicks.capturePageAction, "function");
     assert.equal(typeof clicks.trackPageAction, "function");
     const selected = await instrumentations.getInstrumentations({
@@ -451,7 +495,7 @@ async function exerciseNpmPackage(distro) {
   const tracer = trace.getTracer("package-consumer");
   const logger = logs.getLogger("package-consumer");
   const options = {
-    spanProcessors: [new SimpleSpanProcessor(spans)],
+    spanProcessors: [new SimpleSpanProcessor({ exporter: spans })],
     logRecordProcessors: [new SimpleLogRecordProcessor({ exporter: records })],
   };
   const telemetry = await distro.useMicrosoftOpenTelemetry(options);
@@ -533,8 +577,10 @@ test("standard OTLP processors export alongside other processors", async (t) => 
   const endpoint = `http://127.0.0.1:${server.address().port}`;
   const headers = Object.freeze({ "x-tenant": "checkout" });
   const spanProcessors = Object.freeze([
-    new SimpleSpanProcessor(spans),
-    new BatchSpanProcessor(new OTLPTraceExporter({ url: `${endpoint}/v1/traces`, headers })),
+    new SimpleSpanProcessor({ exporter: spans }),
+    new BatchSpanProcessor({
+      exporter: new OTLPTraceExporter({ url: `${endpoint}/v1/traces`, headers }),
+    }),
   ]);
   const logRecordProcessors = Object.freeze([
     new SimpleLogRecordProcessor({ exporter: records }),
@@ -598,10 +644,12 @@ test("the built package redacts only upstream fetch/XHR URLs before OTLP export"
   const spans = new InMemorySpanExporter();
   const telemetry = await distro.useMicrosoftOpenTelemetry({
     spanProcessors: [
-      new SimpleSpanProcessor(spans),
-      new BatchSpanProcessor(
-        new OTLPTraceExporter({ url: `http://127.0.0.1:${server.address().port}/v1/traces` }),
-      ),
+      new SimpleSpanProcessor({ exporter: spans }),
+      new BatchSpanProcessor({
+        exporter: new OTLPTraceExporter({
+          url: `http://127.0.0.1:${server.address().port}/v1/traces`,
+        }),
+      }),
     ],
   });
   const sensitiveUrl = "https://user:secret@example.test/app.js?token=private";
@@ -663,7 +711,7 @@ test("ESM and CommonJS clear dependency URLs that cannot be redacted without a b
       session: { enabled: false },
       userContext: { enabled: false },
       instrumentations: [],
-      spanProcessors: [new SimpleSpanProcessor(exporter)],
+      spanProcessors: [new SimpleSpanProcessor({ exporter })],
     });
     try {
       for (const name of ["fetch", "xhr"]) {
@@ -776,7 +824,7 @@ test("detector-only imports do not retain telemetry SDKs or exporters", async ()
   }
 });
 
-test("the minified artifact keeps both API packages external", async () => {
+test("the minified artifact keeps the API package external", async () => {
   const bundle = await rollup({
     input: fileURLToPath(new URL(`${esmBundle}.min.js`, root)),
     external: sharedApiPackages,
@@ -789,9 +837,7 @@ test("the minified artifact keeps both API packages external", async () => {
     assert.deepEqual(output[0].imports.sort(), sharedApiPackages);
     const map = JSON.parse(await readFile(new URL(`${esmBundle}.min.js.map`, root), "utf8"));
     assert.ok(
-      map.sources.every(
-        (source) => !/\/@opentelemetry\/api(?:-logs)?\//.test(source.replaceAll("\\", "/")),
-      ),
+      map.sources.every((source) => !/\/@opentelemetry\/api\//.test(source.replaceAll("\\", "/"))),
       "API implementations must not be embedded in the minified SDK bundle",
     );
   } finally {

@@ -7,7 +7,12 @@ import {
   getInstrumentations,
   type ClickAnalyticsInstrumentation,
 } from "../../../src/instrumentation/browserInstrumentation/index.js";
-import type { BrowserInstrumentation, InstrumentationOptions } from "../../../src/types.js";
+import { adaptNativeInstrumentation } from "../../../src/instrumentation/browserInstrumentation/nativeInstrumentation.js";
+import type {
+  BrowserInstrumentation,
+  BrowserNativeInstrumentation,
+  InstrumentationOptions,
+} from "../../../src/types.js";
 
 /** Every key of {@link InstrumentationOptions}, paired with the name upstream reports. */
 const ALL: ReadonlyArray<[keyof InstrumentationOptions, string]> = [
@@ -22,6 +27,46 @@ const ALL: ReadonlyArray<[keyof InstrumentationOptions, string]> = [
   ["console", "@opentelemetry/browser-instrumentation/console"],
   ["clickAnalytics", "@microsoft/opentelemetry-browser/click-analytics"],
 ];
+
+const NATIVE_NAMES = ALL.filter(([key]) => key !== "clickAnalytics").map(([, name]) => name);
+
+type NativeFixture = {
+  instrumentationName: string;
+  instrumentationVersion: "0.12.1";
+  _state: "new" | "enabled" | "disabled" | "failed";
+  _config: Record<string, unknown>;
+  enabledWith?: object;
+  failOnEnable?: boolean;
+  enable(deps: object): void;
+  disable(): void;
+  isEnabled(): boolean;
+};
+
+function nativeFixture(
+  instrumentationName: string,
+  config: Record<string, unknown> = {},
+): NativeFixture {
+  return {
+    instrumentationName,
+    instrumentationVersion: "0.12.1",
+    _state: "new",
+    _config: { ...config },
+    enable(deps) {
+      this.enabledWith = deps;
+      this._state = this.failOnEnable ? "failed" : "enabled";
+    },
+    disable() {
+      this._state = "disabled";
+    },
+    isEnabled() {
+      return this._state === "enabled";
+    },
+  };
+}
+
+function adaptFixture(fixture: NativeFixture): BrowserInstrumentation {
+  return adaptNativeInstrumentation(fixture as unknown as BrowserNativeInstrumentation);
+}
 
 /** The instrumentations that collect unless they are turned off. */
 const DEFAULT_ON = ALL.filter(([key]) => key === "fetch" || key === "xhr");
@@ -93,6 +138,82 @@ describe("createClickAnalyticsInstrumentation", () => {
       expect(second.getConfig()).toEqual({ ...settings, enabled: false });
     },
   );
+});
+
+describe("adaptNativeInstrumentation", () => {
+  it("adapts all nine pinned upstream names without replacing their identity", () => {
+    expect(NATIVE_NAMES).toHaveLength(9);
+    for (const name of NATIVE_NAMES) {
+      const fixture = nativeFixture(name);
+      const instrumentation = adaptFixture(fixture);
+
+      expect(instrumentation).toBe(fixture);
+      expect(
+        (instrumentation as unknown as { instrumentationName: string }).instrumentationName,
+      ).toBe(name);
+      expect(instrumentation.getConfig).toBeTypeOf("function");
+      expect(instrumentation.setTracerProvider).toBeTypeOf("function");
+      expect(instrumentation.setLoggerProvider).toBeTypeOf("function");
+      expect(
+        (instrumentation as BrowserInstrumentation & { setConfig?: unknown }).setConfig,
+      ).toBeTypeOf("function");
+    }
+  });
+
+  it("returns disabled configuration snapshots without mutating native configuration", () => {
+    const fixture = nativeFixture(NATIVE_NAMES[0]!, { enabled: true, marker: "native" });
+    const instrumentation = adaptFixture(fixture);
+    const first = instrumentation.getConfig() as Record<string, unknown>;
+    const second = instrumentation.getConfig() as Record<string, unknown>;
+
+    expect(first).toEqual({ enabled: false, marker: "native" });
+    expect(first).not.toBe(second);
+    expect(fixture._config).toEqual({ enabled: true, marker: "native" });
+    first.marker = "changed snapshot";
+    expect(instrumentation.getConfig()).toEqual({ enabled: false, marker: "native" });
+  });
+
+  it("accepts providers and configuration only before the first enable", () => {
+    const fixture = nativeFixture(NATIVE_NAMES[0]!, { marker: "initial" });
+    const instrumentation = adaptFixture(fixture) as BrowserInstrumentation & {
+      setConfig(config: Record<string, unknown>): void;
+    };
+    const tracerProvider = {} as Parameters<BrowserInstrumentation["setTracerProvider"]>[0];
+    const loggerProvider = {} as Parameters<
+      NonNullable<BrowserInstrumentation["setLoggerProvider"]>
+    >[0];
+    const replacementTracerProvider = {} as typeof tracerProvider;
+    const replacementLoggerProvider = {} as typeof loggerProvider;
+    const next = Object.freeze({ enabled: true, marker: "configured" });
+
+    instrumentation.setConfig(next);
+    instrumentation.setTracerProvider(tracerProvider);
+    instrumentation.setLoggerProvider?.(loggerProvider);
+    expect(next).toEqual({ enabled: true, marker: "configured" });
+    expect(instrumentation.getConfig()).toEqual({ enabled: false, marker: "configured" });
+
+    instrumentation.enable();
+    expect(fixture.enabledWith).toEqual({ tracerProvider, loggerProvider });
+    instrumentation.disable();
+    expect(() => instrumentation.setTracerProvider(replacementTracerProvider)).toThrow(
+      "already initialized",
+    );
+    expect(() => instrumentation.setLoggerProvider?.(replacementLoggerProvider)).toThrow(
+      "already initialized",
+    );
+    expect(() => instrumentation.setConfig({ marker: "rebound" })).toThrow("already initialized");
+  });
+
+  it("preserves a native failed state and locks the instance after failed enable", () => {
+    const fixture = nativeFixture(NATIVE_NAMES[0]!);
+    fixture.failOnEnable = true;
+    const instrumentation = adaptFixture(fixture);
+    const tracerProvider = {} as Parameters<BrowserInstrumentation["setTracerProvider"]>[0];
+
+    expect(() => instrumentation.enable()).toThrow("failed to initialize");
+    expect(fixture._state).toBe("failed");
+    expect(() => instrumentation.setTracerProvider(tracerProvider)).toThrow("already initialized");
+  });
 });
 
 describe("getInstrumentations", () => {

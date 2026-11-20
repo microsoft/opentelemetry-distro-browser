@@ -3,7 +3,7 @@
 
 import { SpanKind, SpanStatusCode, type SpanContext } from "@opentelemetry/api";
 import { ExportResultCode } from "@opentelemetry/core";
-import type { ReadableSpan } from "@opentelemetry/sdk-trace-base";
+import type { ReadableSpan } from "@opentelemetry/sdk-trace";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { beginUnloading, endUnloading } from "../../../src/exporter/common.js";
 import {

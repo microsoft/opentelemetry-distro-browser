@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 import { diag } from "@opentelemetry/api";
-import { SeverityNumber, type LogRecord } from "@opentelemetry/api-logs";
+import { SeverityNumber, type LogRecord } from "@opentelemetry/api";
 import {
   InMemoryLogRecordExporter,
   LoggerProvider,

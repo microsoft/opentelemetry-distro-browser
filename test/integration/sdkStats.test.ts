@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 import { context, diag, propagation, trace } from "@opentelemetry/api";
-import { logs } from "@opentelemetry/api-logs";
+import { logs } from "@opentelemetry/api";
 import { FetchInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/fetch";
 import { ConsoleInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/console";
 import { ExportResultCode, type ExportResult } from "@opentelemetry/core";

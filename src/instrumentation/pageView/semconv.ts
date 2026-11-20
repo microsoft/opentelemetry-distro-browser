@@ -19,7 +19,7 @@
  * This module is internal and is deliberately not part of the package's public API.
  */
 
-import { type SeverityNumber } from "@opentelemetry/api-logs";
+import { type SeverityNumber } from "@opentelemetry/api";
 
 /** Event name carried as the log record's top-level `eventName`. */
 export const EVENT_BROWSER_PAGE_VIEW = "browser.page_view";
@@ -29,7 +29,7 @@ export const EVENT_BROWSER_PAGE_VIEW = "browser.page_view";
  *
  * @remarks
  * `SeverityNumber` is a runtime enum, so importing it as a value pulls the whole
- * `@opentelemetry/api-logs` entry point — which executes module-level side effects — into the
+ * `@opentelemetry/api` entry point — which executes module-level side effects — into the
  * bundle, and that defeats tree-shaking for consumers who never touch page views. The value is
  * fixed by the OpenTelemetry logs data model, so inlining it is safe. The type-only import above
  * is erased at compile time and keeps the assignment checked.

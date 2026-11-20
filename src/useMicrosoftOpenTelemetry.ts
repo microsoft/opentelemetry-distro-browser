@@ -14,7 +14,7 @@ import { createCookieUserContext } from "./user/createCookieUserContext.js";
 import { createCookieManager } from "./storage/cookieManager.js";
 import { isNonEmptyString } from "./shared/isNonEmptyString.js";
 import type { LogRecordProcessor } from "@opentelemetry/sdk-logs";
-import type { SpanProcessor } from "@opentelemetry/sdk-trace-base";
+import type { SpanProcessor } from "@opentelemetry/sdk-trace";
 import { beginUnloading, endUnloading } from "./exporter/common.js";
 import type { AzureMonitorLogRecordExporter } from "./exporter/log.js";
 import type { AzureMonitorSpanExporter } from "./exporter/trace.js";

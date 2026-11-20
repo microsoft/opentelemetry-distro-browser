@@ -209,11 +209,13 @@ export function getSharedRegistry(): SharedRegistry {
 
 /** Reads raw identities because API getters can hide incompatible registrations. */
 export function getRegisteredGlobal(name: "trace" | "context" | "propagation" | "logs"): unknown {
-  if (name === "logs") return realm[logsKey];
   const registry = realm[apiKey];
-  return typeof registry === "object" && registry !== null
-    ? Reflect.get(registry, name)
-    : undefined;
+  if (typeof registry === "object" && registry !== null) {
+    const value: unknown = Reflect.get(registry, name);
+    if (value !== undefined || name !== "logs") return value;
+  }
+  // Backward compatibility with older logs packages that used a separate global symbol.
+  return name === "logs" ? realm[logsKey] : undefined;
 }
 
 export function conflict(code: string, detail: string): never {

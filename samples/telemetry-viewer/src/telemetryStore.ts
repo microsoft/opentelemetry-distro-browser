@@ -1,7 +1,7 @@
 import type { ExportResult } from "@opentelemetry/core";
 import { ExportResultCode } from "@opentelemetry/core";
 import type { LogRecordExporter, ReadableLogRecord } from "@opentelemetry/sdk-logs";
-import type { ReadableSpan, SpanExporter } from "@opentelemetry/sdk-trace-base";
+import type { ReadableSpan, SpanExporter } from "@opentelemetry/sdk-trace";
 
 export type TelemetryKind = "span" | "log";
 export const MAX_TELEMETRY_ITEMS = 500;

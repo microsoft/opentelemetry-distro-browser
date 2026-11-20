@@ -9,9 +9,9 @@ import {
   trace,
   type TextMapPropagator,
 } from "@opentelemetry/api";
-import { logs } from "@opentelemetry/api-logs";
+import { logs } from "@opentelemetry/api";
 import type { ReadableLogRecord } from "@opentelemetry/sdk-logs";
-import type { ReadableSpan } from "@opentelemetry/sdk-trace-base";
+import type { ReadableSpan } from "@opentelemetry/sdk-trace";
 import { afterEach, describe, expect, inject, it, vi } from "vitest";
 import { useMicrosoftOpenTelemetry } from "../../src/index.js";
 import { getInstrumentations } from "../../src/instrumentation/browserInstrumentation/index.js";

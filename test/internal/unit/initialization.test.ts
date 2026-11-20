@@ -10,7 +10,7 @@ import {
   trace,
   type ContextManager,
 } from "@opentelemetry/api";
-import { logs, SeverityNumber } from "@opentelemetry/api-logs";
+import { logs, SeverityNumber } from "@opentelemetry/api";
 import type { LogRecordProcessor } from "@opentelemetry/sdk-logs";
 import { detectResources, resourceFromAttributes } from "@opentelemetry/resources";
 import { BrowserBatchLogRecordProcessor } from "../../../src/browserBatchLogRecordProcessor.js";

@@ -10,7 +10,11 @@ import {
   type MicrosoftOpenTelemetryBrowserConfigurationUpdate,
   type MicrosoftOpenTelemetryBrowserInstrumentations,
   type MicrosoftOpenTelemetryBrowserOptions,
+  type BrowserNativeInstrumentation,
 } from "@microsoft/opentelemetry-browser";
+import type { FetchInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/fetch" with {
+  "resolution-mode": "import",
+};
 import {
   getInstrumentations,
   type DependencyInstrumentationOptions,
@@ -30,6 +34,18 @@ void getInstrumentations({ dependencies });
 void OPENTELEMETRY_BROWSER_VERSION;
 void useMicrosoftOpenTelemetry;
 void getInstrumentations;
+
+export function initializeNative(fetch: FetchInstrumentation): void {
+  const native: BrowserNativeInstrumentation = fetch;
+  void useMicrosoftOpenTelemetry({ instrumentations: [native] });
+}
+
+// @ts-expect-error Generic native implementations are outside the pinned bridge contract.
+void useMicrosoftOpenTelemetry({
+  instrumentations: [
+    { instrumentationName: "custom/native", enable() {}, disable() {}, isEnabled: () => false },
+  ],
+});
 
 export const options: AzureMonitorOptions = {
   connectionString: "InstrumentationKey=00000000-0000-0000-0000-000000000000",

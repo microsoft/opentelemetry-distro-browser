@@ -298,7 +298,7 @@ and ends. Browser requests other than the harness's intercepted local modules ar
 fail the measurement.
 
 This is an **ESM size-check bundle**, also included in the package, not complete application
-bytes: `@opentelemetry/api` and `@opentelemetry/api-logs` remain external. The package export
+bytes: `@opentelemetry/api` remains external for both traces and logs. The package export
 resolves to `dist/esm/index.js`. Unminified entry points, source maps, and declaration files are
 not added to the minified byte count.
 

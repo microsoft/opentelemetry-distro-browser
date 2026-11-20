@@ -4,7 +4,7 @@
 import { SpanKind, SpanStatusCode } from "@opentelemetry/api";
 import { SDK_INFO } from "@opentelemetry/core";
 import { resourceFromAttributes } from "@opentelemetry/resources";
-import type { ReadableSpan } from "@opentelemetry/sdk-trace-base";
+import type { ReadableSpan } from "@opentelemetry/sdk-trace";
 import { ATTR_TELEMETRY_SDK_VERSION } from "@opentelemetry/semantic-conventions";
 import { describe, expect, it } from "vitest";
 import { setManagedOperationName } from "../../../src/context/operationName.js";

@@ -10,7 +10,7 @@ import {
   SpanStatusCode,
   trace,
 } from "@opentelemetry/api";
-import { logs } from "@opentelemetry/api-logs";
+import { logs } from "@opentelemetry/api";
 import { ConsoleInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/console";
 import { ExportResultCode, type ExportResult } from "@opentelemetry/core";
 import { detectResources, resourceFromAttributes } from "@opentelemetry/resources";

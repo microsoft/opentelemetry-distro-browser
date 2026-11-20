@@ -11,9 +11,9 @@ import {
   propagation,
   trace,
 } from "@opentelemetry/api";
-import { logs } from "@opentelemetry/api-logs";
+import { logs } from "@opentelemetry/api";
 import { NavigationInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/navigation";
-import { StackContextManager } from "@opentelemetry/sdk-trace-web";
+import { StackContextManager } from "@opentelemetry/sdk-trace";
 import { afterEach, expect, it, vi } from "vitest";
 import { useMicrosoftOpenTelemetry } from "../../../src/useMicrosoftOpenTelemetry.js";
 import type {

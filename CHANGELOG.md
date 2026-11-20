@@ -8,6 +8,14 @@ All notable changes to this package are documented in this file.
 
 - Preserve attributes added by later log processors when Azure Monitor sampling adds metadata.
 
+### Changed
+
+- Update to OpenTelemetry API 1.10.0 and SDK 3.1.1 with the stable Logs API and SDK.
+  Use browser SDK 0.9.1 and browser instrumentations 0.12.1, and retain deferred per-instance
+  registration through a native lifecycle bridge. Native objects lock providers and configuration
+  at first enable; later registrations require fresh objects. Classic distribution-owned
+  instrumentations retain their existing configuration and lifecycle methods.
+
 ### Added
 
 - Add opt-in fetch and XHR header capture with sensitive-header exclusions, failed HTTP status

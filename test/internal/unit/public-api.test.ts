@@ -4,9 +4,10 @@
 import type { ContextManager, TextMapPropagator } from "@opentelemetry/api";
 import type { LogRecordProcessor } from "@opentelemetry/sdk-logs";
 import type { Resource } from "@opentelemetry/resources";
-import type { SpanProcessor } from "@opentelemetry/sdk-trace-base";
+import type { SpanProcessor } from "@opentelemetry/sdk-trace";
 import type { Instrumentation } from "@opentelemetry/instrumentation";
 import type { SessionManagerConfig } from "@opentelemetry/browser-sdk/session";
+import type { BrowserNativeInstrumentation } from "../../../src/index.js";
 import { expectTypeOf, it } from "vitest";
 import {
   AzureMonitorLogRecordExporter,
@@ -144,7 +145,7 @@ it("exposes distro-owned configuration and lifecycle contracts", () => {
     LogRecordProcessor[] | undefined
   >();
   expectTypeOf<MicrosoftOpenTelemetryBrowserOptions["instrumentations"]>().toEqualTypeOf<
-    readonly BrowserInstrumentation[] | undefined
+    readonly (BrowserInstrumentation | BrowserNativeInstrumentation)[] | undefined
   >();
   expectTypeOf<MicrosoftOpenTelemetryBrowserOptions["pageView"]>().toEqualTypeOf<
     PageViewInstrumentationConfig | undefined
@@ -170,10 +171,16 @@ it("exposes distro-owned configuration and lifecycle contracts", () => {
     "get" | "setEnabled" | "add" | "remove" | "replace"
   >();
   expectTypeOf<MicrosoftOpenTelemetryBrowserInstrumentations["add"]>().toEqualTypeOf<
-    (id: string, instrumentation: BrowserInstrumentation) => Promise<void>
+    (
+      id: string,
+      instrumentation: BrowserInstrumentation | BrowserNativeInstrumentation,
+    ) => Promise<void>
   >();
   expectTypeOf<MicrosoftOpenTelemetryBrowserInstrumentations["replace"]>().toEqualTypeOf<
-    (id: string, instrumentation: BrowserInstrumentation) => Promise<void>
+    (
+      id: string,
+      instrumentation: BrowserInstrumentation | BrowserNativeInstrumentation,
+    ) => Promise<void>
   >();
   expectTypeOf<MicrosoftOpenTelemetryBrowserInstrumentations["remove"]>().toEqualTypeOf<
     (id: string) => Promise<void>
