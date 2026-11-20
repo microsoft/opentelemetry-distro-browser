@@ -87,7 +87,7 @@ The browser enforces anonymous-cookie expiry; acquisition age is not a second us
 and `sessionCookiePostfix` unchanged to npm initialization or the generated loader. The session
 postfix wins over `namePrefix`; neither changes `ai_authUser`. Do not translate root `namePrefix`
 into `storage.namePrefix`: the latter is the distro's existing literal-prefix convention, and
-mixing nonempty naming styles is rejected. See [cookie naming](docs/configuration-reference.md#application-insights-cookie-naming-unreleased).
+mixing nonempty naming styles is rejected. See [cookie naming](docs/configuration-reference.md#application-insights-cookie-naming).
 
 This continues reads and writes under the selected names, not a one-time copy. No alternate
 names or ApplicationInsights-JS localStorage session backups are imported. Existing distro session

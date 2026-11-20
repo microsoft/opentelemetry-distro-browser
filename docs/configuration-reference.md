@@ -27,7 +27,7 @@ only in client-side code, before importing application code to instrument.
 | `session`              | `MicrosoftOpenTelemetryBrowserSessionOptions`     | Enabled and persisted, with 30-minute inactivity expiry and 24-hour maximum lifetime.                                                                                                                                     |
 | `sessionRenewalMs`     | `number`, milliseconds                            | Application Insights alias for `session.inactivityTimeout`. Default: `1800000` (30 minutes); `0` restores this default. See [session options](#session-options).                                                          |
 | `sessionExpirationMs`  | `number`, milliseconds                            | Application Insights alias for `session.maxDuration`. Default: `86400000` (24 hours); `0` restores this default. See [session options](#session-options).                                                                 |
-| `namePrefix`           | `string`                                          | Application Insights session-cookie suffix fallback, not a prefix. See [cookie naming](#application-insights-cookie-naming-unreleased).                                                                                   |
+| `namePrefix`           | `string`                                          | Application Insights session-cookie suffix fallback, not a prefix. See [cookie naming](#application-insights-cookie-naming).                                                                                              |
 | `userCookiePostfix`    | `string`                                          | Suffix appended to `ai_user`. Defaults to empty.                                                                                                                                                                          |
 | `sessionCookiePostfix` | `string`                                          | Suffix appended to `ai_session`; empty falls back to root `namePrefix`.                                                                                                                                                   |
 | `storage`              | `{ enabled?: boolean; namePrefix?: string }`      | Enabled, with unprefixed keys. See [browser storage](#browser-storage).                                                                                                                                                   |
@@ -645,7 +645,7 @@ cookies, not Web Storage. Session backups can also persist the anonymous ID in l
 Authenticated cookies use `encodeURI(userId + optional '|' + accountId)` and are read with
 `decodeURI()` before splitting. With `storage.namePrefix` omitted, valid default Application Insights
 cookies retain identity and session continuity when switching SDKs within the same domain/path.
-For customized names, use the unreleased [AI-style naming options](#application-insights-cookie-naming-unreleased).
+For customized names, use the unreleased [AI-style naming options](#application-insights-cookie-naming).
 The existing `storage.namePrefix` instead prepends to all three names; copying an Application
 Insights `namePrefix` into `storage.namePrefix` does not produce matching names.
 Cookie values use the Application Insights formats, not URI-encoded JSON records.
