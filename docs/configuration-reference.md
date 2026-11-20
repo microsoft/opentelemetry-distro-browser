@@ -616,10 +616,12 @@ retry. Cookie lifetime is bounded by the remaining maximum duration and inactivi
 Runtime lifetime updates do not access persistence; the next activity refreshes the cookie using
 the new policy without waiting for the previous write throttle.
 
-When Web Storage is enabled, the latest session is backed up as JSON under the prefixed
-`opentelemetry-session` localStorage key (or the suffixed key described above) on unload and
-shutdown, not on each activity update. A missing cookie can restore a valid, unexpired backup,
-including when cookies are disabled. A present malformed cookie does not fall back to the backup.
+When session persistence and Web Storage are enabled, the latest session is backed up as JSON
+under the prefixed `opentelemetry-session` localStorage key (or the suffixed key described above) on unload and
+shutdown, not on each activity update. When managed anonymous identity is available, the backup
+can also store its ID in `anonymousId` for ownership validation, not for identity restoration.
+A missing cookie can restore a valid, unexpired backup, including when cookies are disabled.
+A present malformed cookie does not fall back to the backup.
 If neither backend is available, session correlation stays in memory.
 During a transient cookie-read failure, a provisional in-memory session follows normal inactivity
 and maximum expiry without writing cookies or backups. Recovery restores the authoritative cookie,
@@ -636,7 +638,9 @@ Insights' raw `id|ISO-acquisition-timestamp` format. Authenticated
 user and account IDs set through the returned handle are memory-only by default. Pass `true` as the
 third setter argument to opt into the separate prefixed `ai_authUser` session cookie:
 `telemetry.userContext.setAuthenticatedUserContext(userId, accountId, true)`. When enabled, user
-context restores a valid authenticated cookie on initialization. User identity does not use Web Storage.
+context restores a valid authenticated cookie on initialization. User identity is restored from
+cookies, not Web Storage. Session backups can also persist the anonymous ID in localStorage as
+`anonymousId` solely to validate session ownership.
 
 Authenticated cookies use `encodeURI(userId + optional '|' + accountId)` and are read with
 `decodeURI()` before splitting. With `storage.namePrefix` omitted, valid default Application Insights
