@@ -67,8 +67,7 @@ export const browserBundleBudgets = {
 };
 
 const API_IMPORTS = `
-import { context, diag, propagation, trace } from "@opentelemetry/api";
-import { logs } from "@opentelemetry/api-logs";
+import { context, diag, logs, propagation, trace } from "@opentelemetry/api";
 `;
 const API_SYMBOLS = ["context", "diag", "propagation", "trace", "logs"];
 
@@ -110,7 +109,7 @@ const apiScenario = {
   id: "api",
   label: "OpenTelemetry API only (traces and logs)",
   group: "layer",
-  entryPoint: "@opentelemetry/api + @opentelemetry/api-logs",
+  entryPoint: "@opentelemetry/api",
   code: API_IMPORTS + sink(...API_SYMBOLS),
 };
 

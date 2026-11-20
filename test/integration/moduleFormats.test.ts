@@ -13,7 +13,7 @@ import {
   type TraceAPI,
   type Tracer,
 } from "@opentelemetry/api";
-import { logs, type LoggerProvider } from "@opentelemetry/api-logs";
+import { logs, type LoggerProvider } from "@opentelemetry/api";
 import { resourceFromAttributes } from "@opentelemetry/resources";
 import { getInstrumentations } from "../../src/instrumentation/browserInstrumentation/index.js";
 import { expect, inject, it, vi } from "vitest";

@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 import { context, diag, propagation, ROOT_CONTEXT, trace } from "@opentelemetry/api";
-import { logs } from "@opentelemetry/api-logs";
+import { logs } from "@opentelemetry/api";
 import { suppressTracing } from "@opentelemetry/core";
 import { afterEach, describe, expect, inject, it, vi } from "vitest";
 import { useMicrosoftOpenTelemetry, type MicrosoftOpenTelemetryBrowser } from "../../src/index.js";

@@ -24,9 +24,11 @@ import {
 import {
   useMicrosoftOpenTelemetry,
   type BrowserInstrumentation,
+  type BrowserNativeInstrumentation,
   type MicrosoftOpenTelemetryBrowser,
   type MicrosoftOpenTelemetryBrowserOptions,
 } from "../../../src/index.js";
+import { adaptNativeInstrumentation } from "../../../src/instrumentation/browserInstrumentation/nativeInstrumentation.js";
 import { PageViewInstrumentation } from "../../../src/instrumentation/pageView/index.js";
 import { claimInstrumentationOwnership } from "../../../src/instrumentation/sharedBrowserPatches.js";
 import { startTelemetryInstance } from "../../../src/routing/telemetryInstance.js";
@@ -52,6 +54,36 @@ function fakeInstance() {
 }
 
 const handles = new Set<MicrosoftOpenTelemetryBrowser>();
+
+type SupportedNativeInstrumentation =
+  | ConsoleInstrumentation
+  | ErrorsInstrumentation
+  | FetchInstrumentation
+  | NavigationInstrumentation
+  | NavigationTimingInstrumentation
+  | ResourceTimingInstrumentation
+  | UserActionInstrumentation
+  | WebVitalsInstrumentation
+  | XhrInstrumentation;
+
+type AdaptedNativeInstrumentation<T extends SupportedNativeInstrumentation> = T &
+  BrowserInstrumentation & {
+    setConfig(config: Record<string, unknown>): void;
+  };
+
+function asBrowserNativeInstrumentation<T extends SupportedNativeInstrumentation>(
+  instrumentation: T,
+): T & BrowserNativeInstrumentation {
+  return instrumentation as T & BrowserNativeInstrumentation;
+}
+
+function adapted<T extends SupportedNativeInstrumentation>(
+  instrumentation: T,
+): AdaptedNativeInstrumentation<T> {
+  return adaptNativeInstrumentation(
+    asBrowserNativeInstrumentation(instrumentation),
+  ) as AdaptedNativeInstrumentation<T>;
+}
 
 afterEach(async () => {
   const results = await Promise.allSettled([...handles].map((handle) => handle.shutdown()));
@@ -174,10 +206,10 @@ it("wraps the upstream handle for the instrumentation the distribution owns", as
 });
 
 it("registers runtime-supported optional upstream instrumentations by stable IDs", async () => {
-  const console = new ConsoleInstrumentation({ enabled: false });
-  const errors = new ErrorsInstrumentation({ enabled: false });
-  const userAction = new UserActionInstrumentation({ enabled: false });
-  const webVitals = new WebVitalsInstrumentation({ enabled: false });
+  const console = adapted(new ConsoleInstrumentation());
+  const errors = adapted(new ErrorsInstrumentation());
+  const userAction = adapted(new UserActionInstrumentation());
+  const webVitals = adapted(new WebVitalsInstrumentation());
   const { handle } = await initialize([console, errors, userAction, webVitals]);
 
   expect(handle.instrumentations.get("console")).toBe(console);
@@ -194,8 +226,8 @@ it("registers runtime-supported optional upstream instrumentations by stable IDs
 });
 
 it("pauses Web Vitals emission and resumes the same object without registering callbacks again", async () => {
-  const firstInstrumentation = new WebVitalsInstrumentation({ enabled: false });
-  const secondInstrumentation = new WebVitalsInstrumentation({ enabled: false });
+  const firstInstrumentation = adapted(new WebVitalsInstrumentation());
+  const secondInstrumentation = adapted(new WebVitalsInstrumentation());
   const first = await initialize([firstInstrumentation]);
   const second = await initialize([secondInstrumentation]);
   const firstEmit = first.sdk.loggerProvider.getLogger.mock.results[0].value.emit;
@@ -248,18 +280,18 @@ it("pauses Web Vitals emission and resumes the same object without registering c
 });
 
 it("rejects one Web Vitals object registered twice before it can enable twice", async () => {
-  const webVitals = new WebVitalsInstrumentation({ enabled: false });
+  const webVitals = adapted(new WebVitalsInstrumentation());
   const enable = vi.spyOn(webVitals, "enable");
   await expect(initialize([webVitals, webVitals])).rejects.toThrow("browser-instrumentation-owned");
   expect(enable).not.toHaveBeenCalled();
 });
 
 it.each([
-  ["fetch", () => new FetchInstrumentation({ enabled: false })],
-  ["xhr", () => new XhrInstrumentation({ enabled: false })],
-  ["console", () => new ConsoleInstrumentation({ enabled: false })],
-  ["errors", () => new ErrorsInstrumentation({ enabled: false })],
-  ["user-action", () => new UserActionInstrumentation({ enabled: false })],
+  ["fetch", () => adapted(new FetchInstrumentation())],
+  ["xhr", () => adapted(new XhrInstrumentation())],
+  ["console", () => adapted(new ConsoleInstrumentation())],
+  ["errors", () => adapted(new ErrorsInstrumentation())],
+  ["user-action", () => adapted(new UserActionInstrumentation())],
 ] as const)("adds and removes %s, releasing it to another instance", async (_kind, create) => {
   const instrumentation = create();
   const first = await initialize([], { spanProcessors: [{} as never] });
@@ -272,36 +304,40 @@ it.each([
   expect(disable).toHaveBeenCalledOnce();
   expect(first.handle.instrumentations.get("dynamic")).toBeUndefined();
 
-  await second.handle.instrumentations.add("other", instrumentation);
+  const claims = claimInstrumentationOwnership([instrumentation]);
+  claims.get(instrumentation)!();
+  await expect(second.handle.instrumentations.add("other", instrumentation)).rejects.toThrow(
+    "Construct a fresh native instrumentation",
+  );
+  const replacement = create();
+  const replacementDisable = vi.spyOn(replacement, "disable");
+  await second.handle.instrumentations.add("other", replacement);
   const beforeShutdown = disable.mock.calls.length;
   await first.handle.shutdown();
   expect(disable).toHaveBeenCalledTimes(beforeShutdown);
-  expect(second.handle.instrumentations.get("other")).toBe(instrumentation);
+  expect(second.handle.instrumentations.get("other")).toBe(replacement);
   await second.handle.shutdown();
-  expect(disable).toHaveBeenCalledTimes(beforeShutdown + 1);
+  expect(disable).toHaveBeenCalledTimes(beforeShutdown);
+  expect(replacementDisable).toHaveBeenCalledOnce();
 });
 
 it.each([
   ["custom", "instrumentation", () => createInstrumentation()],
-  ["navigation", "navigation", () => new NavigationInstrumentation({ enabled: false })],
-  [
-    "navigation timing",
-    "navigation-timing",
-    () => new NavigationTimingInstrumentation({ enabled: false }),
-  ],
+  ["navigation", "navigation", () => adapted(new NavigationInstrumentation())],
+  ["navigation timing", "navigation-timing", () => adapted(new NavigationTimingInstrumentation())],
   [
     "page view",
     "@microsoft/opentelemetry-browser/page-view",
     () => new PageViewInstrumentation({ enabled: false }),
   ],
-  ["web vitals", "web-vitals", () => new WebVitalsInstrumentation({ enabled: false })],
+  ["web vitals", "web-vitals", () => adapted(new WebVitalsInstrumentation())],
 ] as const)(
   "rejects mutations of %s without changing startup registration",
   async (_name, id, create) => {
     const original = create();
     const candidate = create();
     const { handle } = await initialize([original]);
-    const replacement = new ErrorsInstrumentation({ enabled: false });
+    const replacement = adapted(new ErrorsInstrumentation());
 
     await expect(handle.instrumentations.add("unsupported", candidate)).rejects.toThrow();
     await expect(handle.instrumentations.remove(id)).rejects.toThrow();
@@ -317,10 +353,10 @@ it.each([
 );
 
 it("keeps startup IDs stable and rejects invalid or duplicate IDs without poisoning the handle", async () => {
-  const first = new ErrorsInstrumentation({ enabled: false });
-  const second = new ErrorsInstrumentation({ enabled: false });
+  const first = adapted(new ErrorsInstrumentation());
+  const second = adapted(new ErrorsInstrumentation());
   const { handle } = await initialize([first, second]);
-  const candidate = new ErrorsInstrumentation({ enabled: false });
+  const candidate = adapted(new ErrorsInstrumentation());
   const bind = vi.spyOn(candidate, "setTracerProvider");
   const disable = vi.spyOn(candidate, "disable");
 
@@ -339,7 +375,7 @@ it("keeps startup IDs stable and rejects invalid or duplicate IDs without poison
 });
 
 it("reserves ownership before binding and rejects duplicate or foreign objects without touching them", async () => {
-  const instrumentation = new ErrorsInstrumentation({ enabled: false });
+  const instrumentation = adapted(new ErrorsInstrumentation());
   const first = await initialize([]);
   const second = await initialize([]);
   const bind = vi.spyOn(instrumentation, "setTracerProvider");
@@ -359,7 +395,7 @@ it("reserves ownership before binding and rejects duplicate or foreign objects w
   );
   expect(bind).toHaveBeenCalledOnce();
   expect(disable).not.toHaveBeenCalled();
-  const other = new ErrorsInstrumentation({ enabled: false });
+  const other = adapted(new ErrorsInstrumentation());
   await second.handle.instrumentations.add("available", other);
   await expect(
     second.handle.instrumentations.replace("available", instrumentation),
@@ -368,11 +404,16 @@ it("reserves ownership before binding and rejects duplicate or foreign objects w
   expect(bind).toHaveBeenCalledOnce();
   expect(disable).not.toHaveBeenCalled();
   await first.handle.instrumentations.remove("first");
-  await second.handle.instrumentations.add("foreign", instrumentation);
+  const claims = claimInstrumentationOwnership([instrumentation]);
+  claims.get(instrumentation)!();
+  await expect(second.handle.instrumentations.add("foreign", instrumentation)).rejects.toThrow(
+    "Construct a fresh native instrumentation",
+  );
+  await second.handle.instrumentations.add("foreign", adapted(new ErrorsInstrumentation()));
 });
 
 it("keeps ownership through removal cleanup and releases it only after cleanup returns", async () => {
-  const instrumentation = new ErrorsInstrumentation({ enabled: false });
+  const instrumentation = adapted(new ErrorsInstrumentation());
   const { handle } = await initialize([instrumentation]);
   const disable = instrumentation.disable.bind(instrumentation);
   vi.spyOn(instrumentation, "disable").mockImplementationOnce(() => {
@@ -389,7 +430,7 @@ it("keeps ownership through removal cleanup and releases it only after cleanup r
 });
 
 it("rejects candidates that were not constructed disabled without claiming or disabling them", async () => {
-  const candidate = new ErrorsInstrumentation({ enabled: false });
+  const candidate = adapted(new ErrorsInstrumentation());
   const config = vi.spyOn(candidate, "getConfig").mockReturnValue({ enabled: true });
   const bind = vi.spyOn(candidate, "setTracerProvider");
   const disable = vi.spyOn(candidate, "disable");
@@ -421,7 +462,7 @@ it.each([
   [
     "unsupported version",
     () => {
-      const candidate = new ErrorsInstrumentation({ enabled: false });
+      const candidate = adapted(new ErrorsInstrumentation());
       Object.defineProperty(candidate, "instrumentationVersion", { value: "0.0.0" });
       return candidate;
     },
@@ -429,13 +470,13 @@ it.each([
   ],
   [
     "resource timing",
-    () => new ResourceTimingInstrumentation({ enabled: false }),
+    () => adapted(new ResourceTimingInstrumentation()),
     "Runtime add/remove/replace is unsupported for this instrumentation.",
   ],
 ] as const)(
   "rejects a %s candidate without touching it or poisoning the handle",
   async (_name, create, error) => {
-    const old = new ErrorsInstrumentation({ enabled: false });
+    const old = adapted(new ErrorsInstrumentation());
     const candidate = create();
     const { handle } = await initialize([old]);
     const bind = vi.spyOn(candidate, "setTracerProvider");
@@ -453,15 +494,15 @@ it.each([
     const claims = claimInstrumentationOwnership([candidate]);
     claims.get(candidate)!();
 
-    const valid = new ErrorsInstrumentation({ enabled: false });
+    const valid = adapted(new ErrorsInstrumentation());
     await handle.instrumentations.add("valid", valid);
     await handle.instrumentations.remove("valid");
   },
 );
 
 it.each([
-  ["fetch", () => new FetchInstrumentation({ enabled: false }), "disableFetchTracking"],
-  ["xhr", () => new XhrInstrumentation({ enabled: false }), "disableAjaxTracking"],
+  ["fetch", () => adapted(new FetchInstrumentation()), "disableFetchTracking"],
+  ["xhr", () => adapted(new XhrInstrumentation()), "disableAjaxTracking"],
 ] as const)(
   "rejects runtime %s without traces even when its gate is closed",
   async (_kind, create, gate) => {
@@ -473,7 +514,7 @@ it.each([
     await expect(handle.instrumentations.add("network", candidate)).rejects.toThrow();
     expect(bind).not.toHaveBeenCalled();
     expect(disable).not.toHaveBeenCalled();
-    const replacement = new ErrorsInstrumentation({ enabled: false });
+    const replacement = adapted(new ErrorsInstrumentation());
     await handle.instrumentations.add("existing", replacement);
     await expect(handle.instrumentations.replace("existing", candidate)).rejects.toThrow();
     expect(handle.instrumentations.get("existing")).toBe(replacement);
@@ -482,8 +523,8 @@ it.each([
 );
 
 it("serializes mutations with configuration and applies the replacement's own gate", async () => {
-  const old = new ErrorsInstrumentation({ enabled: false });
-  const fetch = new FetchInstrumentation({ enabled: false });
+  const old = adapted(new ErrorsInstrumentation());
+  const fetch = adapted(new FetchInstrumentation());
   const { handle } = await initialize([old], { spanProcessors: [{} as never] });
   const oldDisable = vi.spyOn(old, "disable");
 
@@ -502,7 +543,7 @@ it("serializes mutations with configuration and applies the replacement's own ga
 });
 
 it("adds a requested network instrumentation behind a closed gate and enables it when reopened", async () => {
-  const fetch = new FetchInstrumentation({ enabled: false });
+  const fetch = adapted(new FetchInstrumentation());
   // Adapt before spying because the shared patch adapter installs its own lifecycle wrapper.
   const claims = claimInstrumentationOwnership([fetch]);
   claims.get(fetch)!();
@@ -519,8 +560,8 @@ it("adds a requested network instrumentation behind a closed gate and enables it
 });
 
 it("preserves a paused request across a cross-kind replacement without enabling the candidate", async () => {
-  const old = new ErrorsInstrumentation({ enabled: false });
-  const replacement = new UserActionInstrumentation({ enabled: false });
+  const old = adapted(new ErrorsInstrumentation());
+  const replacement = adapted(new UserActionInstrumentation());
   const { handle } = await initialize([old]);
   await handle.instrumentations.setEnabled("errors", false);
   const enable = vi.spyOn(replacement, "enable");
@@ -533,15 +574,20 @@ it("preserves a paused request across a cross-kind replacement without enabling 
 });
 
 it("keeps a manually enabled user-action candidate paused after replacement", async () => {
-  const old = new ErrorsInstrumentation({ enabled: false });
+  const old = adapted(new ErrorsInstrumentation());
   const { handle, sdk } = await initialize([old]);
   await handle.instrumentations.setEnabled("errors", false);
-  const candidate = new UserActionInstrumentation({ enabled: false });
+  const candidate = adapted(new UserActionInstrumentation());
   candidate.enable();
+  const replacement = adapted(new UserActionInstrumentation());
   const button = document.createElement("button");
   document.body.append(button);
   try {
-    await handle.instrumentations.replace("errors", candidate);
+    await expect(handle.instrumentations.replace("errors", candidate)).rejects.toThrow(
+      "Construct a fresh native instrumentation",
+    );
+    expect(handle.instrumentations.get("errors")).toBe(old);
+    await handle.instrumentations.replace("errors", replacement);
     const emit = sdk.loggerProvider.getLogger.mock.results.at(-1)!.value.emit;
     button.click();
     expect(emit).not.toHaveBeenCalled();
@@ -555,8 +601,8 @@ it("keeps a manually enabled user-action candidate paused after replacement", as
 });
 
 it("keeps the old entry visible until replacement lifecycle callbacks complete", async () => {
-  const old = new ErrorsInstrumentation({ enabled: false });
-  const candidate = new UserActionInstrumentation({ enabled: false });
+  const old = adapted(new ErrorsInstrumentation());
+  const candidate = adapted(new UserActionInstrumentation());
   const { handle } = await initialize([old]);
   const bindProvider = candidate.setTracerProvider.bind(candidate);
   const disableOld = old.disable.bind(old);
@@ -584,8 +630,8 @@ it("keeps the old entry visible until replacement lifecycle callbacks complete",
 it.each(["setTracerProvider", "setLoggerProvider", "enable"] as const)(
   "cleans up a replacement after %s fails and poisons later mutations",
   async (method) => {
-    const old = new ErrorsInstrumentation({ enabled: false });
-    const candidate = new UserActionInstrumentation({ enabled: false });
+    const old = adapted(new ErrorsInstrumentation());
+    const candidate = adapted(new UserActionInstrumentation());
     const { handle } = await initialize([old]);
     const oldDisable = vi.spyOn(old, "disable");
     const oldEnable = vi.spyOn(old, "enable");
@@ -616,7 +662,7 @@ it.each(["setTracerProvider", "setLoggerProvider", "enable"] as const)(
 );
 
 it("retains a candidate whose rollback cleanup fails until shutdown cleans it successfully", async () => {
-  const candidate = new ErrorsInstrumentation({ enabled: false });
+  const candidate = adapted(new ErrorsInstrumentation());
   const first = await initialize([]);
   const second = await initialize([]);
   const failure = new Error("binding failed");
@@ -641,11 +687,16 @@ it("retains a candidate whose rollback cleanup fails until shutdown cleans it su
   expect(cleanup).toHaveBeenCalledOnce();
   await first.handle.shutdown();
   expect(cleanup).toHaveBeenCalledTimes(2);
-  await second.handle.instrumentations.add("foreign", candidate);
+  const claims = claimInstrumentationOwnership([candidate]);
+  claims.get(candidate)!();
+  await expect(second.handle.instrumentations.add("foreign", candidate)).rejects.toThrow(
+    "Construct a fresh native instrumentation",
+  );
+  await second.handle.instrumentations.add("foreign", adapted(new ErrorsInstrumentation()));
 });
 
 it("retains ownership after a failed removal until shutdown succeeds", async () => {
-  const old = new ErrorsInstrumentation({ enabled: false });
+  const old = adapted(new ErrorsInstrumentation());
   const first = await initialize([old]);
   const second = await initialize([]);
   const failure = new Error("remove failed");
@@ -667,13 +718,19 @@ it("retains ownership after a failed removal until shutdown succeeds", async () 
 
   await first.handle.shutdown();
   expect(disable).toHaveBeenCalledTimes(2);
-  await second.handle.instrumentations.add("foreign", old);
-  expect(second.handle.instrumentations.get("foreign")).toBe(old);
+  const claims = claimInstrumentationOwnership([old]);
+  claims.get(old)!();
+  await expect(second.handle.instrumentations.add("foreign", old)).rejects.toThrow(
+    "Construct a fresh native instrumentation",
+  );
+  const replacement = adapted(new ErrorsInstrumentation());
+  await second.handle.instrumentations.add("foreign", replacement);
+  expect(second.handle.instrumentations.get("foreign")).toBe(replacement);
 });
 
 it("retains the old entry and aggregates disable and inverse failures", async () => {
-  const old = new ErrorsInstrumentation({ enabled: false });
-  const candidate = new UserActionInstrumentation({ enabled: false });
+  const old = adapted(new ErrorsInstrumentation());
+  const candidate = adapted(new UserActionInstrumentation());
   const { handle } = await initialize([old]);
   const failure = new Error("old disable failed");
   const rollbackFailure = new Error("old inverse failed");
@@ -700,7 +757,7 @@ it("retains the old entry and aggregates disable and inverse failures", async ()
 it.each(["bind", "enable"] as const)(
   "does not release or revive a candidate when shutdown reenters during %s",
   async (stage) => {
-    const candidate = new ErrorsInstrumentation({ enabled: false });
+    const candidate = adapted(new ErrorsInstrumentation());
     const { handle } = await initialize([]);
     let shutdown: Promise<void> | undefined;
     const realEnable = candidate.enable.bind(candidate);
@@ -743,8 +800,8 @@ it.each(["bind", "enable"] as const)(
 );
 
 it("retains both replacement claims when shutdown reenters the old disable callback", async () => {
-  const old = new ErrorsInstrumentation({ enabled: false });
-  const candidate = new ErrorsInstrumentation({ enabled: false });
+  const old = adapted(new ErrorsInstrumentation());
+  const candidate = adapted(new ErrorsInstrumentation());
   const { handle } = await initialize([old]);
   const disableOld = old.disable.bind(old);
   const oldEnable = vi.spyOn(old, "enable");
@@ -776,7 +833,7 @@ it("retains both replacement claims when shutdown reenters the old disable callb
 
 it.each([
   ["instrumentation", createInstrumentation()],
-  ["navigation", new NavigationInstrumentation({ enabled: false })],
+  ["navigation", adapted(new NavigationInstrumentation())],
   ["@microsoft/opentelemetry-browser/page-view", new PageViewInstrumentation({ enabled: false })],
 ] as const)(
   "rejects runtime lifecycle for unsupported %s instrumentation",
@@ -907,7 +964,7 @@ it("continues cleanup and preserves a single instrumentation failure", async () 
 });
 
 it("releases ownership after a bounded shutdown cleanup retry succeeds", async () => {
-  const instrumentation = new ErrorsInstrumentation({ enabled: false });
+  const instrumentation = adapted(new ErrorsInstrumentation());
   const first = await initialize([instrumentation]);
   const second = await initialize([]);
   const failure = new Error("transient shutdown removal failed");
@@ -929,12 +986,18 @@ it("releases ownership after a bounded shutdown cleanup retry succeeds", async (
   expect(disable).toHaveBeenCalledTimes(2);
   expect(removed).toContain("error");
   expect(removed).toContain("unhandledrejection");
-  await second.handle.instrumentations.add("recovered", instrumentation);
-  expect(second.handle.instrumentations.get("recovered")).toBe(instrumentation);
+  const claims = claimInstrumentationOwnership([instrumentation]);
+  claims.get(instrumentation)!();
+  await expect(second.handle.instrumentations.add("recovered", instrumentation)).rejects.toThrow(
+    "Construct a fresh native instrumentation",
+  );
+  const replacement = adapted(new ErrorsInstrumentation());
+  await second.handle.instrumentations.add("recovered", replacement);
+  expect(second.handle.instrumentations.get("recovered")).toBe(replacement);
 });
 
 it("keeps ownership quarantined when both terminal cleanup attempts fail", async () => {
-  const instrumentation = new ErrorsInstrumentation({ enabled: false });
+  const instrumentation = adapted(new ErrorsInstrumentation());
   const first = await initialize([instrumentation]);
   const second = await initialize([]);
   const failure = new Error("persistent removal failed");
@@ -953,7 +1016,7 @@ it("keeps ownership quarantined when both terminal cleanup attempts fail", async
 });
 
 it("does not release startup-only navigation after a flag-clearing partial cleanup failure", async () => {
-  const instrumentation = new NavigationInstrumentation({ enabled: false });
+  const instrumentation = adapted(new NavigationInstrumentation());
   const add = vi.spyOn(window, "addEventListener");
   const { handle } = await initialize([instrumentation]);
   const listener = add.mock.calls.find(([name]) => name === "popstate")?.[1];
@@ -980,7 +1043,7 @@ it("does not release startup-only navigation after a flag-clearing partial clean
 });
 
 it("retains and explicitly removes errors handlers after a partial upstream removal failure", async () => {
-  const errors = new ErrorsInstrumentation({ enabled: false });
+  const errors = adapted(new ErrorsInstrumentation());
   const { handle } = await initialize([errors]);
   const handler = (errors as unknown as { _onErrorHandler?: EventListener })._onErrorHandler;
   expect(handler).toBeTypeOf("function");
@@ -1003,7 +1066,7 @@ it("retains and explicitly removes errors handlers after a partial upstream remo
 });
 
 it("does not re-enable errors when shutdown reenters through listener registration", async () => {
-  const errors = new ErrorsInstrumentation({ enabled: false });
+  const errors = adapted(new ErrorsInstrumentation());
   const { handle } = await initialize([errors]);
   await handle.instrumentations.setEnabled("errors", false);
   const enable = vi.spyOn(errors, "enable");
@@ -1038,9 +1101,9 @@ it("does not re-enable errors when shutdown reenters through listener registrati
 });
 
 it("rolls back successful peers in reverse order and blocks queued operations after a lifecycle failure", async () => {
-  const first = new FetchInstrumentation({ enabled: false });
-  const failing = new FetchInstrumentation({ enabled: false });
-  const last = new FetchInstrumentation({ enabled: false });
+  const first = adapted(new FetchInstrumentation());
+  const failing = adapted(new FetchInstrumentation());
+  const last = adapted(new FetchInstrumentation());
   const { handle } = await initialize([first, failing, last], {
     spanProcessors: [{} as never],
   });
@@ -1071,8 +1134,8 @@ it("rolls back successful peers in reverse order and blocks queued operations af
 });
 
 it("preserves lifecycle and rollback failures while attempting every inverse in reverse order", async () => {
-  const first = new FetchInstrumentation({ enabled: false });
-  const failing = new FetchInstrumentation({ enabled: false });
+  const first = adapted(new FetchInstrumentation());
+  const failing = adapted(new FetchInstrumentation());
   const { handle } = await initialize([first, failing], { spanProcessors: [{} as never] });
   const failure = new Error("fetch removal failed");
   const rollbackFailure = new Error("fetch rollback failed");
@@ -1097,7 +1160,7 @@ it("preserves lifecycle and rollback failures while attempting every inverse in 
 });
 
 it("rejects runtime changes after shutdown without reviving an instrumentation", async () => {
-  const console = new ConsoleInstrumentation({ enabled: false });
+  const console = adapted(new ConsoleInstrumentation());
   const { handle } = await initialize([console]);
   await handle.shutdown();
   const enable = vi.spyOn(console, "enable");
@@ -1112,9 +1175,9 @@ it("rejects runtime changes after shutdown without reviving an instrumentation",
 });
 
 it("rejects queued add, remove, and replace after shutdown without touching candidates", async () => {
-  const old = new ErrorsInstrumentation({ enabled: false });
-  const added = new ErrorsInstrumentation({ enabled: false });
-  const replacement = new ErrorsInstrumentation({ enabled: false });
+  const old = adapted(new ErrorsInstrumentation());
+  const added = adapted(new ErrorsInstrumentation());
+  const replacement = adapted(new ErrorsInstrumentation());
   const { handle } = await initialize([old]);
   const oldDisable = vi.spyOn(old, "disable");
   const addedBind = vi.spyOn(added, "setTracerProvider");

@@ -763,7 +763,7 @@ BFCache away time.
 Import `getInstrumentations` from `@microsoft/opentelemetry-browser/instrumentations`, await it, and
 pass the returned array as `instrumentations`. Calling the helper is opt-in: without it, fetch and
 XHR are not installed automatically. Its options use the upstream configuration types from
-`@opentelemetry/browser-instrumentation` **0.8.1**, except for distribution-owned `clickAnalytics`;
+`@opentelemetry/browser-instrumentation` **0.12.1**, except for distribution-owned `clickAnalytics`;
 do not confuse them with the initialization object or loader configuration.
 
 | Helper key         | Constructed by default | Settings beyond `enabled`                                                                                                       |
@@ -781,6 +781,9 @@ do not confuse them with the initialization object or loader configuration.
 
 - `enabled` is a boolean. Fetch/XHR are constructed unless `false`; other modules require `true`.
   All returned instances are initially inert; registration enables them after provider binding.
+  The helper's `enabled` flag selects construction; native upstream constructors do not enable
+  collection. Native configuration and providers are fixed at first enable. Do not pre-enable
+  a native object before passing it to the distribution or reuse it after a handle removes it.
 - URL filters and cross-origin propagation lists accept arrays of strings or `RegExp` objects.
   `sanitizeUrl` maps a URL string to a string. Request-size measurement is off unless enabled.
   Same-origin trace propagation is supported; cross-origin propagation requires an allowed URL
@@ -827,7 +830,7 @@ use their full instrumentation name, or `instrumentation` if unnamed. Repeated I
 `#3`, and so on in registration order, for example `fetch#2`. The built-in page-view entry uses
 `@microsoft/opentelemetry-browser/page-view`, not `page-view`.
 
-Runtime pause/resume supports only the pinned `@opentelemetry/browser-instrumentation` **0.8.1**
+Runtime pause/resume supports only the adapted `@opentelemetry/browser-instrumentation` **0.12.1**
 fetch, XHR, console, errors and user-action modules, plus the **same Web Vitals object** registered
 at startup. Web Vitals pause gates emission while its underlying observers remain registered;
 resume does not replace the object or register a new set of observers. Page views, navigation,
@@ -840,8 +843,8 @@ pauses, including when a replacement `updateCfg` resets the gates. The object's 
 is not a runtime collection-status API. Controls affect only this handle, even when browser patches
 are shared with other instances.
 
-Runtime add/remove/replace supports only pinned **0.8.1** fetch, XHR, console, errors and user-action
-objects. Construct candidates with `enabled: false`; they must be inactive and not owned by any
+Runtime add/remove/replace supports only adapted **0.12.1** fetch, XHR, console, errors and user-action
+objects. Construct fresh native candidates without enabling them; they must be inactive and not owned by any
 handle. Fetch/XHR candidates require an enabled trace pipeline, even when a collection gate is
 closed. No modules are imported or constructed by these methods. Added entries request collection
 immediately, subject to the gate; replacements preserve a manual pause. A replacement can use a
@@ -857,7 +860,8 @@ visible during replacement, and is released only after the new registration succ
 mutations attempt candidate cleanup and restoration of the previous registration. Objects whose
 cleanup fails remain privately owned and are included in shutdown cleanup; subsequent mutations
 reject when lifecycle state is uncertain. This cannot undo observed events, sent requests or injected
-headers. A removed object may be registered on another handle after successful cleanup. Shutdown
+headers. A native object cannot be registered on another handle after its first enable, because
+the upstream implementation locks its providers for the object's lifetime. Use a fresh instance. Shutdown
 attempts every remaining object, including unpublished candidates, in reverse ownership order.
 Errors-instrumentation cleanup failures receive one bounded retry using the retained listener
 references. The shutdown promise still reports the original error. Other failed cleanup, or a failed
@@ -1112,7 +1116,7 @@ later; to change enrichment at runtime, have the processor read application stat
 
 ```ts
 import type { LogRecordProcessor } from "@opentelemetry/sdk-logs";
-import type { SpanProcessor } from "@opentelemetry/sdk-trace-base";
+import type { SpanProcessor } from "@opentelemetry/sdk-trace";
 
 let tenant = "unknown";
 export const setTenant = (value: string): void => {

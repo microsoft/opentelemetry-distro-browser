@@ -14,6 +14,14 @@ All notable changes to this package are documented in this file.
 - Use versioned `next/otel/` URLs for the default loader, generated CDN metadata and tooling,
   without release-channel subdirectories. Correct snippet setup and CDN guidance.
 
+### Changed
+
+- Update to OpenTelemetry API 1.10.0 and SDK 3.1.1 with the stable Logs API and SDK.
+  Use browser SDK 0.9.1 and browser instrumentations 0.12.1, and retain deferred per-instance
+  registration through a native lifecycle bridge. Native objects lock providers and configuration
+  at first enable; later registrations require fresh objects. Classic distribution-owned
+  instrumentations retain their existing configuration and lifecycle methods.
+
 ### Added
 
 - Add an optional `/debug` entry with an in-page telemetry inspector, bounded snapshots, export

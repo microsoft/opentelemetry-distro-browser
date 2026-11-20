@@ -4,6 +4,7 @@
 export { getInstrumentations, createClickAnalyticsInstrumentation } from "./getInstrumentations.js";
 export type {
   BrowserInstrumentation,
+  BrowserNativeInstrumentation,
   DependencyInstrumentationOptions,
   InstrumentationOptions,
 } from "../../types.js";

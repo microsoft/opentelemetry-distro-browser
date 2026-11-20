@@ -3,7 +3,7 @@
 
 import type { Context } from "@opentelemetry/api";
 import type { LogRecordProcessor, ReadWriteLogRecord } from "@opentelemetry/sdk-logs";
-import type { Span, SpanProcessor } from "@opentelemetry/sdk-trace-base";
+import type { Span, SpanProcessor } from "@opentelemetry/sdk-trace";
 import { isNonEmptyString } from "../shared/isNonEmptyString.js";
 import { SKIP_PAGE_FALLBACK } from "../shared/pageOperationContext.js";
 import { setManagedOperationName } from "./operationName.js";

@@ -4,7 +4,11 @@
 import { context } from "@opentelemetry/api";
 import { conflict, getSharedRegistry, reportError } from "../shared/globalOwnership.js";
 import { throwErrors } from "../shared/lifecycle.js";
-import type { BrowserInstrumentation } from "../types.js";
+import type { BrowserInstrumentation, BrowserNativeInstrumentation } from "../types.js";
+import {
+  adaptNativeInstrumentation,
+  isAdaptedNativeInstrumentation,
+} from "./browserInstrumentation/nativeInstrumentation.js";
 
 type Method = (this: unknown, ...args: unknown[]) => unknown;
 type Wrap = <T extends object, K extends keyof T>(
@@ -271,12 +275,13 @@ function isPatchable(value: BrowserInstrumentation): value is Patchable {
  */
 function adapt(instrumentation: Patchable): void {
   const adapted = state().adapted.get(instrumentation);
+  const native = isAdaptedNativeInstrumentation(instrumentation);
   if (
     !adapted &&
     ((instrumentation.instrumentationName.startsWith("@opentelemetry/") &&
-      instrumentation.instrumentationVersion !== "0.8.1") ||
+      instrumentation.instrumentationVersion !== (native ? "0.12.1" : "0.8.1")) ||
       typeof instrumentation._wrap !== "function" ||
-      typeof instrumentation._unwrap !== "function")
+      (!native && typeof instrumentation._unwrap !== "function"))
   ) {
     conflict("browser-instrumentation-version", "Unsupported browser instrumentation");
   }
@@ -426,30 +431,27 @@ export function isNetworkInstrumentation(instrumentation: BrowserInstrumentation
 
 /** Reserves every object before callbacks; each returned release only relinquishes its own claim. */
 export function claimInstrumentationOwnership(
-  instrumentations: readonly BrowserInstrumentation[],
-  validate?: () => void,
+  inputs: readonly (BrowserInstrumentation | BrowserNativeInstrumentation)[],
+  validate?: (instrumentations: readonly BrowserInstrumentation[]) => void,
 ) {
   const owners = state().owners;
-  if (
-    instrumentations.some(
-      (item) => !item || (typeof item !== "object" && typeof item !== "function"),
-    )
-  ) {
+  if (inputs.some((item) => !item || (typeof item !== "object" && typeof item !== "function"))) {
     throw new TypeError("Instrumentation must be an object.");
   }
-  const unique = new Set(instrumentations);
+  const unique = new Set(inputs);
   if (
-    unique.size !== instrumentations.length ||
-    instrumentations.some((item) => owners.has(item))
+    unique.size !== inputs.length ||
+    inputs.some((item) => owners.has(item as BrowserInstrumentation))
   ) {
     conflict(
       "browser-instrumentation-owned",
       "Do not share instrumentation objects between instances",
     );
   }
-  for (const instrumentation of instrumentations) owners.add(instrumentation);
+  for (const instrumentation of inputs) owners.add(instrumentation as BrowserInstrumentation);
   const claims = new Map(
-    instrumentations.map((instrumentation) => {
+    inputs.map((input) => {
+      const instrumentation = input as BrowserInstrumentation;
       let held = true;
       return [
         instrumentation,
@@ -462,7 +464,8 @@ export function claimInstrumentationOwnership(
     }),
   );
   try {
-    validate?.();
+    const instrumentations = inputs.map(adaptNativeInstrumentation);
+    validate?.(instrumentations);
     for (const instrumentation of instrumentations) {
       if (isPatchable(instrumentation)) adapt(instrumentation);
     }
@@ -475,7 +478,7 @@ export function claimInstrumentationOwnership(
 
 /** Claims all inputs before binding any provider, including rollback of not-yet-enabled inputs. */
 export function claimInstrumentations(
-  instrumentations: readonly BrowserInstrumentation[],
+  instrumentations: readonly (BrowserInstrumentation | BrowserNativeInstrumentation)[],
 ): () => void {
   const claims = claimInstrumentationOwnership(instrumentations);
   return () => {

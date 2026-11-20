@@ -10,8 +10,8 @@ import {
   ROOT_CONTEXT,
   trace,
 } from "@opentelemetry/api";
-import { logs } from "@opentelemetry/api-logs";
-import { StackContextManager } from "@opentelemetry/sdk-trace-web";
+import { logs } from "@opentelemetry/api";
+import { StackContextManager } from "@opentelemetry/sdk-trace";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { logToEnvelope } from "../../../src/exporter/logUtils.js";
 import { spanToEnvelope } from "../../../src/exporter/spanUtils.js";

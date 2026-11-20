@@ -2,9 +2,10 @@
 // Licensed under the MIT License.
 
 import type { TelemetryInstance } from "../routing/telemetryInstance.js";
-import type { BrowserInstrumentation } from "../types.js";
+import type { BrowserInstrumentation, BrowserNativeInstrumentation } from "../types.js";
 import { claimInstrumentationOwnership, isNetworkInstrumentation } from "./sharedBrowserPatches.js";
 import { throwErrors } from "../shared/lifecycle.js";
+import { nativeInstrumentationState } from "./browserInstrumentation/nativeInstrumentation.js";
 
 interface Entry {
   instrumentation: BrowserInstrumentation;
@@ -35,7 +36,8 @@ function metadata(instrumentation: BrowserInstrumentation, key: string): unknown
 
 function kind(instrumentation: BrowserInstrumentation): string | undefined {
   const name = metadata(instrumentation, "instrumentationName");
-  return metadata(instrumentation, "instrumentationVersion") === "0.8.1" && typeof name === "string"
+  const version = metadata(instrumentation, "instrumentationVersion");
+  return (version === "0.8.1" || version === "0.12.1") && typeof name === "string"
     ? /^@opentelemetry\/browser-instrumentation\/(fetch|xhr|console|errors|user-action|web-vitals)$/.exec(
         name,
       )?.[1]
@@ -44,7 +46,7 @@ function kind(instrumentation: BrowserInstrumentation): string | undefined {
 
 /** Owns startup and runtime registrations for one instance, without changing shared patch ownership. */
 export function createInstrumentationRegistry(
-  instrumentations: readonly BrowserInstrumentation[],
+  instrumentations: readonly (BrowserInstrumentation | BrowserNativeInstrumentation)[],
   providers: Pick<TelemetryInstance, "tracerProvider" | "loggerProvider">,
   tracesEnabled: boolean,
   isStopped: () => boolean = () => false,
@@ -158,27 +160,35 @@ export function createInstrumentationRegistry(
     }
   }
 
-  function candidate(instrumentation: BrowserInstrumentation, requested: boolean): Entry {
-    if (!instrumentation || typeof instrumentation !== "object") {
+  function candidate(
+    input: BrowserInstrumentation | BrowserNativeInstrumentation,
+    requested: boolean,
+  ): Entry {
+    if (!input || typeof input !== "object") {
       throw new TypeError("Instrumentation must be an object.");
     }
-    const entry: Entry = {
-      instrumentation,
-      kind: kind(instrumentation),
-      requested,
-      active: false,
-      release: () => {},
-    };
-    mutable(entry);
-    if ((entry.kind === "fetch" || entry.kind === "xhr") && !tracesEnabled) {
-      throw new Error("Runtime network instrumentation requires an enabled trace pipeline.");
-    }
+    let entry!: Entry;
     // Reserve ownership before getters, adaptation or provider callbacks can reenter startup.
-    const claims = claimInstrumentationOwnership([instrumentation], () => {
+    const claims = claimInstrumentationOwnership([input], ([instrumentation]) => {
+      entry = {
+        instrumentation,
+        kind: kind(instrumentation),
+        requested,
+        active: false,
+        release: () => {},
+      };
+      mutable(entry);
+      if ((entry.kind === "fetch" || entry.kind === "xhr") && !tracesEnabled) {
+        throw new Error("Runtime network instrumentation requires an enabled trace pipeline.");
+      }
       for (const method of ["getConfig", "setTracerProvider", "enable", "disable"] as const) {
         if (typeof instrumentation[method] !== "function") {
           throw new TypeError(`Instrumentation ${method} must be a function.`);
         }
+      }
+      const nativeState = nativeInstrumentationState(instrumentation);
+      if (nativeState !== undefined && nativeState !== "new") {
+        throw new Error("Construct a fresh native instrumentation before adding or replacing it.");
       }
       if (
         instrumentation.getConfig().enabled !== false ||
@@ -189,12 +199,15 @@ export function createInstrumentationRegistry(
       }
       check();
     });
-    entry.release = claims.get(instrumentation) ?? entry.release;
-    owned.set(instrumentation, entry);
+    entry.release = claims.get(entry.instrumentation) ?? entry.release;
+    owned.set(entry.instrumentation, entry);
     return entry;
   }
 
-  function change(id: string, instrumentation?: BrowserInstrumentation): void {
+  function change(
+    id: string,
+    instrumentation?: BrowserInstrumentation | BrowserNativeInstrumentation,
+  ): void {
     check();
     validateId(id);
     const previous = entries.get(id);
@@ -302,9 +315,14 @@ export function createInstrumentationRegistry(
   return {
     enable(): void {
       // Bind directly to this instance, never to the global routing providers.
-      for (const instrumentation of instrumentations) {
-        const entry = owned.get(instrumentation);
-        if (!entry) throw new Error("Instrumentation registry is unavailable.");
+      for (const entry of owned.values()) {
+        const instrumentation = entry.instrumentation;
+        const nativeState = nativeInstrumentationState(instrumentation);
+        if (nativeState !== undefined && nativeState !== "new") {
+          throw new Error(
+            "Construct native instrumentations without enabling them before registration.",
+          );
+        }
         instrumentation.setTracerProvider(providers.tracerProvider);
         instrumentation.setLoggerProvider?.(providers.loggerProvider);
         const active = tracesEnabled || !isNetworkInstrumentation(instrumentation);
@@ -326,7 +344,7 @@ export function createInstrumentationRegistry(
     },
     check,
     get: (id: string): BrowserInstrumentation | undefined => entries.get(id)?.instrumentation,
-    add(id: string, instrumentation: BrowserInstrumentation): void {
+    add(id: string, instrumentation: BrowserInstrumentation | BrowserNativeInstrumentation): void {
       check();
       validateId(id);
       if (entries.has(id)) throw new Error(`Instrumentation ID already exists: ${id}`);
@@ -339,7 +357,10 @@ export function createInstrumentationRegistry(
       if (!entries.has(id)) throw new Error(`Unknown instrumentation: ${id}`);
       change(id);
     },
-    replace(id: string, instrumentation: BrowserInstrumentation): void {
+    replace(
+      id: string,
+      instrumentation: BrowserInstrumentation | BrowserNativeInstrumentation,
+    ): void {
       check();
       validateId(id);
       if (!entries.has(id)) throw new Error(`Unknown instrumentation: ${id}`);

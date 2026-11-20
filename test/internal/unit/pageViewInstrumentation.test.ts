@@ -13,7 +13,7 @@ import {
   type LogRecord,
   type Logger,
   type LoggerProvider,
-} from "@opentelemetry/api-logs";
+} from "@opentelemetry/api";
 import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from "vitest";
 import type { BrowserInstrumentation } from "../../../src/types.js";
 import { BROWSER_ASYNC_TIMEOUT_MS } from "../../fixtures/timeouts.js";

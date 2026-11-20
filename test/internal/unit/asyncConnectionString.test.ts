@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 import { context, diag, propagation, trace } from "@opentelemetry/api";
-import { logs } from "@opentelemetry/api-logs";
+import { logs } from "@opentelemetry/api";
 import { resourceFromAttributes } from "@opentelemetry/resources";
 import { isUnloading } from "../../../src/exporter/common.js";
 import { afterEach, expect, it, vi } from "vitest";

@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 import { context, diag } from "@opentelemetry/api";
-import { SeverityNumber, type LogRecord } from "@opentelemetry/api-logs";
+import { SeverityNumber, type LogRecord } from "@opentelemetry/api";
 import { InstrumentationBase } from "@opentelemetry/instrumentation";
 import { OPENTELEMETRY_BROWSER_VERSION } from "../../shared/constants.js";
 import { redactUrl } from "../../shared/urlRedaction.js";

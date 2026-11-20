@@ -2,13 +2,15 @@
 // Licensed under the MIT License.
 
 import { SpanKind, context, diag, propagation, trace } from "@opentelemetry/api";
-import { SeverityNumber, logs } from "@opentelemetry/api-logs";
+import { SeverityNumber, logs } from "@opentelemetry/api";
 import { FetchInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/fetch";
 import { NavigationInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/navigation";
 import { XhrInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/xhr";
 import { afterEach, expect, it, vi } from "vitest";
 import type { MicrosoftOpenTelemetryBrowser } from "../../src/index.js";
 import type { ClickAnalyticsInstrumentation } from "../../src/instrumentation/browserInstrumentation/index.js";
+import { adaptNativeInstrumentation } from "../../src/instrumentation/browserInstrumentation/nativeInstrumentation.js";
+import type { BrowserInstrumentation, BrowserNativeInstrumentation } from "../../src/types.js";
 import { createInMemoryPipeline } from "../fixtures/telemetry.js";
 
 const originalUrl = location.href;
@@ -16,6 +18,16 @@ const originalPushState = history.pushState;
 const originalReplaceState = history.replaceState;
 const handles = new Set<MicrosoftOpenTelemetryBrowser>();
 const fixtures: Element[] = [];
+
+type ClassicNativeInstrumentation = BrowserInstrumentation & {
+  setConfig(config: Record<string, unknown>): void;
+};
+
+function adapted<T extends object>(instrumentation: T): T & ClassicNativeInstrumentation {
+  return adaptNativeInstrumentation(
+    instrumentation as unknown as BrowserNativeInstrumentation,
+  ) as T & ClassicNativeInstrumentation;
+}
 
 function mountClickTarget(markup: string): HTMLButtonElement {
   const root = document.createElement("div");
@@ -70,18 +82,22 @@ for (const file of ["index.js", "index.min.js"]) {
       .fn<typeof fetch>()
       .mockResolvedValue(new Response(null, { status: 204 }));
     vi.stubGlobal("fetch", fetchRequest);
-    const navigation = new NavigationInstrumentation({
-      enabled: false,
-      sanitizeUrl: (url) => new URL(url).pathname,
-      applyCustomLogRecordData: (record) => {
-        record.attributes = { ...record.attributes, "test.registration": true };
-      },
-    });
-    const http = new FetchInstrumentation({
-      enabled: false,
-      sanitizeUrl: (url) => new URL(url).pathname,
-      ignoreUrls: [/\/excluded$/],
-    });
+    const navigation = adapted(
+      new NavigationInstrumentation({
+        enabled: false,
+        sanitizeUrl: (url) => new URL(url).pathname,
+        applyCustomLogRecordData: (record) => {
+          record.attributes = { ...record.attributes, "test.registration": true };
+        },
+      }),
+    );
+    const http = adapted(
+      new FetchInstrumentation({
+        enabled: false,
+        sanitizeUrl: (url) => new URL(url).pathname,
+        ignoreUrls: [/\/excluded$/],
+      }),
+    );
     const navigationDisable = vi.spyOn(navigation, "disable");
     const httpDisable = vi.spyOn(http, "disable");
     const handle = await distro.useMicrosoftOpenTelemetry({
@@ -437,8 +453,8 @@ for (const file of ["index.js", "index.min.js"]) {
           redactQueryParams: configured ? [index === 0 ? "alpha" : "beta"] : undefined,
           // Independently constructed upstream instances must receive the same protection.
           instrumentations: [
-            new FetchInstrumentation({ enabled: false, sanitizeUrl }),
-            new XhrInstrumentation({ enabled: false, sanitizeUrl }),
+            adapted(new FetchInstrumentation({ enabled: false, sanitizeUrl })),
+            adapted(new XhrInstrumentation({ enabled: false, sanitizeUrl })),
           ],
         });
         handles.add(handle);
@@ -497,10 +513,14 @@ for (const file of ["index.js", "index.min.js"]) {
     },
   );
 
-  it(`rejects already-enabled navigation before binding providers through ${file}`, async () => {
+  it(`rejects already-enabled native navigation before binding providers through ${file}`, async () => {
     const distro = await loadDistro();
     const pipeline = createInMemoryPipeline();
     const navigation = new NavigationInstrumentation();
+    navigation.enable({
+      loggerProvider: logs.getLoggerProvider(),
+      tracerProvider: trace.getTracerProvider(),
+    });
     const enable = vi.spyOn(navigation, "enable");
     try {
       await expect(
@@ -509,7 +529,7 @@ for (const file of ["index.js", "index.min.js"]) {
           instrumentations: [navigation],
           pageView: { enabled: false },
         }),
-      ).rejects.toThrow("browser-instrumentation-active");
+      ).rejects.toThrow("without enabling them first");
       expect(enable).not.toHaveBeenCalled();
     } finally {
       navigation.disable();

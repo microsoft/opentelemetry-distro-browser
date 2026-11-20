@@ -72,7 +72,7 @@ const provenance = {
   bundleSizeConfigSha256: sha256(bundleSizeConfig),
   packageLockSha256: sha256(await readFile("package-lock.json")),
   bundleSizeReportSha256: sha256(bundleSizeReportBytes),
-  externalImports: ["@opentelemetry/api", "@opentelemetry/api-logs"],
+  externalImports: ["@opentelemetry/api"],
 };
 await writeJson("provenance.json", provenance);
 const bundleBytes = await readFile(artifactPath);

@@ -10,11 +10,11 @@ import {
   trace,
   type TracerProvider,
 } from "@opentelemetry/api";
-import { logs, type LoggerProvider } from "@opentelemetry/api-logs";
+import { logs, type LoggerProvider } from "@opentelemetry/api";
 import type { LogRecordProcessor, ReadableLogRecord } from "@opentelemetry/sdk-logs";
 import type { Span } from "@opentelemetry/sdk-trace";
-import { InMemorySpanExporter, SimpleSpanProcessor } from "@opentelemetry/sdk-trace-base";
-import type { ReadableSpan, SpanProcessor } from "@opentelemetry/sdk-trace-base";
+import { InMemorySpanExporter, SimpleSpanProcessor } from "@opentelemetry/sdk-trace";
+import type { ReadableSpan, SpanProcessor } from "@opentelemetry/sdk-trace";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { spanToEnvelope } from "../../../src/exporter/spanUtils.js";
 import { EVENT_BROWSER_PAGE_VIEW } from "../../../src/instrumentation/pageView/semconv.js";
@@ -260,7 +260,7 @@ describe("instance telemetry URL redaction", () => {
     };
     const pipeline = await start({
       // Exporting is registered first; the final application hook must still be redacted.
-      spanProcessors: [new SimpleSpanProcessor(exporter), first, last],
+      spanProcessors: [new SimpleSpanProcessor({ exporter }), first, last],
     });
     const span = pipeline.tracer.startSpan("request", {
       kind: SpanKind.CLIENT,
@@ -296,7 +296,7 @@ describe("instance telemetry URL redaction", () => {
     const pipeline = await start(
       {
         spanProcessors: [
-          new SimpleSpanProcessor(exporter),
+          new SimpleSpanProcessor({ exporter }),
           {
             onStart() {},
             onEnding,

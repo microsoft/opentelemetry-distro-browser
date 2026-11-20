@@ -3,7 +3,7 @@
 
 import type { ExportResult } from "@opentelemetry/core";
 import type { ReadableLogRecord } from "@opentelemetry/sdk-logs";
-import type { ReadableSpan } from "@opentelemetry/sdk-trace-base";
+import type { ReadableSpan } from "@opentelemetry/sdk-trace";
 import { callWithTimeout, ExportResultCode } from "@opentelemetry/core";
 import { isRetriable, isSamplingRejection } from "./breezeUtils.js";
 import { createEnvelopeBatches, isUnloading, type EnvelopeBatch } from "./common.js";

@@ -4,7 +4,7 @@
 import { ROOT_CONTEXT, trace } from "@opentelemetry/api";
 import { ExportResultCode, type ExportResult } from "@opentelemetry/core";
 import { LoggerProvider } from "@opentelemetry/sdk-logs";
-import { BasicTracerProvider } from "@opentelemetry/sdk-trace-base";
+import { TracerProvider as BasicTracerProvider } from "@opentelemetry/sdk-trace";
 import { describe, expect, it, vi } from "vitest";
 import { installFakeClock } from "../../../fixtures/clock.js";
 import { createDeterministicIdGenerator } from "../../../fixtures/ids.js";

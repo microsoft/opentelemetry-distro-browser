@@ -11,8 +11,8 @@ import {
   type TracerProvider,
 } from "@opentelemetry/api";
 import { isTracingSuppressed } from "@opentelemetry/core";
-import type { FetchInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/fetch";
-import type { XhrInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/xhr";
+import type { FetchInstrumentationConfig } from "@opentelemetry/browser-instrumentation/experimental/fetch";
+import type { XhrInstrumentationConfig } from "@opentelemetry/browser-instrumentation/experimental/xhr";
 import { getSharedRegistry, reportError } from "../../shared/globalOwnership.js";
 import type { BrowserInstrumentation, DependencyInstrumentationOptions } from "../../types.js";
 
@@ -473,11 +473,16 @@ export function createDependencyEnrichment(options: DependencyInstrumentationOpt
   }
 
   return {
-    fetch(instrumentation: FetchInstrumentation): BrowserInstrumentation {
+    fetch(instrumentation: BrowserInstrumentation): BrowserInstrumentation {
       if (!selected) return instrumentation;
-      const state = adapt(instrumentation, "fetch");
-      const original = instrumentation.getConfig();
-      instrumentation.setConfig({
+      const configured = instrumentation as Omit<BrowserInstrumentation, "getConfig"> & {
+        instrumentationName: string;
+        getConfig(): FetchInstrumentationConfig & { enabled?: boolean };
+        setConfig(config: FetchInstrumentationConfig): void;
+      };
+      const state = adapt(configured, "fetch");
+      const original = configured.getConfig();
+      configured.setConfig({
         ...original,
         requestHook(span, request) {
           try {
@@ -504,11 +509,16 @@ export function createDependencyEnrichment(options: DependencyInstrumentationOpt
       state.installFetch();
       return state.adapter;
     },
-    xhr(instrumentation: XhrInstrumentation): BrowserInstrumentation {
+    xhr(instrumentation: BrowserInstrumentation): BrowserInstrumentation {
       if (!selected) return instrumentation;
-      const state = adapt(instrumentation, "xmlhttprequest");
-      const original = instrumentation.getConfig();
-      instrumentation.setConfig({
+      const configured = instrumentation as Omit<BrowserInstrumentation, "getConfig"> & {
+        instrumentationName: string;
+        getConfig(): XhrInstrumentationConfig & { enabled?: boolean };
+        setConfig(config: XhrInstrumentationConfig): void;
+      };
+      const state = adapt(configured, "xmlhttprequest");
+      const original = configured.getConfig();
+      configured.setConfig({
         ...original,
         applyCustomAttributesOnSpan(span, xhr) {
           state.enrich(span, () => {

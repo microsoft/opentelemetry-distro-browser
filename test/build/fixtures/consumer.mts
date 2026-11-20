@@ -5,6 +5,7 @@ import {
   useMicrosoftOpenTelemetry,
   type AzureMonitorOptions,
   type BrowserInstrumentation,
+  type BrowserNativeInstrumentation,
   type MicrosoftOpenTelemetryBrowser,
   type MicrosoftOpenTelemetryBrowserConfigurationSync,
   type MicrosoftOpenTelemetryBrowserConfigurationSyncOptions,
@@ -19,7 +20,7 @@ import { OTLPLogExporter } from "@opentelemetry/exporter-logs-otlp-http";
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
 import { BatchLogRecordProcessor } from "@opentelemetry/sdk-logs";
 import { resourceFromAttributes } from "@opentelemetry/resources";
-import { BatchSpanProcessor } from "@opentelemetry/sdk-trace-base";
+import { BatchSpanProcessor } from "@opentelemetry/sdk-trace";
 import {
   createTelemetryDebugger,
   type TelemetryDebugger,
@@ -28,6 +29,19 @@ import {
   getInstrumentations,
   type DependencyInstrumentationOptions,
 } from "@microsoft/opentelemetry-browser/instrumentations";
+import type { FetchInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/fetch";
+
+export function initializeNative(fetch: FetchInstrumentation): void {
+  const native: BrowserNativeInstrumentation = fetch;
+  void useMicrosoftOpenTelemetry({ instrumentations: [native] });
+}
+
+// @ts-expect-error The native bridge supports only the pinned upstream classes, not generic native implementations.
+void useMicrosoftOpenTelemetry({
+  instrumentations: [
+    { instrumentationName: "custom/native", enable() {}, disable() {}, isEnabled: () => false },
+  ],
+});
 
 export function debugPipeline(container: HTMLElement): TelemetryDebugger {
   const debug = createTelemetryDebugger({ container, performance: true });
@@ -82,9 +96,9 @@ export const options: MicrosoftOpenTelemetryBrowserOptions = {
     "custom.tenant.id": "consumer",
   }),
   spanProcessors: [
-    new BatchSpanProcessor(
-      new OTLPTraceExporter({ url: "https://example.test/v1/traces", headers }),
-    ),
+    new BatchSpanProcessor({
+      exporter: new OTLPTraceExporter({ url: "https://example.test/v1/traces", headers }),
+    }),
   ],
   logRecordProcessors: [
     new BatchLogRecordProcessor({

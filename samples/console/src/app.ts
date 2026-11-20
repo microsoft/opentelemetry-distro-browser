@@ -1,5 +1,4 @@
-import { trace } from "@opentelemetry/api";
-import { logs } from "@opentelemetry/api-logs";
+import { logs, trace } from "@opentelemetry/api";
 
 const tracer = trace.getTracer("console-sample", "0.1.0");
 const logger = logs.getLogger("console-sample", "0.1.0");

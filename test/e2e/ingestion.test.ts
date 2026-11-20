@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 import { context, diag, DiagLogLevel, propagation, trace } from "@opentelemetry/api";
-import { logs } from "@opentelemetry/api-logs";
+import { logs } from "@opentelemetry/api";
 import { afterEach, expect, it, vi } from "vitest";
 import type { useMicrosoftOpenTelemetry } from "../../src/index.js";
 import { SDK_STATS_ENDPOINT } from "../fixtures/sdkStats.js";

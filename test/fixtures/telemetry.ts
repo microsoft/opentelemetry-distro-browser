@@ -16,7 +16,7 @@ import {
   InMemorySpanExporter,
   type IdGenerator,
   type ReadableSpan,
-} from "@opentelemetry/sdk-trace-base";
+} from "@opentelemetry/sdk-trace";
 import { createDeterministicIdGenerator } from "./ids.js";
 
 /** Disable the instrumentation before shutting down its provider. */
@@ -44,7 +44,7 @@ export function createInMemoryPipeline() {
     disableAutoFlushOnDocumentHide: true,
   };
   const spanExporter = new InMemorySpanExporter();
-  const spanProcessor = new BatchSpanProcessor(spanExporter, batchOptions);
+  const spanProcessor = new BatchSpanProcessor({ exporter: spanExporter, ...batchOptions });
   const logExporter = new InMemoryLogRecordExporter();
   const logProcessor = new BatchLogRecordProcessor({ exporter: logExporter, ...batchOptions });
   return {

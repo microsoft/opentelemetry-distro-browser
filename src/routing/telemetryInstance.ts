@@ -5,10 +5,10 @@ import {
   SpanKind,
   type Attributes,
   type ContextManager,
+  type LoggerProvider as LoggerProviderApi,
   type TextMapPropagator,
   type TracerProvider as TracerProviderApi,
 } from "@opentelemetry/api";
-import type { LoggerProvider as LoggerProviderApi } from "@opentelemetry/api-logs";
 import {
   CompositePropagator,
   W3CBaggagePropagator,
@@ -16,9 +16,12 @@ import {
 } from "@opentelemetry/core";
 import { defaultResource, resourceFromAttributes } from "@opentelemetry/resources";
 import { LoggerProvider, type LogRecordProcessor } from "@opentelemetry/sdk-logs";
-import type { Sampler } from "@opentelemetry/sdk-trace-base";
-import { TracerProvider, type SpanProcessor } from "@opentelemetry/sdk-trace";
-import { StackContextManager } from "@opentelemetry/sdk-trace-web";
+import {
+  StackContextManager,
+  TracerProvider,
+  type Sampler,
+  type SpanProcessor,
+} from "@opentelemetry/sdk-trace";
 import { redactUrl } from "../shared/urlRedaction.js";
 import { acquireDiagnostics } from "../diagnostics.js";
 import { addInstance, noopLoggerProvider, noopTracerProvider } from "./instanceRouter.js";
@@ -121,7 +124,7 @@ export async function startTelemetryInstance(
         shutdown: shutdownProcessor,
       }));
       if (parameters) {
-        // SDK 2.11 runs all onEnding hooks before any onEnd, while setters still work.
+        // SDK 3 runs all onEnding hooks before any onEnd, while setters still work.
         // Keep redaction last so it also sanitizes attributes added by application hooks.
         spanProcessors.push({
           onStart() {},

@@ -27,11 +27,7 @@ export async function measureBrowser() {
   const files = new Map([
     ["/sdk.js", await readFile(new URL("../../dist/esm/index.min.js", import.meta.url), "utf8")],
     ["/api.js", await bundleApi("@opentelemetry/api")],
-    ["/logs.js", await bundleApi("@opentelemetry/api-logs", ["@opentelemetry/api"])],
-    [
-      "/",
-      `<script type="importmap">{"imports":{"@opentelemetry/api":"/api.js","@opentelemetry/api-logs":"/logs.js"}}</script>`,
-    ],
+    ["/", `<script type="importmap">{"imports":{"@opentelemetry/api":"/api.js"}}</script>`],
   ]);
   const browser = await chromium.launch({ headless: true });
   try {
@@ -58,8 +54,7 @@ export async function measureBrowser() {
     await page.goto(origin);
     const measured = await page.evaluate(async () => {
       const { useMicrosoftOpenTelemetry, OPENTELEMETRY_BROWSER_VERSION } = await import("/sdk.js");
-      const { trace, context, propagation } = await import("@opentelemetry/api");
-      const { logs } = await import("@opentelemetry/api-logs");
+      const { context, logs, propagation, trace } = await import("@opentelemetry/api");
       const samples = 15;
       const warmup = 5;
       const batch = 10_000;

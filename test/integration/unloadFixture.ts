@@ -4,7 +4,7 @@
 import { loadBrowserScript } from "../fixtures/browserBundle.js";
 import { SDK_STATS_ENDPOINT, withoutSdkStats } from "../fixtures/sdkStats.js";
 import { trace as sourceTrace } from "@opentelemetry/api";
-import { logs } from "@opentelemetry/api-logs";
+import { logs } from "@opentelemetry/api";
 import { ConsoleInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/console";
 import { useMicrosoftOpenTelemetry as initializeSource } from "../../src/index.js";
 import { useMicrosoftOpenTelemetry as initializeEsm } from "../../dist/esm/index.js";

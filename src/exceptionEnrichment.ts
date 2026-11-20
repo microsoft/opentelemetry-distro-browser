@@ -3,7 +3,7 @@
 
 import type { Attributes } from "@opentelemetry/api";
 import type { LogRecordProcessor } from "@opentelemetry/sdk-logs";
-import type { SpanProcessor } from "@opentelemetry/sdk-trace-base";
+import type { SpanProcessor } from "@opentelemetry/sdk-trace";
 import { truncateCustomDimensions, truncateToLength } from "./exporter/common.js";
 import { getUtf8Size } from "./exporter/logUtils.js";
 import { redactUrl } from "./shared/urlRedaction.js";

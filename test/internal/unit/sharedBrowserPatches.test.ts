@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 import { context, diag, propagation, ROOT_CONTEXT, trace } from "@opentelemetry/api";
-import { logs } from "@opentelemetry/api-logs";
+import { logs } from "@opentelemetry/api";
 import { ConsoleInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/console";
 import { FetchInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/fetch";
 import { NavigationInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/navigation";
@@ -13,13 +13,39 @@ import {
   claimInstrumentations,
   isNetworkInstrumentation,
 } from "../../../src/instrumentation/sharedBrowserPatches.js";
+import { adaptNativeInstrumentation } from "../../../src/instrumentation/browserInstrumentation/nativeInstrumentation.js";
 import { useMicrosoftOpenTelemetry } from "../../../src/useMicrosoftOpenTelemetry.js";
 import { PageViewInstrumentation } from "../../../src/instrumentation/pageView/index.js";
-import type { BrowserInstrumentation, MicrosoftOpenTelemetryBrowser } from "../../../src/types.js";
+import type {
+  BrowserInstrumentation,
+  BrowserNativeInstrumentation,
+  MicrosoftOpenTelemetryBrowser,
+} from "../../../src/types.js";
 import { createInMemoryPipeline, createSpanContext } from "../../fixtures/telemetry.js";
 
 type Method = (value: string) => unknown;
 type Target = { method: Method };
+type SupportedNativeInstrumentation =
+  ConsoleInstrumentation | FetchInstrumentation | NavigationInstrumentation | XhrInstrumentation;
+
+type AdaptedNativeInstrumentation<T extends SupportedNativeInstrumentation> = T &
+  BrowserInstrumentation & {
+    setConfig(config: Record<string, unknown>): void;
+  };
+
+function asBrowserNativeInstrumentation<T extends SupportedNativeInstrumentation>(
+  instrumentation: T,
+): T & BrowserNativeInstrumentation {
+  return instrumentation as T & BrowserNativeInstrumentation;
+}
+
+function adapted<T extends SupportedNativeInstrumentation>(
+  instrumentation: T,
+): AdaptedNativeInstrumentation<T> {
+  return adaptNativeInstrumentation(
+    asBrowserNativeInstrumentation(instrumentation),
+  ) as AdaptedNativeInstrumentation<T>;
+}
 
 // Exposes the upstream wrapping contract for deterministic platform and subscriber failures.
 class PatchProbe extends InstrumentationBase {
@@ -279,7 +305,7 @@ it("rejects re-claiming an adapted object with live subscriptions", () => {
 
 it("rejects re-registering active fetch before rebinding providers", async () => {
   vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null));
-  const instrumentation = new FetchInstrumentation({ enabled: false });
+  const instrumentation = adapted(new FetchInstrumentation());
   const first = await start([instrumentation]);
   await first.handle.shutdown();
   instrumentation.enable();
@@ -292,35 +318,54 @@ it("rejects re-registering active fetch before rebinding providers", async () =>
   } finally {
     instrumentation.disable();
   }
-  await start([instrumentation]);
+  await start([adapted(new FetchInstrumentation())]);
 });
 
 it.each([
-  ["fetch", () => new FetchInstrumentation({ enabled: false })],
-  ["XHR", () => new XhrInstrumentation({ enabled: false })],
-  ["console", () => new ConsoleInstrumentation({ enabled: false })],
-  ["navigation", () => new NavigationInstrumentation({ enabled: false })],
-  ["page view", () => new PageViewInstrumentation({ enabled: false })],
+  ["fetch", () => adapted(new FetchInstrumentation()), true],
+  ["XHR", () => adapted(new XhrInstrumentation()), true],
+  ["console", () => adapted(new ConsoleInstrumentation()), true],
+  ["navigation", () => adapted(new NavigationInstrumentation()), true],
+  ["page view", () => new PageViewInstrumentation({ enabled: false }), false],
 ] as const)(
   "rejects re-registering %s with enabled config after shutdown",
-  async (_name, create) => {
+  async (_name, create, native) => {
     const instrumentation = create();
     const first = await start([instrumentation]);
     await first.handle.shutdown();
-    instrumentation.setConfig({ enabled: true });
+    if (native) {
+      expect(() => instrumentation.setConfig({ enabled: true })).toThrow(
+        "Native instrumentation config is already initialized.",
+      );
+    } else instrumentation.setConfig({ enabled: true });
     const bindTrace = vi.spyOn(instrumentation, "setTracerProvider");
     const bindLogs = vi.spyOn(instrumentation, "setLoggerProvider");
     const enable = vi.spyOn(instrumentation, "enable");
-    await expect(start([instrumentation])).rejects.toThrow("browser-instrumentation-active");
+    await expect(start([instrumentation])).rejects.toThrow(
+      native
+        ? "Construct native instrumentations without enabling them before registration."
+        : "browser-instrumentation-active",
+    );
     expect(bindTrace).not.toHaveBeenCalled();
     expect(bindLogs).not.toHaveBeenCalled();
     expect(enable).not.toHaveBeenCalled();
 
-    instrumentation.setConfig({ enabled: false });
-    await start([instrumentation]);
-    expect(bindTrace).toHaveBeenCalledOnce();
-    expect(bindLogs).toHaveBeenCalledOnce();
-    expect(enable).toHaveBeenCalledOnce();
+    if (native) {
+      const replacement = create();
+      const replacementBindTrace = vi.spyOn(replacement, "setTracerProvider");
+      const replacementBindLogs = vi.spyOn(replacement, "setLoggerProvider");
+      const replacementEnable = vi.spyOn(replacement, "enable");
+      await start([replacement]);
+      expect(replacementBindTrace).toHaveBeenCalledOnce();
+      expect(replacementBindLogs).toHaveBeenCalledOnce();
+      expect(replacementEnable).toHaveBeenCalledOnce();
+    } else {
+      instrumentation.setConfig({ enabled: false });
+      await start([instrumentation]);
+      expect(bindTrace).toHaveBeenCalledOnce();
+      expect(bindLogs).toHaveBeenCalledOnce();
+      expect(enable).toHaveBeenCalledOnce();
+    }
   },
 );
 
@@ -329,40 +374,43 @@ it.each([
   ["navigation", true],
   ["page view", false],
   ["page view", true],
-] as const)("rejects active %s Navigation API listeners (adapted=%s)", async (kind, adapted) => {
-  const navigation = new EventTarget();
-  vi.stubGlobal("navigation", navigation);
-  const add = vi.spyOn(navigation, "addEventListener");
-  const remove = vi.spyOn(navigation, "removeEventListener");
-  const options = { enabled: false, useNavigationApiIfAvailable: true };
-  const instrumentation =
-    kind === "navigation"
-      ? new NavigationInstrumentation(options)
-      : new PageViewInstrumentation(options);
-  if (adapted) {
-    const first = await start([instrumentation]);
-    await first.handle.shutdown();
-  }
-  instrumentation.enable();
-  const bindTrace = vi.spyOn(instrumentation, "setTracerProvider");
-  const bindLogs = vi.spyOn(instrumentation, "setLoggerProvider");
-  try {
-    await expect(start([instrumentation])).rejects.toThrow("browser-instrumentation-active");
-    expect(bindTrace).not.toHaveBeenCalled();
-    expect(bindLogs).not.toHaveBeenCalled();
-  } finally {
-    instrumentation.disable();
-  }
-  const [, listener, listenerOptions] = add.mock.calls
-    .filter(([type]) => type === "currententrychange")
-    .at(-1)!;
-  // Removed explicitly or through an aborted signal.
-  expect(
-    remove.mock.calls.some(
-      ([type, removed]) => type === "currententrychange" && removed === listener,
-    ) || (listenerOptions as AddEventListenerOptions | undefined)?.signal?.aborted === true,
-  ).toBe(true);
-});
+] as const)(
+  "rejects active %s Navigation API listeners (adapted=%s)",
+  async (kind, previouslyAdapted) => {
+    const navigation = new EventTarget();
+    vi.stubGlobal("navigation", navigation);
+    const add = vi.spyOn(navigation, "addEventListener");
+    const remove = vi.spyOn(navigation, "removeEventListener");
+    const options = { enabled: false, useNavigationApiIfAvailable: true };
+    const instrumentation =
+      kind === "navigation"
+        ? adapted(new NavigationInstrumentation(options))
+        : new PageViewInstrumentation(options);
+    if (previouslyAdapted) {
+      const first = await start([instrumentation]);
+      await first.handle.shutdown();
+    }
+    instrumentation.enable();
+    const bindTrace = vi.spyOn(instrumentation, "setTracerProvider");
+    const bindLogs = vi.spyOn(instrumentation, "setLoggerProvider");
+    try {
+      await expect(start([instrumentation])).rejects.toThrow("browser-instrumentation-active");
+      expect(bindTrace).not.toHaveBeenCalled();
+      expect(bindLogs).not.toHaveBeenCalled();
+    } finally {
+      instrumentation.disable();
+    }
+    const [, listener, listenerOptions] = add.mock.calls
+      .filter(([type]) => type === "currententrychange")
+      .at(-1)!;
+    // Removed explicitly or through an aborted signal.
+    expect(
+      remove.mock.calls.some(
+        ([type, removed]) => type === "currententrychange" && removed === listener,
+      ) || (listenerOptions as AddEventListenerOptions | undefined)?.signal?.aborted === true,
+    ).toBe(true);
+  },
+);
 
 const consoleMethods = ["log", "warn", "error", "info", "debug"] as const;
 
@@ -373,7 +421,7 @@ it.each(consoleMethods)(
       vi.spyOn(console, method).mockImplementation(() => {}),
     );
     const descriptor = Object.getOwnPropertyDescriptor(console, locked)!;
-    const instrumentation = new ConsoleInstrumentation({ enabled: false });
+    const instrumentation = adapted(new ConsoleInstrumentation());
     Object.defineProperty(console, locked, { ...descriptor, writable: false });
     try {
       await expect(start([instrumentation])).rejects.toThrow("browser-patch-unavailable");
@@ -381,7 +429,7 @@ it.each(consoleMethods)(
     } finally {
       Object.defineProperty(console, locked, descriptor);
     }
-    const retry = await start([instrumentation]);
+    const retry = await start([adapted(new ConsoleInstrumentation())]);
     for (const method of consoleMethods) console[method](`retried ${method}`);
     await retry.handle.forceFlush();
     expect(retry.logExporter.getFinishedLogRecords().map((record) => record.body)).toEqual(
@@ -558,9 +606,9 @@ it("does not strand earlier ownership when a later startup input is invalid", ()
 });
 
 it("classifies only supported network instrumentations", () => {
-  expect(isNetworkInstrumentation(new FetchInstrumentation({ enabled: false }))).toBe(true);
-  expect(isNetworkInstrumentation(new XhrInstrumentation({ enabled: false }))).toBe(true);
-  expect(isNetworkInstrumentation(new ConsoleInstrumentation({ enabled: false }))).toBe(false);
+  expect(isNetworkInstrumentation(adapted(new FetchInstrumentation()))).toBe(true);
+  expect(isNetworkInstrumentation(adapted(new XhrInstrumentation()))).toBe(true);
+  expect(isNetworkInstrumentation(adapted(new ConsoleInstrumentation()))).toBe(false);
   const foreign = new PatchProbe({ method: vi.fn() });
   Object.defineProperty(foreign, "instrumentationName", { value: "foreign/fetch" });
   expect(isNetworkInstrumentation(foreign)).toBe(false);
@@ -573,18 +621,20 @@ it("fans out fetch responses before callers consume their bodies and keeps hooks
   const firstHook = vi.fn();
   const secondHook = vi.fn();
   const first = await start([
-    new FetchInstrumentation({
-      enabled: false,
-      applyCustomAttributesOnSpan: firstHook,
-      sanitizeUrl: () => "first",
-    }),
+    adapted(
+      new FetchInstrumentation({
+        applyCustomAttributesOnSpan: firstHook,
+        sanitizeUrl: () => "first",
+      }),
+    ),
   ]);
   const second = await start([
-    new FetchInstrumentation({
-      enabled: false,
-      applyCustomAttributesOnSpan: secondHook,
-      sanitizeUrl: () => "second",
-    }),
+    adapted(
+      new FetchInstrumentation({
+        applyCustomAttributesOnSpan: secondHook,
+        sanitizeUrl: () => "second",
+      }),
+    ),
   ]);
   const parent = createSpanContext();
   const response = await context.with(trace.setSpanContext(ROOT_CONTEXT, parent), () => fetch(url));
@@ -616,8 +666,8 @@ it.each([false, true])(
       if (synchronous) throw failure;
       return Promise.reject(failure);
     });
-    const first = await start([new FetchInstrumentation({ enabled: false })]);
-    const second = await start([new FetchInstrumentation({ enabled: false })]);
+    const first = await start([adapted(new FetchInstrumentation())]);
+    const second = await start([adapted(new FetchInstrumentation())]);
     if (synchronous) expect(() => fetch(url)).toThrow(failure);
     else await expect(fetch(url)).rejects.toBe(failure);
     await vi.waitFor(async () => {
@@ -635,7 +685,7 @@ it.each([false, true])(
 
 it("keeps deferred network instrumentation inert when traces are disabled", async () => {
   const transport = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null));
-  await start([new FetchInstrumentation({ enabled: false })], false);
+  await start([adapted(new FetchInstrumentation())], false);
   expect(fetch).toBe(transport);
   await fetch(url);
   expect(transport).toHaveBeenCalledExactlyOnceWith(url);
@@ -643,8 +693,8 @@ it("keeps deferred network instrumentation inert when traces are disabled", asyn
 
 it("deduplicates XHR propagation but preserves repeated application headers and resets on open", async () => {
   const { open, send, header } = stubXhr();
-  const first = await start([new XhrInstrumentation({ enabled: false })]);
-  const second = await start([new XhrInstrumentation({ enabled: false })]);
+  const first = await start([adapted(new XhrInstrumentation())]);
+  const second = await start([adapted(new XhrInstrumentation())]);
   const xhr = new XMLHttpRequest();
   xhr.open("GET", url);
   xhr.setRequestHeader("TraceParent", "application");
@@ -673,7 +723,7 @@ it.each(["disable", "shutdown"] as const)(
   "skips XHRs crossing a header tracking gap during %s",
   async (operation) => {
     const { send, header } = stubXhr();
-    const instrumentation = new XhrInstrumentation({ enabled: false });
+    let instrumentation = adapted(new XhrInstrumentation());
     let pipeline = await start([instrumentation]);
     const xhr = new XMLHttpRequest();
     xhr.open("GET", url);
@@ -681,7 +731,10 @@ it.each(["disable", "shutdown"] as const)(
     else await pipeline.handle.shutdown();
     xhr.setRequestHeader("traceparent", "application");
     if (operation === "disable") instrumentation.enable();
-    else pipeline = await start([instrumentation]);
+    else {
+      instrumentation = adapted(new XhrInstrumentation());
+      pipeline = await start([instrumentation]);
+    }
     xhr.setRequestHeader("X-Custom", "after restart");
     xhr.send();
     await pipeline.handle.forceFlush();
@@ -703,7 +756,7 @@ it.each(["disable", "shutdown"] as const)(
 it("preserves in-flight XHR completion and listener cleanup across disable", async () => {
   const { send } = stubXhr();
   send.mockImplementation(() => {});
-  const instrumentation = new XhrInstrumentation({ enabled: false });
+  const instrumentation = adapted(new XhrInstrumentation());
   const pipeline = await start([instrumentation]);
   const xhr = new XMLHttpRequest();
   const remove = vi.spyOn(xhr, "removeEventListener");
@@ -721,9 +774,9 @@ it("preserves in-flight XHR completion and listener cleanup across disable", asy
 
 it("keeps XHR header tracking while another subscriber remains enabled", async () => {
   const { header } = stubXhr();
-  const instrumentation = new XhrInstrumentation({ enabled: false });
+  const instrumentation = adapted(new XhrInstrumentation());
   const first = await start([instrumentation]);
-  const second = await start([new XhrInstrumentation({ enabled: false })]);
+  const second = await start([adapted(new XhrInstrumentation())]);
   const xhr = new XMLHttpRequest();
   xhr.open("GET", url);
   instrumentation.disable();
