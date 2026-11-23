@@ -234,6 +234,43 @@ it("preserves backup restoration without identity permission and rechecks on opt
   session.shutdown();
 });
 
+it.each(["old-user", "new-user"])(
+  "defers a restored backup's writes during unresolved opt-in and recovers for %s",
+  async (resolvedOwner) => {
+    const { cookies, storage, values } = fakeBackends();
+    const backup = JSON.stringify({
+      id: "backup",
+      startTimestamp: Date.now(),
+      anonymousId: "old-user",
+    });
+    storage.getItem.mockReturnValue({ success: true, value: backup });
+    let owner: string | null | undefined = null;
+    const session = createSession({}, storage, cookies, key, undefined, storageKey, () => owner);
+    await session.start();
+    owner = undefined;
+    session.refreshOwner();
+    expect(session.getSessionId()).toBe("backup");
+    vi.setSystemTime(Date.now() + 1000);
+    expect(session.getSessionId()).toBe("backup");
+    session.backup();
+    expect(cookies.set).not.toHaveBeenCalled();
+    expect(storage.setItem).not.toHaveBeenCalled();
+    expect(storage.removeItem).not.toHaveBeenCalled();
+
+    owner = resolvedOwner;
+    const id = session.getSessionId();
+    if (resolvedOwner === "old-user") expect(id).toBe("backup");
+    else expect(id).not.toBe("backup");
+    expect(values.get(key)!.split("|")[0]).toBe(id);
+    session.backup();
+    expect(JSON.parse(storage.setItem.mock.calls.at(-1)![1])).toMatchObject({
+      id,
+      anonymousId: resolvedOwner,
+    });
+    session.shutdown();
+  },
+);
+
 it("captures the current owner for each renewed session, not the previous session's owner", async () => {
   const { cookies, storage } = fakeBackends();
   let owner = "original-user";

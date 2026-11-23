@@ -416,6 +416,39 @@ it.each(["index.js", "index.min.js"])(
 );
 
 it.each(["index.js", "index.min.js"])(
+  "does not persist a restored session after failed identity opt-in through %s",
+  async (file) => {
+    const backup = JSON.stringify({
+      id: "old-session",
+      startTimestamp: Date.now(),
+      anonymousId: "old-user",
+    });
+    localStorage.setItem("opentelemetry-session", backup);
+    document.cookie = `ai_user=new-user|${new Date().toISOString()}; path=/`;
+    const first = await initializeCookieConsumer(file, {
+      userContext: { enabled: false },
+      cookieCfg: {
+        getCookie(name) {
+          if (name === "ai_user") throw new Error("unavailable");
+          const value = document.cookie.split("; ").find((part) => part.startsWith(`${name}=`));
+          return value?.slice(name.length + 1) ?? "";
+        },
+      },
+    });
+    first.handle.userContext.setEnabled(true);
+    await first.emit();
+    expect(readCookie("ai_session")).toBeNull();
+    await first.handle.shutdown();
+    expect(localStorage.getItem("opentelemetry-session")).toBe(backup);
+
+    const reloaded = await initializeCookieConsumer(file, {});
+    const next = await reloaded.emit();
+    expect(next["enduser.pseudo.id"]).toBe("new-user");
+    expect(next["session.id"]).not.toBe("old-session");
+  },
+);
+
+it.each(["index.js", "index.min.js"])(
   "preserves the authoritative cookie when cookies are enabled before identity through %s",
   async (file) => {
     const now = Date.now();

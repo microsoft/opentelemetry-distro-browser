@@ -919,6 +919,87 @@ it("does not persist the previous owner after an unsuccessful identity re-enable
   expect(storage.getItem("opentelemetry-session")).toBeNull();
 });
 
+it.each(["span", "log"] as const)(
+  "does not promote a backup to a cookie after identity opt-in fails (%s first)",
+  async (firstSignal) => {
+    const storage = new MemoryStorage();
+    vi.spyOn(window, "localStorage", "get").mockReturnValue(storage);
+    const backup = JSON.stringify({
+      id: "old-session",
+      startTimestamp: Date.now(),
+      anonymousId: "old-user",
+    });
+    storage.setItem("opentelemetry-session", backup);
+    const values = new Map([["ai_user", `new-user|${new Date().toISOString()}`]]);
+    let failing = true;
+    const cookieCfg = {
+      getCookie(name: string) {
+        if (failing && name === "ai_user") throw new Error("unavailable");
+        return values.get(name) ?? "";
+      },
+      setCookie: (name: string, value: string) => {
+        values.set(name, value.split(";")[0]!);
+      },
+      delCookie: (name: string) => values.delete(name),
+    };
+    const consumer = await initialize({ userContext: { enabled: false }, cookieCfg });
+    consumer.handle.userContext.setEnabled(true);
+    consumer.emit({}, firstSignal);
+    expect(values.has("ai_session")).toBe(false);
+    window.dispatchEvent(new PageTransitionEvent("pagehide"));
+    await consumer.handle.shutdown();
+    expect(storage.getItem("opentelemetry-session")).toBe(backup);
+
+    failing = false;
+    const reloaded = await initialize({ cookieCfg });
+    const next = reloaded.emit({}, firstSignal);
+    expect(next).toMatchObject({
+      "enduser.pseudo.id": "new-user",
+    });
+    expect(next["session.id"]).not.toBe("old-session");
+  },
+);
+
+it.each(["old-user", "new-user"])(
+  "recovers a failed backup-owner opt-in on activity for %s without another enable",
+  async (resolvedOwner) => {
+    const storage = new MemoryStorage();
+    vi.spyOn(window, "localStorage", "get").mockReturnValue(storage);
+    storage.setItem(
+      "opentelemetry-session",
+      JSON.stringify({ id: "old-session", startTimestamp: Date.now(), anonymousId: "old-user" }),
+    );
+    const values = new Map([["ai_user", `${resolvedOwner}|${new Date().toISOString()}`]]);
+    let failing = true;
+    const consumer = await initialize({
+      userContext: { enabled: false },
+      cookieCfg: {
+        getCookie(name) {
+          if (failing && name === "ai_user") throw new Error("unavailable");
+          return values.get(name) ?? "";
+        },
+        setCookie: (name, value) => {
+          values.set(name, value.split(";")[0]!);
+        },
+        delCookie: (name) => values.delete(name),
+      },
+    });
+    consumer.handle.userContext.setEnabled(true);
+    consumer.emit();
+    expect(values.has("ai_session")).toBe(false);
+    failing = false;
+    const next = consumer.emit();
+    expect(next["enduser.pseudo.id"]).toBe(resolvedOwner);
+    if (resolvedOwner === "old-user") expect(next["session.id"]).toBe("old-session");
+    else expect(next["session.id"]).not.toBe("old-session");
+    await consumer.handle.shutdown();
+    expect(JSON.parse(storage.getItem("opentelemetry-session")!)).toMatchObject({
+      id: next["session.id"],
+      anonymousId: resolvedOwner,
+    });
+  },
+);
+
 it("cancels a backup-derived deferred cookie before identity opt-in and cookie enable", async () => {
   const storage = new MemoryStorage();
   vi.spyOn(window, "localStorage", "get").mockReturnValue(storage);

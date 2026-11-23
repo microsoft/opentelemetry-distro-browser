@@ -103,6 +103,8 @@ export function createSession(
   function save(session: Session, force = false): void {
     // Keep errors synchronous because upstream does not await saves.
     if (!persist || readFailed) return;
+    // A failed identity opt-in must not promote an unvalidated backup to an authoritative cookie.
+    if (restoredFromBackup && readOwner() === undefined) return;
     if (!cookies) {
       storage?.setItem(backupKey, serialize(session));
       return;
