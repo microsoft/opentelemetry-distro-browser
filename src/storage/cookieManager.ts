@@ -21,6 +21,8 @@ export function createCookieManager(
 ): MicrosoftOpenTelemetryBrowserCookieManager & {
   read(name: string): CookieReadResult;
   isAccessEnabled(): boolean;
+  cancelPending(name: string, value: string): void;
+  removeIfValue(name: string, value: string): boolean;
   canRead(name: string): boolean;
   setReplayFailureHandler(
     handler: ((name: string, removeSuperseded: () => boolean) => void) | undefined,
@@ -80,7 +82,14 @@ export function createCookieManager(
   let everEnabled = enabled;
   let stopped = false;
   let replaying = false;
-  let inFlightReplay: { name: string; cleanup?: () => boolean } | undefined;
+  let inFlightReplay:
+    | {
+        name: string;
+        cleanup?: () => boolean;
+        cancelledValue?: string;
+        replacement?: () => boolean;
+      }
+    | undefined;
   let replayFailureHandler: ((name: string, removeSuperseded: () => boolean) => void) | undefined;
 
   function attempt<T>(operation: () => T, fallback: T): T {
@@ -144,6 +153,10 @@ export function createCookieManager(
       const replay = inFlightReplay?.name === name ? inFlightReplay : undefined;
       const cleanup = replay?.cleanup;
       const accepted = write(name, formatted, remove);
+      if (accepted && replay?.cancelledValue !== undefined) {
+        // If the outer hook later writes the cancelled value, replay the newest accepted operation.
+        replay.replacement = () => write(name, formatted, remove);
+      }
       if (accepted && !remove && replay && replay.cleanup === cleanup) {
         replay.cleanup = undefined;
       }
@@ -179,10 +192,32 @@ export function createCookieManager(
     );
   }
 
+  function removeIfValue(name: string, value: string, replace?: () => boolean): boolean {
+    if (!enabled || stopped) return false;
+    // A re-entrant caller cannot establish the final cookie value before the replay returns.
+    if (inFlightReplay?.name === name) return false;
+    const current = read(name);
+    // Failed/ignored reads are not evidence that an accepted old write still owns the cookie.
+    if (!current.success) return false;
+    if (current.value !== value) return true;
+    return replace ? replace() : write(name, deletion(), true);
+  }
+
   return {
     read,
     // Policy only: unlike isEnabled(), this does not probe browser cookie availability.
     isAccessEnabled: () => enabled && !stopped,
+    // Cancel only a matching deferred write, never a newer operation or a browser cookie.
+    cancelPending(name, value) {
+      const operation = pending.get(name);
+      if (operation && !operation.remove && operation.value === value) {
+        pending.delete(name);
+        if (inFlightReplay?.name === name) {
+          inFlightReplay.cancelledValue = value;
+        }
+      }
+    },
+    removeIfValue,
     // Internal policy query: availability is checked separately, without re-reading caller config.
     canRead: (name) => !ignored.has(name),
     // Internal coordination only: generic cookie failures do not authorize destructive cleanup.
@@ -217,6 +252,9 @@ export function createCookieManager(
             // A hook may finish writing after a nested purge. Honor that purge once more,
             // unless a newer same-name write superseded it while the hook was running.
             replay?.cleanup?.();
+            if (replay?.cancelledValue !== undefined) {
+              removeIfValue(name, replay.cancelledValue, replay.replacement);
+            }
             // Hooks (including diagnostics) can re-enter, replace, purge, or stop the manager.
             if (pending.get(name) !== operation) continue;
             if (success) pending.delete(name);

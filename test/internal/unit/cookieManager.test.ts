@@ -119,6 +119,26 @@ it.each([false, true])(
   },
 );
 
+it("preserves a newer nested write when a cancelled replay writes afterward", () => {
+  const values = new Map<string, string>();
+  const manager = createCookieManager({
+    enabled: false,
+    getCookie: (name) => values.get(name) ?? "",
+    setCookie(name, formatted) {
+      const value = formatted.split(";")[0]!;
+      if (value === "old") {
+        manager.cancelPending(name, value);
+        manager.set(name, "newer");
+      }
+      values.set(name, value);
+    },
+    delCookie: (name) => values.delete(name),
+  });
+  manager.set("ai_session", "old");
+  manager.setEnabled(true);
+  expect(values.get("ai_session")).toBe("newer");
+});
+
 it("queries snapshotted per-name read permission without cookie access", () => {
   const ignored = ["ignored"];
   const manager = createCookieManager({ ignoreCookies: ignored, blockedCookies: ["blocked"] });
@@ -179,6 +199,85 @@ it("formats expiry at enqueue rather than extending it on enable", () => {
   manager.setEnabled(true);
   expect(setCookie.mock.calls[0]?.[1]).toContain("expires=Thu, 01 Jan 2026 00:01:00 GMT");
 });
+
+it("cancels only the matching pending write without touching browser cookies or newer operations", () => {
+  const values = new Map([["ai_session", "current"]]);
+  const getCookie = vi.fn((name: string) => values.get(name) ?? "");
+  const setCookie = vi.fn((name: string, value: string) => {
+    values.set(name, value.split(";")[0]!);
+  });
+  const delCookie = vi.fn((name: string) => values.delete(name));
+  const manager = createCookieManager({ enabled: false, getCookie, setCookie, delCookie });
+  manager.set("ai_session", "old");
+  manager.cancelPending("ai_session", "old");
+  expect(manager.get("ai_session")).toBe("");
+  manager.set("ai_session", "newer");
+  manager.cancelPending("ai_session", "old");
+  expect(manager.get("ai_session")).toBe("newer");
+  manager.del("other");
+  manager.cancelPending("other", "");
+  for (const operation of [getCookie, setCookie, delCookie]) {
+    expect(operation).not.toHaveBeenCalled();
+  }
+  expect(values.get("ai_session")).toBe("current");
+  manager.setEnabled(true);
+  expect(values.get("ai_session")).toBe("newer");
+  expect(delCookie).toHaveBeenCalledExactlyOnceWith("other", expect.any(String));
+  setCookie.mockClear();
+  delCookie.mockClear();
+  getCookie.mockClear();
+  manager.cancelPending("ai_session", "newer");
+  for (const operation of [getCookie, setCookie, delCookie]) {
+    expect(operation).not.toHaveBeenCalled();
+  }
+  expect(values.get("ai_session")).toBe("newer");
+});
+
+it("removes an accepted stale value only while it still owns the current cookie", () => {
+  const values = new Map([["ai_session", "newer"]]);
+  const delCookie = vi.fn((name: string) => values.delete(name));
+  let fails = false;
+  const manager = createCookieManager({
+    getCookie(name) {
+      if (fails) throw new Error("unavailable");
+      return values.get(name) ?? "";
+    },
+    delCookie,
+  });
+  manager.removeIfValue("ai_session", "old");
+  expect(values.get("ai_session")).toBe("newer");
+  values.set("ai_session", "old");
+  fails = true;
+  manager.removeIfValue("ai_session", "old");
+  expect(delCookie).not.toHaveBeenCalled();
+  fails = false;
+  manager.removeIfValue("ai_session", "old");
+  expect(values.has("ai_session")).toBe(false);
+  expect(delCookie).toHaveBeenCalledExactlyOnceWith("ai_session", expect.any(String));
+});
+
+it.each([false, true])(
+  "cancels an in-flight old replay without undoing a newer cookie (newer=%s)",
+  (newer) => {
+    const values = new Map<string, string>();
+    const manager = createCookieManager({
+      enabled: false,
+      getCookie: (name) => values.get(name) ?? "",
+      setCookie(name, formatted) {
+        const value = formatted.split(";")[0]!;
+        if (value === "old") {
+          manager.cancelPending(name, value);
+          values.set(name, value);
+          if (newer) manager.set(name, "newer");
+        } else values.set(name, value);
+      },
+      delCookie: (name) => values.delete(name),
+    });
+    manager.set("ai_session", "old");
+    manager.setEnabled(true);
+    expect(values.get("ai_session")).toBe(newer ? "newer" : undefined);
+  },
+);
 
 it("retains failed deferred writes and deletes for a later enable without generic cleanup", () => {
   const setCookie = vi.fn((): void => {

@@ -401,6 +401,51 @@ it.each(["index.js", "index.min.js"])(
 );
 
 it.each(["index.js", "index.min.js"])(
+  "forgets the previous anonymous owner on opt-out and opt-in through %s",
+  async (file) => {
+    const first = await initializeCookieConsumer(file, {});
+    const before = await first.emit();
+    first.handle.userContext.setEnabled(false);
+    document.cookie = `ai_user=new-user|${new Date().toISOString()}; path=/`;
+    first.handle.userContext.setEnabled(true);
+    await first.handle.shutdown();
+    const backup = JSON.parse(localStorage.getItem("opentelemetry-session")!);
+    expect(backup.anonymousId).toBe("new-user");
+    expect(backup.anonymousId).not.toBe(before["enduser.pseudo.id"]);
+  },
+);
+
+it.each(["index.js", "index.min.js"])(
+  "preserves the authoritative cookie when cookies are enabled before identity through %s",
+  async (file) => {
+    const now = Date.now();
+    const value = `current-session|${now}|${now}`;
+    document.cookie = `ai_user=current-user|${new Date(now).toISOString()}; path=/`;
+    document.cookie = `ai_session=${value}; path=/`;
+    localStorage.setItem(
+      "opentelemetry-session",
+      JSON.stringify({ id: "old-session", startTimestamp: now, anonymousId: "old-user" }),
+    );
+    const first = await initializeCookieConsumer(file, {
+      userContext: { enabled: false },
+      cookieCfg: { enabled: false, disableCookieDefer: true },
+    });
+    first.handle.getCookieMgr().setEnabled(true);
+    first.handle.userContext.setEnabled(true);
+    expect(first.handle.getCookieMgr().get("ai_session")).toBe(value);
+    expect(await first.emit()).toMatchObject({
+      "session.id": "current-session",
+      "enduser.pseudo.id": "current-user",
+    });
+    await first.handle.shutdown();
+    expect(JSON.parse(localStorage.getItem("opentelemetry-session")!)).toMatchObject({
+      id: "current-session",
+      anonymousId: "current-user",
+    });
+  },
+);
+
+it.each(["index.js", "index.min.js"])(
   "rejects mixed cookie naming before persistence access through %s",
   async (file) => {
     const artifact =

@@ -39,6 +39,8 @@ export function createSession(
   ),
   cookies?: MicrosoftOpenTelemetryBrowserCookieManager & {
     read?: (name: string) => CookieReadResult;
+    cancelPending?: (name: string, value: string) => void;
+    removeIfValue?: (name: string, value: string) => boolean;
   },
   cookieName = "ai_session",
   readLifetimes?: () => { readonly inactivityTimeout: number; readonly maxDuration: number },
@@ -62,6 +64,20 @@ export function createSession(
   let readFailed = false;
   let restoredFromBackup = false;
   let sessionOwner: string | null | undefined;
+  let lastCookieValue: string | undefined;
+  let rejectedCookieValue: string | undefined;
+  let cookieWrites = 0;
+
+  function removeRejectedCookie(): void {
+    if (rejectedCookieValue === undefined || cookieWrites > 0) return;
+    try {
+      if (cookies?.removeIfValue?.(cookieName, rejectedCookieValue)) {
+        rejectedCookieValue = undefined;
+      }
+    } catch {
+      // Keep the exact rejected value for a bounded retry on later activity or backup.
+    }
+  }
 
   function expired(session: Session, now: number): boolean {
     const policy = readLifetimes?.() ?? { inactivityTimeout, maxDuration };
@@ -128,18 +144,33 @@ export function createSession(
       // Legacy JSON IDs may not be safe in AI's raw pipe-delimited cookie format.
       // eslint-disable-next-line no-control-regex
       if (/[;|\x00-\x1f\x7f]/.test(session.id)) return;
-      if (
-        cookies.set(
-          cookieName,
-          `${session.id}|${session.startTimestamp}|${lastActivityTimestamp}`,
-          maxAge,
-        )
-      ) {
+      const value = `${session.id}|${session.startTimestamp}|${lastActivityTimestamp}`;
+      const previousValue = lastCookieValue;
+      // A hook can change identity before completing its write. Track it before calling out.
+      lastCookieValue = value;
+      cookieWrites++;
+      let accepted: boolean;
+      try {
+        accepted = cookies.set(cookieName, value, maxAge);
+      } finally {
+        cookieWrites--;
+      }
+      if (rejectedCookieValue === value) {
+        // A nested hook may already have selected and written a newer authoritative session.
+        // Its write must win if the outer hook completed the rejected renewal afterward.
+        if (currentSession && currentSession !== session) save(currentSession, true);
+        return;
+      }
+      if (accepted) {
         lastCookieWrite = now;
         lastCookiePolicy = { ...policy };
+      } else if (lastCookieValue === value) {
+        lastCookieValue = previousValue;
       }
     } catch {
       // Custom managers may throw; persistence must not interrupt telemetry.
+    } finally {
+      removeRejectedCookie();
     }
   }
 
@@ -155,6 +186,8 @@ export function createSession(
         readFailed = !result.success;
         if (!result.success) return null;
         value = result.value || null;
+        // Reject our own invalidated backup renewal, without deleting a newer cookie.
+        if (value !== null && value === rejectedCookieValue) return null;
       } catch {
         readFailed = true;
         return null;
@@ -248,19 +281,35 @@ export function createSession(
       sessionStore: store,
     });
   let manager = createManager();
-  function refreshOwner(): void {
-    const owner = readOwner();
-    if (restoredFromBackup && typeof owner === "string" && owner !== sessionOwner) {
-      currentSession = undefined;
-      restoredFromBackup = false;
-      manager.shutdown();
-      manager = createManager();
-      // Cancel a deferred backup-derived cookie before enabling browser access can replay it.
+  function discardRestoredSession(): void {
+    if (!restoredFromBackup) return;
+    rejectedCookieValue = lastCookieValue;
+    if (lastCookieValue !== undefined) {
       try {
-        cookies?.del(cookieName);
+        cookies?.cancelPending?.(cookieName, lastCookieValue);
+        // A completed replay is no longer pending. Remove its exact stale value only; never
+        // delete a current cookie merely because its name matches this session's cookie name.
+        // Keep the rejection until after a possibly re-entrant replay finishes. Its post-write
+        // cleanup can fail after this pre-write check succeeds; backup/activity must retry it.
+        if (cookieWrites === 0) cookies?.removeIfValue?.(cookieName, lastCookieValue);
       } catch {
         // Custom cookie managers must not interrupt identity controls.
       }
+    }
+    lastCookieValue = undefined;
+    lastCookieWrite = undefined;
+    currentSession = undefined;
+    restoredFromBackup = false;
+    // The next session read restores the current authoritative cookie, not this backup.
+    readFailed = true;
+    manager.shutdown();
+    manager = createManager();
+  }
+  function refreshOwner(): void {
+    const owner = readOwner();
+    if (restoredFromBackup && typeof owner === "string" && owner !== sessionOwner) {
+      ignoreBackup = true;
+      discardRestoredSession();
     }
     // Bind previously identity-disabled sessions, but never relabel an already known owner.
     if (sessionOwner == null) sessionOwner = owner;
@@ -269,30 +318,27 @@ export function createSession(
     start: () => manager.start(),
     shutdown: () => manager.shutdown(),
     refreshOwner,
+    /** Explicit identity opt-out forgets ownership even when Web Storage is disabled. */
+    clearOwner() {
+      sessionOwner = undefined;
+    },
     /** A missing user cookie must not resurrect the previous user's session backup. */
     discardBackup() {
       ignoreBackup = true;
-      if (restoredFromBackup) {
-        try {
-          cookies?.del(cookieName);
-        } catch {
-          // A custom cookie manager may throw during cleanup.
-        }
-        currentSession = undefined;
-        restoredFromBackup = false;
-        manager.shutdown();
-        manager = createManager();
-      }
+      discardRestoredSession();
       if (persist) storage?.removeItem(backupKey);
     },
     /** Saves the latest activity to the optional Web Storage backup without creating a session. */
     backup() {
       refreshOwner();
+      removeRejectedCookie();
       if (persist && !readFailed && currentSession && readOwner() !== undefined) {
         storage?.setItem(backupKey, serialize(currentSession));
       }
     },
     getSessionId() {
+      refreshOwner();
+      removeRejectedCookie();
       if (readFailed) {
         const restored = restore();
         if (!readFailed) {
@@ -302,7 +348,6 @@ export function createSession(
           manager = createManager();
         }
       }
-      refreshOwner();
       const session = currentSession ?? manager.getSession();
       const now = Date.now();
       if (expired(session, now)) {

@@ -578,6 +578,7 @@ export async function useMicrosoftOpenTelemetry(
       (action) => {
         // Explicit privacy controls also clean records written by older versions. Never restore
         // legacy authentication or access Web Storage when the caller has disabled it.
+        if (action === "purge") session?.clearOwner();
         if (!sessionStorage) return;
         // Explicit identity opt-out also removes the anonymous owner kept in session backup.
         if (action === "purge") session?.discardBackup();

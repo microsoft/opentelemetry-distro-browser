@@ -196,6 +196,24 @@ it("does not assign a new anonymous owner to an existing session during backup",
   session.shutdown();
 });
 
+it("forgets the previous owner on explicit opt-out before a new owner binds", async () => {
+  const { cookies, storage } = fakeBackends();
+  let owner: string | null = "old-user";
+  const session = createSession({}, storage, cookies, key, undefined, storageKey, () => owner);
+  await session.start();
+  const id = session.getSessionId();
+  owner = null;
+  session.clearOwner();
+  owner = "new-user";
+  session.refreshOwner();
+  session.backup();
+  expect(JSON.parse(storage.setItem.mock.calls.at(-1)![1])).toMatchObject({
+    id,
+    anonymousId: "new-user",
+  });
+  session.shutdown();
+});
+
 it("preserves backup restoration without identity permission and rechecks on opt-in", async () => {
   const { cookies, storage, values } = fakeBackends();
   storage.getItem.mockReturnValue({
@@ -241,6 +259,149 @@ it("captures the current owner for each renewed session, not the previous sessio
   });
   session.shutdown();
 });
+
+it("removes only its own old renewal when identity changes inside a direct cookie hook", async () => {
+  const { storage } = fakeBackends();
+  storage.getItem.mockReturnValue({
+    success: true,
+    value: JSON.stringify({ id: "backup", startTimestamp: Date.now(), anonymousId: "old-user" }),
+  });
+  let owner: string | null = null;
+  const values = new Map<string, string>();
+  const cookies = createCookieManager({
+    getCookie: (name) => values.get(name) ?? "",
+    setCookie(name, formatted) {
+      const value = formatted.split(";")[0]!;
+      if (value.startsWith("backup|")) {
+        owner = "new-user";
+        session.refreshOwner();
+      }
+      values.set(name, value);
+    },
+    delCookie: (name) => values.delete(name),
+  });
+  const session = createSession({}, storage, cookies, key, undefined, storageKey, () => owner);
+  await session.start();
+  session.getSessionId();
+  session.backup();
+  expect(values.get(key) ?? "").not.toContain("backup|");
+  session.shutdown();
+  cookies.shutdown();
+});
+
+it.each(["read", "delete"])(
+  "retries safe stale-cookie cleanup on backup after a temporary %s failure",
+  async (failure) => {
+    const { storage } = fakeBackends();
+    storage.getItem.mockReturnValue({
+      success: true,
+      value: JSON.stringify({ id: "backup", startTimestamp: Date.now(), anonymousId: "old-user" }),
+    });
+    let owner: string | null = null;
+    let failing = false;
+    const values = new Map<string, string>();
+    const cookies = createCookieManager({
+      getCookie(name) {
+        if (failing && failure === "read") throw new Error("unavailable");
+        return values.get(name) ?? "";
+      },
+      setCookie: (name, formatted) => {
+        values.set(name, formatted.split(";")[0]!);
+      },
+      delCookie(name) {
+        if (failing && failure === "delete") throw new Error("unavailable");
+        values.delete(name);
+      },
+    });
+    const session = createSession({}, storage, cookies, key, undefined, storageKey, () => owner);
+    await session.start();
+    expect(session.getSessionId()).toBe("backup");
+    failing = true;
+    owner = "new-user";
+    session.refreshOwner();
+    expect(values.get(key)).toContain("backup|");
+    failing = false;
+    session.backup();
+    expect(values.has(key)).toBe(false);
+    session.shutdown();
+    cookies.shutdown();
+  },
+);
+
+it("preserves a newer session written inside the invalidated direct renewal hook", async () => {
+  const { storage } = fakeBackends();
+  storage.getItem.mockReturnValue({
+    success: true,
+    value: JSON.stringify({ id: "backup", startTimestamp: Date.now(), anonymousId: "old-user" }),
+  });
+  let owner: string | null = null;
+  const newer = `new-session|${Date.now()}|${Date.now()}`;
+  const values = new Map<string, string>();
+  const cookies = createCookieManager({
+    getCookie: (name) => values.get(name) ?? "",
+    setCookie(name, formatted) {
+      const value = formatted.split(";")[0]!;
+      if (value.startsWith("backup|")) {
+        owner = "new-user";
+        session.refreshOwner();
+        values.set(name, newer);
+        expect(session.getSessionId()).toBe("new-session");
+      }
+      values.set(name, value);
+    },
+    delCookie: (name) => values.delete(name),
+  });
+  const session = createSession({}, storage, cookies, key, undefined, storageKey, () => owner);
+  await session.start();
+  session.getSessionId();
+  expect(values.get(key)).toBe(newer);
+  session.backup();
+  expect(JSON.parse(storage.setItem.mock.calls.at(-1)![1]).id).toBe("new-session");
+  session.shutdown();
+  cookies.shutdown();
+});
+
+it.each([false, true])(
+  "retries rejected replay cleanup after a failed read (nested activity=%s)",
+  async (nested) => {
+    const { storage } = fakeBackends();
+    storage.getItem.mockReturnValue({
+      success: true,
+      value: JSON.stringify({ id: "backup", startTimestamp: Date.now(), anonymousId: "old-user" }),
+    });
+    let owner: string | null = null;
+    let failing = false;
+    const values = new Map<string, string>();
+    const cookies = createCookieManager({
+      enabled: false,
+      getCookie(name) {
+        if (failing) throw new Error("unavailable");
+        return values.get(name) ?? "";
+      },
+      setCookie(name, formatted) {
+        const value = formatted.split(";")[0]!;
+        if (value.startsWith("backup|")) {
+          owner = "new-user";
+          session.refreshOwner();
+          if (nested) expect(session.getSessionId()).not.toBe("backup");
+          values.set(name, value);
+          failing = true;
+        } else values.set(name, value);
+      },
+      delCookie: (name) => values.delete(name),
+    });
+    const session = createSession({}, storage, cookies, key, undefined, storageKey, () => owner);
+    await session.start();
+    expect(session.getSessionId()).toBe("backup");
+    cookies.setEnabled(true);
+    expect(values.get(key)).toContain("backup|");
+    failing = false;
+    session.backup();
+    expect(values.has(key)).toBe(false);
+    session.shutdown();
+    cookies.shutdown();
+  },
+);
 
 it.each(["existing", "missing", "malformed"])(
   "keeps a stable provisional session without persistence until read recovery (%s cookie)",

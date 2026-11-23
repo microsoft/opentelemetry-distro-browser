@@ -741,6 +741,107 @@ it("keeps a still-live app's backup bound to its original anonymous user", async
   expect(restored.emit()["session.id"]).not.toBe(before["session.id"]);
 });
 
+it("does not persist an opted-out user's owner after another user opts in on the same handle", async () => {
+  const storage = new MemoryStorage();
+  vi.spyOn(window, "localStorage", "get").mockReturnValue(storage);
+  const values = new Map<string, string>();
+  const cookieCfg = {
+    getCookie: (name: string) => values.get(name) ?? "",
+    setCookie: (name: string, value: string) => {
+      values.set(name, value.split(";")[0]!);
+    },
+    delCookie: (name: string) => {
+      values.delete(name);
+    },
+  };
+  const consumer = await initialize({ cookieCfg });
+  const previous = consumer.emit();
+  consumer.handle.userContext.setEnabled(false);
+  values.set("ai_user", `new-user|${new Date().toISOString()}`);
+  consumer.handle.userContext.setEnabled(true);
+  await consumer.handle.shutdown();
+  const backup = JSON.parse(storage.getItem("opentelemetry-session")!);
+  expect(backup.anonymousId).toBe("new-user");
+  expect(backup.anonymousId).not.toBe(previous["enduser.pseudo.id"]);
+});
+
+it.each([false, true])(
+  "preserves a current session cookie when cookies are enabled before identity (defer disabled: %s)",
+  async (disableCookieDefer) => {
+    const storage = new MemoryStorage();
+    vi.spyOn(window, "localStorage", "get").mockReturnValue(storage);
+    const now = Date.now();
+    storage.setItem(
+      "opentelemetry-session",
+      JSON.stringify({ id: "old-session", startTimestamp: now, anonymousId: "old-user" }),
+    );
+    const authoritative = `current-session|${now}|${now}`;
+    const values = new Map([
+      ["ai_user", `current-user|${new Date(now).toISOString()}`],
+      ["ai_session", authoritative],
+    ]);
+    const delCookie = vi.fn((name: string) => values.delete(name));
+    const consumer = await initialize({
+      userContext: { enabled: false },
+      cookieCfg: {
+        enabled: false,
+        disableCookieDefer,
+        getCookie: (name) => values.get(name) ?? "",
+        setCookie: (name, value) => {
+          values.set(name, value.split(";")[0]!);
+        },
+        delCookie,
+      },
+    });
+    // Do not emit yet: the existing backup has not queued any session-cookie renewal.
+    consumer.handle.getCookieMgr().setEnabled(true);
+    consumer.handle.userContext.setEnabled(true);
+    expect(delCookie.mock.calls.map(([name]) => name)).not.toContain("ai_session");
+    expect(values.get("ai_session")).toBe(authoritative);
+    expect(consumer.emit()).toMatchObject({
+      "session.id": "current-session",
+      "enduser.pseudo.id": "current-user",
+    });
+    await consumer.handle.shutdown();
+    expect(JSON.parse(storage.getItem("opentelemetry-session")!)).toMatchObject({
+      id: "current-session",
+      anonymousId: "current-user",
+    });
+  },
+);
+
+it.each([false, true])(
+  "does not resurrect a completed backup renewal after identity opt-in and shutdown (initially enabled: %s)",
+  async (enabled) => {
+    const storage = new MemoryStorage();
+    vi.spyOn(window, "localStorage", "get").mockReturnValue(storage);
+    storage.setItem(
+      "opentelemetry-session",
+      JSON.stringify({ id: "old-session", startTimestamp: Date.now(), anonymousId: "old-user" }),
+    );
+    const values = new Map<string, string>();
+    const cookieCfg = {
+      getCookie: (name: string) => values.get(name) ?? "",
+      setCookie: (name: string, value: string) => {
+        values.set(name, value.split(";")[0]!);
+      },
+      delCookie: (name: string) => values.delete(name),
+    };
+    const consumer = await initialize({
+      userContext: { enabled: false },
+      cookieCfg: { ...cookieCfg, enabled },
+    });
+    expect(consumer.emit()["session.id"]).toBe("old-session");
+    consumer.handle.getCookieMgr().setEnabled(true);
+    expect(values.get("ai_session")!.split("|")[0]).toBe("old-session");
+    consumer.handle.userContext.setEnabled(true);
+    await consumer.handle.shutdown();
+    expect(values.get("ai_session") ?? "").not.toContain("old-session");
+    const restored = await initialize({ cookieCfg });
+    expect(restored.emit()["session.id"]).not.toBe("old-session");
+  },
+);
+
 it.each([false, true])(
   "removes session-backup identity on explicit user opt-out (after shutdown: %s)",
   async (afterShutdown) => {
