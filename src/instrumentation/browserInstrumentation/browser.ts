@@ -1,5 +1,5 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-// CDN bundles omit the npm-only Click Analytics factory and validators.
+// The standalone preset does not initialize the SDK or replay the loader's queue.
 export { getInstrumentations } from "./getInstrumentations.js";

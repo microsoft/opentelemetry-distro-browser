@@ -477,5 +477,25 @@ export function getSdkLoaderScript(config: SdkLoaderConfig): string {
     loadDelay === undefined
       ? "l(c.src)"
       : "setTimeout(function(){try{l(c.src)}catch(e){reject(e)}},c.loadDelay)";
-  return `!(function(w,d,c){w.microsoftOpenTelemetry=new Promise(function(resolve,reject){function l(u){var s=d.createElement("script");s.src=u;s.crossOrigin=c.crossOrigin;if(c.integrity)s.integrity=c.integrity;s.onload=function(){var sdk=w.Microsoft&&w.Microsoft.OpenTelemetry;if(!sdk||typeof sdk.useMicrosoftOpenTelemetry!=="function"){reject(new Error("OpenTelemetry browser bundle did not expose Microsoft.OpenTelemetry"));return}Promise.resolve().then(function(){return typeof sdk.getInstrumentations==="function"?sdk.getInstrumentations(c.instrumentationOptions):[]}).then(function(i){var o=c.cfg;o.instrumentations=i;if(c.resourceAttributes)o.resource=sdk.resourceFromAttributes(c.resourceAttributes);return sdk.useMicrosoftOpenTelemetry(o)}).then(resolve,reject)};s.onerror=function(){${fallback}${reportFailure}reject(new Error("${loadFailure}"+u))};d.head.appendChild(s)}${start}})})(window,document,${serialized});`;
+  // Use the settings the bundle actually receives (JSON omits non-enumerable properties).
+  const early =
+    instrumentationOptions !== undefined &&
+    (JSON.parse(serialized) as SdkLoaderConfig).instrumentationOptions?.errors?.enabled === true;
+  // Count observed URL changes, not history entries. A return to a URL is a new visit,
+  // but a state-only history update is not. Only the same-page decision reaches the bundle.
+  const buffer = early
+    ? 'var q=[],emit,url,id=0;function warn(s){w.console.warn("OpenTelemetry "+s)}function page(){var u=w.location.href;if(url!==u){url=u;id++}return id}function text(v,k){try{var s=v[k];if(typeof s==="string")return s}catch{}}' +
+      'function capture(e){if(q.length>=20)return;var v="reason" in e?e.reason:e.error??(e.message||null);' +
+      'if(v!=null&&q.length<20){var a=[Date.now()],ctx;q.push([a,page()]);try{ctx=w[Symbol.for("opentelemetry.js.api.1")]?.context?.active()}catch{warn("startup context unavailable")}' +
+      'a.push(text(v,"name"),typeof v==="string"?v:text(v,"message"),text(v,"stack"),ctx)}}' +
+      'function listen(m,trackPage){for(var e of ["error","unhandledrejection"])w[m](e,capture);if(trackPage)w.navigation?.[m]("currententrychange",page)}'
+    : "";
+  const listen = early ? 'listen("addEventListener",true);' : "";
+  const handoff = early ? ',send=>{listen("removeEventListener");emit=send}' : "";
+  const finish = early
+    ? '.then(h=>{if(q.length){if(!emit)warn("bundle does not support startup error replay");' +
+      'else for(var [item,p] of q)try{emit(item,p===page())}catch{warn("startup error replay failed")}}return h})' +
+      '.finally(()=>{listen("removeEventListener",true);q.length=0;emit=null})'
+    : "";
+  return `!(function(w,d,c){${buffer}w.microsoftOpenTelemetry=new Promise(function(resolve,reject){function l(u){var s=d.createElement("script");s.src=u;s.crossOrigin=c.crossOrigin;if(c.integrity)s.integrity=c.integrity;s.onload=function(){var sdk=w.Microsoft&&w.Microsoft.OpenTelemetry;if(!sdk||typeof sdk.useMicrosoftOpenTelemetry!=="function"){reject(new Error("OpenTelemetry browser bundle did not expose Microsoft.OpenTelemetry"));return}Promise.resolve().then(function(){return typeof sdk.getInstrumentations==="function"?sdk.getInstrumentations(c.instrumentationOptions${handoff}):[]}).then(function(i){var o=c.cfg;o.instrumentations=i;if(c.resourceAttributes)o.resource=sdk.resourceFromAttributes(c.resourceAttributes);return sdk.useMicrosoftOpenTelemetry(o)}).then(resolve,reject)};s.onerror=function(){${fallback}${reportFailure}reject(new Error("${loadFailure}"+u))};d.head.appendChild(s)}${listen}${start}})${finish}})(window,document,${serialized});`;
 }
