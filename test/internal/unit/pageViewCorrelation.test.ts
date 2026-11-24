@@ -4,6 +4,7 @@
 import {
   INVALID_SPAN_CONTEXT,
   ROOT_CONTEXT,
+  SeverityNumber,
   context,
   createContextKey,
   diag,
@@ -135,7 +136,6 @@ it.each([false, true])(
   "uses one operation ID for the page, logs, spans and propagation (Navigation API=%s)",
   async (useNavigationApiIfAvailable) => {
     const navigation = new NavigationInstrumentation({
-      enabled: false,
       useNavigationApiIfAvailable,
     });
     const pipeline = await start({
@@ -269,30 +269,77 @@ it("keeps a delayed page callback's operation name aligned with its operation ID
 
 it("replays a startup exception with its original operation or none after navigation", async () => {
   let replay!: (original?: Context) => void;
+  const onErrorsEnabled = vi.fn<NonNullable<Parameters<typeof getInstrumentations>[1]>>((emit) => {
+    replay = (original) => emit([Date.now(), "Error", "startup", undefined, original], false);
+  });
   const instrumentations = await getInstrumentations(
     { errors: { enabled: true }, fetch: { enabled: false }, xhr: { enabled: false } },
-    (emit) => {
-      replay = (original) => emit([Date.now(), "Error", "startup", undefined, original], false);
-    },
+    onErrorsEnabled,
   );
+  expect(onErrorsEnabled).not.toHaveBeenCalled();
+  expect(instrumentations[0].getConfig().enabled).toBe(false);
   const pipeline = await start({
     instrumentations,
     pageView: { routeResolver: () => location.pathname },
   });
+  expect(onErrorsEnabled).toHaveBeenCalledOnce();
   const original = context.active();
   const originalName = location.pathname;
   history.pushState(null, "", "/login");
   replay(original);
   replay();
 
-  const [known, unknown] = pipeline.onLog.mock.calls
+  const exceptions = pipeline.onLog.mock.calls
     .map(([record]) => record)
-    .filter((record) => record.eventName === "exception")
-    .map((record) => logToEnvelope(record, "key").tags);
+    .filter((record) => record.eventName === "exception");
+  expect(exceptions).toHaveLength(2);
+  expect(exceptions.map((record) => record.severityNumber)).toEqual([
+    SeverityNumber.ERROR,
+    SeverityNumber.ERROR,
+  ]);
+  const [known, unknown] = exceptions.map((record) => logToEnvelope(record, "key").tags);
   expect(known["ai.operation.id"]).toBe(trace.getSpanContext(original)!.traceId);
   expect(known["ai.operation.name"]).toBe(originalName);
   expect(unknown["ai.operation.id"]).toBeUndefined();
   expect(unknown["ai.operation.name"]).toBeUndefined();
+  await handle!.instrumentations.setEnabled("errors", false);
+  await handle!.instrumentations.setEnabled("errors", true);
+  expect(onErrorsEnabled).toHaveBeenCalledOnce();
+});
+
+it("binds loader startup exceptions to their instance instead of the existing global logger", async () => {
+  const existing = await start();
+  const pipeline = createInMemoryPipeline();
+  const onLog = vi.spyOn(pipeline.logProcessor, "onEmit");
+  const onErrorsEnabled = vi.fn<NonNullable<Parameters<typeof getInstrumentations>[1]>>((emit) => {
+    emit([Date.now(), "Error", "loader startup"]);
+  });
+  const instrumentations = await getInstrumentations(
+    { errors: { enabled: true }, fetch: { enabled: false }, xhr: { enabled: false } },
+    onErrorsEnabled,
+  );
+  const loader = await useMicrosoftOpenTelemetry({
+    ...pipeline.options,
+    pageView: { enabled: false },
+    session: { enabled: false },
+    userContext: { enabled: false },
+    storage: { enabled: false },
+    instrumentations,
+  });
+  try {
+    expect(onErrorsEnabled).toHaveBeenCalledOnce();
+    const [record] = onLog.mock.calls.map(([record]) => record);
+    expect(record).toMatchObject({
+      eventName: "exception",
+      severityNumber: SeverityNumber.ERROR,
+      attributes: { "exception.type": "Error", "exception.message": "loader startup" },
+    });
+    expect(existing.onLog.mock.calls.some(([record]) => record.eventName === "exception")).toBe(
+      false,
+    );
+  } finally {
+    await loader.shutdown();
+  }
 });
 
 it("keeps the route name captured before page settlement", async () => {
