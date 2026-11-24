@@ -217,6 +217,24 @@ describe("adaptNativeInstrumentation", () => {
 });
 
 describe("getInstrumentations", () => {
+  it("accepts navigation timing selection separately from its empty native configuration", async () => {
+    expectTypeOf<InstrumentationOptions["navigationTiming"]>().toEqualTypeOf<
+      { enabled?: boolean } | undefined
+    >();
+    const selection = Object.freeze({ enabled: true });
+    const [instrumentation] = await getInstrumentations({ ...OFF, navigationTiming: selection });
+
+    expect(names([instrumentation])).toEqual([
+      "@opentelemetry/browser-instrumentation/navigation-timing",
+    ]);
+    expect(Reflect.get(instrumentation, "_config")).toEqual({});
+    expect(instrumentation.getConfig()).toEqual({ enabled: false });
+    expect((instrumentation as unknown as { isEnabled(): boolean }).isEnabled()).toBe(false);
+    expect(selection).toEqual({ enabled: true });
+    expect(await getInstrumentations({ ...OFF, navigationTiming: { enabled: false } })).toEqual([]);
+    expect(await getInstrumentations({ ...OFF, navigationTiming: {} })).toEqual([]);
+  });
+
   describe("enabling", () => {
     it("captures outgoing requests when called with no options at all", async () => {
       // Matches the Application Insights JavaScript SDK, where `disableAjaxTracking` and

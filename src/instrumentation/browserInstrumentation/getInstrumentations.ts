@@ -150,7 +150,8 @@ export async function getInstrumentations(
     pending.push(
       import("@opentelemetry/browser-instrumentation/experimental/navigation-timing").then(
         ({ NavigationTimingInstrumentation }) =>
-          new NavigationTimingInstrumentation({ ...options.navigationTiming, ...DEFERRED }),
+          // Selection belongs to the helper; the native constructor accepts no settings.
+          new NavigationTimingInstrumentation(),
       ),
     );
   }

@@ -4,22 +4,31 @@
 
 ```ts
 
+import { ConsoleInstrumentation } from '@opentelemetry/browser-instrumentation/experimental/console';
 import { ContextManager } from '@opentelemetry/api';
 import { DetectedResource } from '@opentelemetry/resources';
 import { DiagLogLevel } from '@opentelemetry/api';
+import { ErrorsInstrumentation } from '@opentelemetry/browser-instrumentation/experimental/errors';
 import { ExportResult } from '@opentelemetry/core';
-import { LoggerProvider } from '@opentelemetry/api-logs';
-import { LogRecord } from '@opentelemetry/api-logs';
+import { FetchInstrumentation } from '@opentelemetry/browser-instrumentation/experimental/fetch';
+import { LoggerProvider } from '@opentelemetry/api';
+import { LogRecord } from '@opentelemetry/api';
 import { LogRecordExporter } from '@opentelemetry/sdk-logs';
 import { LogRecordProcessor } from '@opentelemetry/sdk-logs';
+import { NavigationInstrumentation } from '@opentelemetry/browser-instrumentation/experimental/navigation';
+import { NavigationTimingInstrumentation } from '@opentelemetry/browser-instrumentation/experimental/navigation-timing';
 import { ReadableLogRecord } from '@opentelemetry/sdk-logs';
-import { ReadableSpan } from '@opentelemetry/sdk-trace-base';
+import { ReadableSpan } from '@opentelemetry/sdk-trace';
 import { Resource } from '@opentelemetry/resources';
 import { ResourceDetector } from '@opentelemetry/resources';
-import { SpanExporter } from '@opentelemetry/sdk-trace-base';
-import { SpanProcessor } from '@opentelemetry/sdk-trace-base';
+import { ResourceTimingInstrumentation } from '@opentelemetry/browser-instrumentation/experimental/resource-timing';
+import { SpanExporter } from '@opentelemetry/sdk-trace';
+import { SpanProcessor } from '@opentelemetry/sdk-trace';
 import { TextMapPropagator } from '@opentelemetry/api';
 import { TracerProvider } from '@opentelemetry/api';
+import { UserActionInstrumentation } from '@opentelemetry/browser-instrumentation/experimental/user-action';
+import { WebVitalsInstrumentation } from '@opentelemetry/browser-instrumentation/experimental/web-vitals';
+import { XhrInstrumentation } from '@opentelemetry/browser-instrumentation/experimental/xhr';
 
 // @public
 export class AzureMonitorLogRecordExporter implements LogRecordExporter {
@@ -76,6 +85,9 @@ export interface BrowserInstrumentation {
     setLoggerProvider?(provider: LoggerProvider): void;
     setTracerProvider(provider: TracerProvider): void;
 }
+
+// @public
+export type BrowserNativeInstrumentation = ConsoleInstrumentation | ErrorsInstrumentation | FetchInstrumentation | NavigationInstrumentation | NavigationTimingInstrumentation | ResourceTimingInstrumentation | UserActionInstrumentation | WebVitalsInstrumentation | XhrInstrumentation;
 
 // @public
 export interface MicrosoftOpenTelemetryBrowser {
@@ -174,10 +186,10 @@ export interface MicrosoftOpenTelemetryBrowserExceptionOptions {
 
 // @public
 export interface MicrosoftOpenTelemetryBrowserInstrumentations {
-    add(id: string, instrumentation: BrowserInstrumentation): Promise<void>;
+    add(id: string, instrumentation: BrowserInstrumentation | BrowserNativeInstrumentation): Promise<void>;
     get(id: string): BrowserInstrumentation | undefined;
     remove(id: string): Promise<void>;
-    replace(id: string, instrumentation: BrowserInstrumentation): Promise<void>;
+    replace(id: string, instrumentation: BrowserInstrumentation | BrowserNativeInstrumentation): Promise<void>;
     setEnabled(id: string, enabled: boolean): Promise<void>;
 }
 
@@ -190,7 +202,7 @@ export interface MicrosoftOpenTelemetryBrowserOptions {
     extensionConfig?: {
         AppInsightsCfgSyncPlugin?: MicrosoftOpenTelemetryBrowserConfigurationSyncOptions;
     };
-    instrumentations?: readonly BrowserInstrumentation[];
+    instrumentations?: readonly (BrowserInstrumentation | BrowserNativeInstrumentation)[];
     logRecordProcessors?: LogRecordProcessor[];
     pageView?: PageViewInstrumentationConfig;
     redactQueryParams?: readonly string[];

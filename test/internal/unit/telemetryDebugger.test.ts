@@ -1,8 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-import { diag, ROOT_CONTEXT, trace } from "@opentelemetry/api";
-import { logs } from "@opentelemetry/api-logs";
+import { diag, logs, ROOT_CONTEXT, trace } from "@opentelemetry/api";
 import { ExportResultCode, type ExportResult } from "@opentelemetry/core";
 import { detectResources, type Resource } from "@opentelemetry/resources";
 import {
@@ -10,8 +9,13 @@ import {
   SimpleLogRecordProcessor,
   type LogRecordExporter,
 } from "@opentelemetry/sdk-logs";
-import { TracerProvider, AlwaysOffSampler, type SpanProcessor } from "@opentelemetry/sdk-trace";
-import { SimpleSpanProcessor, type SpanExporter } from "@opentelemetry/sdk-trace-base";
+import {
+  TracerProvider,
+  AlwaysOffSampler,
+  SimpleSpanProcessor,
+  type SpanProcessor,
+  type SpanExporter,
+} from "@opentelemetry/sdk-trace";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createTelemetryDebugger,
@@ -57,12 +61,12 @@ function pipeline(debug: TelemetryDebugger, sampled = true, resource?: Resource)
     ...(sampled ? {} : { sampler: new AlwaysOffSampler() }),
     spanProcessors: [
       debug.wrapSpanProcessor(
-        new SimpleSpanProcessor(
-          debug.wrapSpanExporter({
+        new SimpleSpanProcessor({
+          exporter: debug.wrapSpanExporter({
             export: exportSpan,
             shutdown: async () => {},
           }),
-        ),
+        }),
       ),
     ],
   });

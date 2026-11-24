@@ -31,6 +31,12 @@ const dependencies: DependencyInstrumentationOptions = {
   enableResourceTiming: true,
 };
 void getInstrumentations({ dependencies });
+void getInstrumentations({ navigationTiming: { enabled: true } });
+void getInstrumentations({ navigationTiming: { enabled: false } });
+// @ts-expect-error Navigation timing selection requires a boolean.
+void getInstrumentations({ navigationTiming: { enabled: "true" } });
+// @ts-expect-error The native navigation timing instrumentation has no processing options.
+void getInstrumentations({ navigationTiming: { batchSize: 5 } });
 
 void OPENTELEMETRY_BROWSER_VERSION;
 void useMicrosoftOpenTelemetry;
@@ -42,9 +48,9 @@ export function initializeNative(fetch: FetchInstrumentation): void {
   void useMicrosoftOpenTelemetry({ instrumentations: [native] });
 }
 
-// @ts-expect-error Generic native implementations are outside the pinned bridge contract.
 void useMicrosoftOpenTelemetry({
   instrumentations: [
+    // @ts-expect-error Generic native implementations are outside the pinned bridge contract.
     { instrumentationName: "custom/native", enable() {}, disable() {}, isEnabled: () => false },
   ],
 });

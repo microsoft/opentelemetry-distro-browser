@@ -6,8 +6,8 @@
 
 import { LogRecordExporter } from '@opentelemetry/sdk-logs';
 import { LogRecordProcessor } from '@opentelemetry/sdk-logs';
-import { SpanExporter } from '@opentelemetry/sdk-trace-base';
-import { SpanProcessor } from '@opentelemetry/sdk-trace-base';
+import { SpanExporter } from '@opentelemetry/sdk-trace';
+import { SpanProcessor } from '@opentelemetry/sdk-trace';
 
 // @public
 export function createTelemetryDebugger(options?: TelemetryDebuggerOptions): TelemetryDebugger;

@@ -3,13 +3,12 @@ import {
   type BrowserInstrumentation,
 } from "@microsoft/opentelemetry-browser";
 import { createTelemetryDebugger } from "@microsoft/opentelemetry-browser/debug";
-import { ROOT_CONTEXT, trace, type Tracer } from "@opentelemetry/api";
-import type { Logger } from "@opentelemetry/api-logs";
+import { ROOT_CONTEXT, trace, type Logger, type Tracer } from "@opentelemetry/api";
 import { OTLPLogExporter } from "@opentelemetry/exporter-logs-otlp-http";
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
 import { resourceFromAttributes } from "@opentelemetry/resources";
 import { BatchLogRecordProcessor } from "@opentelemetry/sdk-logs";
-import { BatchSpanProcessor } from "@opentelemetry/sdk-trace-base";
+import { BatchSpanProcessor } from "@opentelemetry/sdk-trace";
 
 function required<T extends Element>(selector: string): T {
   const element = document.querySelector<T>(selector);
@@ -56,12 +55,12 @@ async function initialize(name: string): Promise<void> {
         instrumentations: [binding],
         spanProcessors: [
           debug.wrapSpanProcessor(
-            new BatchSpanProcessor(
-              debug.wrapSpanExporter(
+            new BatchSpanProcessor({
+              exporter: debug.wrapSpanExporter(
                 new OTLPTraceExporter({ url: `${location.origin}/v1/traces` }),
               ),
-              batchOptions,
-            ),
+              ...batchOptions,
+            }),
           ),
         ],
         logRecordProcessors: [

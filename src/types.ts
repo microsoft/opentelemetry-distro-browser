@@ -3,6 +3,7 @@
 
 import type {
   ContextManager,
+  DiagLogLevel,
   LoggerProvider,
   TextMapPropagator,
   TracerProvider,
@@ -26,10 +27,7 @@ import type {
   NavigationInstrumentation,
   NavigationInstrumentationConfig,
 } from "@opentelemetry/browser-instrumentation/experimental/navigation";
-import type {
-  NavigationTimingInstrumentation,
-  NavigationTimingInstrumentationConfig,
-} from "@opentelemetry/browser-instrumentation/experimental/navigation-timing";
+import type { NavigationTimingInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/navigation-timing";
 import type {
   ResourceTimingInstrumentation,
   ResourceTimingInstrumentationConfig,
@@ -149,8 +147,8 @@ export interface InstrumentationOptions {
   /** Configuration for `@opentelemetry/browser-instrumentation/experimental/navigation`. */
   navigation?: NavigationInstrumentationConfig & { enabled?: boolean };
 
-  /** Configuration for `@opentelemetry/browser-instrumentation/experimental/navigation-timing`. */
-  navigationTiming?: NavigationTimingInstrumentationConfig & { enabled?: boolean };
+  /** Selects navigation timing collection. Defaults to false; the native constructor has no options. */
+  navigationTiming?: { enabled?: boolean };
 
   /** Configuration for `@opentelemetry/browser-instrumentation/experimental/resource-timing`. */
   resourceTiming?: ResourceTimingInstrumentationConfig & { enabled?: boolean };

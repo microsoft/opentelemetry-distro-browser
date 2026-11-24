@@ -26,9 +26,8 @@ export function createConsolePipeline(
 ) {
   const exporter = new InMemoryLogRecordExporter();
   const provider = new LoggerProvider({ processors: [new Processor({ exporter })] });
-  const instrumentation = new ConsoleInstrumentation({ enabled: false, logMethods: ["warn"] });
-  instrumentation.setLoggerProvider(provider);
-  instrumentation.enable();
+  const instrumentation = new ConsoleInstrumentation({ logMethods: ["warn"] });
+  instrumentation.enable({ loggerProvider: provider });
   return { exporter, provider, instrumentation };
 }
 

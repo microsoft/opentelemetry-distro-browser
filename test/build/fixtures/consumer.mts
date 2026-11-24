@@ -36,9 +36,9 @@ export function initializeNative(fetch: FetchInstrumentation): void {
   void useMicrosoftOpenTelemetry({ instrumentations: [native] });
 }
 
-// @ts-expect-error The native bridge supports only the pinned upstream classes, not generic native implementations.
 void useMicrosoftOpenTelemetry({
   instrumentations: [
+    // @ts-expect-error The native bridge supports only the pinned upstream classes, not generic native implementations.
     { instrumentationName: "custom/native", enable() {}, disable() {}, isEnabled: () => false },
   ],
 });
@@ -47,7 +47,7 @@ export function debugPipeline(container: HTMLElement): TelemetryDebugger {
   const debug = createTelemetryDebugger({ container, performance: true });
   const spans = debug.wrapSpanExporter(new OTLPTraceExporter());
   const records = debug.wrapLogRecordExporter(new OTLPLogExporter());
-  debug.wrapSpanProcessor(new BatchSpanProcessor(spans));
+  debug.wrapSpanProcessor(new BatchSpanProcessor({ exporter: spans }));
   debug.wrapLogRecordProcessor(new BatchLogRecordProcessor({ exporter: records }));
   return debug;
 }
@@ -61,6 +61,12 @@ export const dependencies: DependencyInstrumentationOptions = {
   enableResourceTiming: true,
 };
 void getInstrumentations({ dependencies });
+void getInstrumentations({ navigationTiming: { enabled: true } });
+void getInstrumentations({ navigationTiming: { enabled: false } });
+// @ts-expect-error Navigation timing only accepts the distribution's boolean selection flag.
+void getInstrumentations({ navigationTiming: { enabled: "true" } });
+// @ts-expect-error The native navigation timing instrumentation has no processing options.
+void getInstrumentations({ navigationTiming: { enabled: true, batchSize: 5 } });
 // @ts-expect-error Dependency limits must be numeric.
 void getInstrumentations({ dependencies: { maxDependenciesPerView: "500" } });
 
