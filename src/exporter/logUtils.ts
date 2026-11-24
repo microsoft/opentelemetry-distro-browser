@@ -1,7 +1,6 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-import type { Attributes } from "@opentelemetry/api";
 import type { ReadableLogRecord } from "@opentelemetry/sdk-logs";
 import { generatePageViewId } from "../instrumentation/pageView/pageViewContext.js";
 import {
@@ -419,7 +418,7 @@ export function logToEnvelope(
   instrumentationKey: string,
 ): AzureMonitorEnvelope<MessageData | ExceptionData | PageViewData | CustomEventData | MetricData> {
   const customFields = mapAttributes(
-    logRecord.attributes as Attributes,
+    logRecord.attributes,
     isPageView(logRecord.eventName)
       ? promotedPageViewAttributes
       : logRecord.eventName === "browser.page_visit"
@@ -427,12 +426,12 @@ export function logToEnvelope(
         : promotedLogAttributes,
     true,
   );
-  const sampleRate = getSampleRate(logRecord.attributes as Attributes);
+  const sampleRate = getSampleRate(logRecord.attributes);
   const tags = createTags(
     logRecord.spanContext?.traceId,
     logRecord.spanContext,
     logRecord.resource.attributes["service.name"],
-    logRecord.attributes as Attributes,
+    logRecord.attributes,
     logRecord.resource.attributes,
     getManagedOperationName(logRecord),
   );

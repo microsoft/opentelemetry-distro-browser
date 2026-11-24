@@ -11,6 +11,7 @@ import {
   hrTimeToMilliseconds,
   mapAttributes,
   millisecondsToTimeSpan,
+  serializeAttribute,
   truncateToLength,
 } from "./common.js";
 import {
@@ -99,7 +100,7 @@ export function spanToEnvelope(
       duration,
       success: spanSucceeded(span, statusCode),
       responseCode: String(statusCode),
-      url: url === undefined ? undefined : String(url),
+      url: url === undefined ? undefined : serializeAttribute(url),
       ...customFields,
     };
     return createEnvelope(
@@ -115,7 +116,7 @@ export function spanToEnvelope(
   let dependencyName = span.name;
   if (method && url) {
     try {
-      dependencyName = `${String(method)} ${new URL(String(url)).pathname}`;
+      dependencyName = `${serializeAttribute(method)} ${new URL(serializeAttribute(url)).pathname}`;
     } catch {
       dependencyName = span.name;
     }
@@ -123,7 +124,7 @@ export function spanToEnvelope(
   const serverAddress = span.attributes[SERVER_ADDRESS];
   const serverPort = span.attributes[SERVER_PORT];
   const target = serverAddress
-    ? `${String(serverAddress)}${serverPort ? `:${String(serverPort)}` : ""}`
+    ? `${serializeAttribute(serverAddress)}${serverPort ? `:${serializeAttribute(serverPort)}` : ""}`
     : undefined;
   let dependencyType =
     span.kind === SpanKind.INTERNAL && span.parentSpanContext ? "InProc" : "Dependency";
@@ -139,7 +140,7 @@ export function spanToEnvelope(
     data:
       url === undefined
         ? undefined
-        : truncateToLength(String(url), MaxPropertyLengths.THIRTEEN_BIT),
+        : truncateToLength(serializeAttribute(url), MaxPropertyLengths.THIRTEEN_BIT),
     target: target === undefined ? undefined : truncateToLength(target, MaxPropertyLengths.TEN_BIT),
     ...customFields,
   };

@@ -6,7 +6,7 @@ import { SDK_INFO } from "@opentelemetry/core";
 import { resourceFromAttributes } from "@opentelemetry/resources";
 import type { ReadableSpan } from "@opentelemetry/sdk-trace";
 import { ATTR_TELEMETRY_SDK_VERSION } from "@opentelemetry/semantic-conventions";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { setManagedOperationName } from "../../../src/context/operationName.js";
 import { spanToEnvelope, spanToEnvelopes } from "../../../src/exporter/spanUtils.js";
 import { OPENTELEMETRY_BROWSER_VERSION } from "../../../src/shared/constants.js";
@@ -239,6 +239,127 @@ describe("Azure Monitor span envelope mapping", () => {
           measurements: { retries: 2 },
         },
       },
+    });
+  });
+
+  describe.each([SpanKind.CLIENT, SpanKind.SERVER, SpanKind.CONSUMER])(
+    "URL attribute serialization (kind=%i)",
+    (kind) => {
+      it.each([
+        [undefined, undefined],
+        ["", ""],
+        [null, "null"],
+        [0, "0"],
+        [false, "false"],
+        [42, "42"],
+        [true, "true"],
+        [{ path: "/items" }, '{"path":"/items"}'],
+        [["https://example.test/items"], '["https://example.test/items"]'],
+      ])("serializes %j without default object stringification", (value, expected) => {
+        const attributes = Object.freeze({ "url.full": value });
+        const envelope = spanToEnvelope(makeSpan({ kind, attributes }), instrumentationKey);
+
+        if (kind === SpanKind.CLIENT) {
+          expect(envelope.data.baseData).toMatchObject({ data: expected });
+        } else {
+          expect(envelope.data.baseData).toMatchObject({ url: expected });
+        }
+        expect(attributes["url.full"]).toBe(value);
+      });
+
+      it("contains serialization failures without invoking object string conversion", () => {
+        const circular: Record<string, unknown> = {};
+        circular.self = circular;
+        const toString = vi.fn(() => {
+          throw new Error("string conversion must not run");
+        });
+        const toJSON = vi.fn(() => {
+          throw new Error("serialization failed");
+        });
+        const withoutPrototype = Object.create(null) as Record<string, unknown>;
+        withoutPrototype.toString = toString;
+        for (const [value, expected] of [
+          [circular, ""],
+          [{ toJSON }, ""],
+          [withoutPrototype, "{}"],
+        ] as const) {
+          const envelope = spanToEnvelope(
+            makeSpan({ kind, attributes: { "url.full": value } }),
+            instrumentationKey,
+          );
+
+          expect(envelope.data.baseData).toMatchObject(
+            kind === SpanKind.CLIENT ? { data: expected } : { url: expected },
+          );
+        }
+        expect(toJSON).toHaveBeenCalledOnce();
+        expect(toString).not.toHaveBeenCalled();
+      });
+    },
+  );
+
+  it.each([undefined, "", null, 0, false, "GET", 42, true])(
+    "preserves primitive HTTP method and target conversion (%j)",
+    (value) => {
+      const envelope = spanToEnvelope(
+        makeSpan({
+          attributes: {
+            "http.request.method": value,
+            "url.full": "https://example.test/items",
+            "server.address": value,
+            "server.port": value,
+          },
+        }),
+        instrumentationKey,
+      );
+
+      expect(envelope.data.baseData).toMatchObject({
+        name: value ? `${String(value)} /items` : "GET /items/:id",
+        type: value ? "Http" : "Dependency",
+        target: value ? `${String(value)}:${String(value)}` : undefined,
+      });
+    },
+  );
+
+  it("serializes structured HTTP attributes using the same policy as log attributes", () => {
+    const toString = vi.fn(() => {
+      throw new Error("string conversion must not run");
+    });
+    const attributes = Object.freeze({
+      "http.request.method": { method: "GET", toString },
+      "url.full": "https://example.test/items",
+      "server.address": { host: "example.test", toString },
+      "server.port": [8443],
+    });
+    const envelope = spanToEnvelope(makeSpan({ attributes }), instrumentationKey);
+
+    expect(envelope.data.baseData).toMatchObject({
+      name: '{"method":"GET"} /items',
+      type: "Http",
+      data: "https://example.test/items",
+      target: '{"host":"example.test"}:[8443]',
+    });
+    expect(toString).not.toHaveBeenCalled();
+    expect(attributes["server.port"]).toEqual([8443]);
+  });
+
+  it("retains dependency name fallback and URL/target length limits", () => {
+    const envelope = spanToEnvelope(
+      makeSpan({
+        name: "original dependency",
+        attributes: {
+          "http.request.method": "GET",
+          "url.full": "x".repeat(9_000),
+          "server.address": "h".repeat(2_000),
+        },
+      }),
+      instrumentationKey,
+    );
+
+    expect(envelope.data.baseData).toMatchObject({
+      name: "original dependency",
+      data: "x".repeat(8_192),
+      target: "h".repeat(1_024),
     });
   });
 
