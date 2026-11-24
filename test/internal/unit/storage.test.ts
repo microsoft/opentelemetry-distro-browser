@@ -1000,6 +1000,99 @@ it.each(["old-user", "new-user"])(
   },
 );
 
+it.each(
+  (["span", "log"] as const).flatMap((signal) =>
+    [false, true].flatMap((disableCookieDefer) =>
+      ["old-user", "new-user"].map((owner) => ({ signal, disableCookieDefer, owner })),
+    ),
+  ),
+)(
+  "keeps failed identity opt-in unresolved across cookie access changes ($signal, defer disabled=$disableCookieDefer, owner=$owner)",
+  async ({ signal, disableCookieDefer, owner }) => {
+    const storage = new MemoryStorage();
+    vi.spyOn(window, "localStorage", "get").mockReturnValue(storage);
+    const backup = JSON.stringify({
+      id: "old-session",
+      startTimestamp: Date.now(),
+      anonymousId: "old-user",
+    });
+    storage.setItem("opentelemetry-session", backup);
+    const values = new Map([["ai_user", `${owner}|${new Date().toISOString()}`]]);
+    let failing = true;
+    const cookieCfg = {
+      disableCookieDefer,
+      getCookie(name: string) {
+        if (failing && name === "ai_user") throw new Error("unavailable");
+        return values.get(name) ?? "";
+      },
+      setCookie: (name: string, value: string) => {
+        values.set(name, value.split(";")[0]!);
+      },
+      delCookie: (name: string) => values.delete(name),
+    };
+    const consumer = await initialize({ userContext: { enabled: false }, cookieCfg });
+    consumer.handle.userContext.setEnabled(true);
+    consumer.emit({}, signal);
+    const cookies = consumer.handle.getCookieMgr();
+    cookies.setEnabled(false);
+    // A redundant opt-in sees only the disabled manager's synthetic read, not ai_user.
+    consumer.handle.userContext.setEnabled(true);
+    consumer.emit({}, signal);
+    window.dispatchEvent(new PageTransitionEvent("pagehide"));
+    expect(storage.getItem("opentelemetry-session")).toBe(backup);
+    cookies.setEnabled(true);
+    expect(values.has("ai_session")).toBe(false);
+    await consumer.handle.shutdown();
+    expect(storage.getItem("opentelemetry-session")).toBe(backup);
+
+    failing = false;
+    const reloaded = await initialize({ cookieCfg });
+    const next = reloaded.emit({}, signal);
+    expect(next["enduser.pseudo.id"]).toBe(owner);
+    if (owner === "old-user") expect(next["session.id"]).toBe("old-session");
+    else expect(next["session.id"]).not.toBe("old-session");
+  },
+);
+
+it.each(["old-user", "new-user"])(
+  "suspends an already-written backup renewal after failed opt-in and recovers for %s",
+  async (owner) => {
+    const storage = new MemoryStorage();
+    vi.spyOn(window, "localStorage", "get").mockReturnValue(storage);
+    const backup = JSON.stringify({
+      id: "old-session",
+      startTimestamp: Date.now(),
+      anonymousId: "old-user",
+    });
+    storage.setItem("opentelemetry-session", backup);
+    const values = new Map([["ai_user", `${owner}|${new Date().toISOString()}`]]);
+    let failing = true;
+    const cookieCfg = {
+      getCookie(name: string) {
+        if (failing && name === "ai_user") throw new Error("unavailable");
+        return values.get(name) ?? "";
+      },
+      setCookie: (name: string, value: string) => {
+        values.set(name, value.split(";")[0]!);
+      },
+      delCookie: (name: string) => values.delete(name),
+    };
+    const consumer = await initialize({ userContext: { enabled: false }, cookieCfg });
+    expect(consumer.emit()["session.id"]).toBe("old-session");
+    expect(values.get("ai_session")).toContain("old-session|");
+    consumer.handle.userContext.setEnabled(true);
+    expect(values.has("ai_session")).toBe(false);
+    await consumer.handle.shutdown();
+    expect(storage.getItem("opentelemetry-session")).toBe(backup);
+    failing = false;
+    const reloaded = await initialize({ cookieCfg });
+    const next = reloaded.emit();
+    expect(next["enduser.pseudo.id"]).toBe(owner);
+    if (owner === "old-user") expect(next["session.id"]).toBe("old-session");
+    else expect(next["session.id"]).not.toBe("old-session");
+  },
+);
+
 it("cancels a backup-derived deferred cookie before identity opt-in and cookie enable", async () => {
   const storage = new MemoryStorage();
   vi.spyOn(window, "localStorage", "get").mockReturnValue(storage);

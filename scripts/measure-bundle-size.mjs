@@ -23,7 +23,7 @@ export const entryPointBudgets = {
     brotliBytes: 5 * 1024,
   },
   ".": {
-    rawBytes: 175.25 * 1024,
+    rawBytes: 175.75 * 1024,
     gzipBytes: 55.5 * 1024,
     brotliBytes: 48.5 * 1024,
   },
@@ -43,9 +43,9 @@ export const entryPointBudgets = {
 
 // CDN bundles inline supported instrumentations but exclude npm-only Click Analytics.
 const sdkBrowserBundleBudget = {
-  rawBytes: 204.25 * 1024,
+  rawBytes: 204.75 * 1024,
   gzipBytes: 66 * 1024,
-  brotliBytes: 57 * 1024,
+  brotliBytes: 57.25 * 1024,
 };
 const instrumentationsBrowserBundleBudget = {
   rawBytes: 63 * 1024,

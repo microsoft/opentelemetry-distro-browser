@@ -133,6 +133,43 @@ it.each([false, true])(
   },
 );
 
+it.each(["result", "throw"] as const)(
+  "retains an unresolved owner after a failed %s read through disabled synthetic reads",
+  (failure) => {
+    let access = true;
+    let failing = true;
+    const cookies = {
+      ...fakeManager().cookies,
+      isAccessEnabled: () => access,
+      read: vi.fn(() => {
+        if (failing) {
+          if (failure === "throw") throw new Error("unavailable");
+          return { success: false as const };
+        }
+        return {
+          success: true as const,
+          value: encode({ anonymousId: "user", acquisitionTimestamp: 42 }),
+        };
+      }),
+    };
+    const identity = createCookieUserContext(false, cookies);
+    identity.context.setEnabled(true);
+    expect(identity.getSessionOwner()).toBeUndefined();
+    access = false;
+    failing = false;
+    cookies.read.mockClear();
+    identity.context.setEnabled(true);
+    expect(identity.getSessionOwner()).toBeUndefined();
+    expect(cookies.read).not.toHaveBeenCalled();
+    access = true;
+    expect(identity.provider.getAnonymousUserId()).toBe("user");
+    expect(identity.getSessionOwner()).toBe("user");
+    identity.context.setEnabled(false);
+    expect(identity.getSessionOwner()).toBeNull();
+    identity.shutdown();
+  },
+);
+
 it.each(["clear", "purge"] as const)(
   "contains legacy %s cleanup failures independently of cookie cleanup failures",
   (action) => {

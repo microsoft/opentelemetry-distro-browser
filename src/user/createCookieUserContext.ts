@@ -31,6 +31,7 @@ export function createCookieUserContext(
   initialEnabled: boolean | undefined,
   cookies: MicrosoftOpenTelemetryBrowserCookieManager & {
     read?: (name: string) => CookieReadResult;
+    isAccessEnabled?: () => boolean;
   },
   { user: anonymousCookie, authenticated: authenticatedCookie } = {
     user: "ai_user",
@@ -51,6 +52,7 @@ export function createCookieUserContext(
   let anonymousValue = "";
   let anonymousIdentityEnabled = false;
   let anonymousOwner: string | undefined;
+  let anonymousReadFailed = false;
   let newUserNotified = false;
   let authenticatedUserId: string | undefined;
   let accountId: string | undefined;
@@ -136,9 +138,18 @@ export function createCookieUserContext(
   }
 
   function readAnonymous(): CookieReadResult {
-    return cookies.read
-      ? cookies.read(anonymousCookie)
-      : { success: true, value: cookies.get(anonymousCookie) };
+    // A disabled manager's pending-value read is not recovery from a failed browser read.
+    if (anonymousReadFailed && cookies.isAccessEnabled?.() === false) return { success: false };
+    try {
+      const result = cookies.read
+        ? cookies.read(anonymousCookie)
+        : { success: true as const, value: cookies.get(anonymousCookie) };
+      anonymousReadFailed = !result.success;
+      return result;
+    } catch {
+      anonymousReadFailed = true;
+      return { success: false };
+    }
   }
 
   function refreshAnonymous(result = readAnonymous()): void {
@@ -237,9 +248,13 @@ export function createCookieUserContext(
 
   return {
     context,
-    // Cached state only, including during shutdown backup. Null means identity is opted out;
-    // undefined means a permitted identity has not been resolved yet. Never retry a read here.
-    getSessionOwner: () => (!enabled || !canReadAnonymousCookie ? null : anonymousOwner),
+    // Cached state and policy only, including during shutdown backup. Revoking cookie access
+    // must not turn a failed permitted identity read into permission to reuse a backup.
+    getSessionOwner: () =>
+      !enabled || !canReadAnonymousCookie
+        ? null
+        : (anonymousOwner ??
+          (!anonymousReadFailed && cookies.isAccessEnabled?.() === false ? null : undefined)),
     provider: {
       getAnonymousUserId() {
         if (stopped) return undefined;

@@ -478,6 +478,46 @@ it.each(["index.js", "index.min.js"])(
   },
 );
 
+it.each(
+  ["index.js", "index.min.js"].flatMap((file) =>
+    [false, true].map((renewFirst) => ({ file, renewFirst })),
+  ),
+)(
+  "does not promote a backup across failed identity opt-in and cookie access changes through $file (renew first=$renewFirst)",
+  async ({ file, renewFirst }) => {
+    const backup = JSON.stringify({
+      id: "old-session",
+      startTimestamp: Date.now(),
+      anonymousId: "old-user",
+    });
+    localStorage.setItem("opentelemetry-session", backup);
+    document.cookie = `ai_user=new-user|${new Date().toISOString()}; path=/`;
+    const first = await initializeCookieConsumer(file, {
+      userContext: { enabled: false },
+      cookieCfg: {
+        getCookie(name) {
+          if (name === "ai_user") throw new Error("unavailable");
+          const value = document.cookie.split("; ").find((part) => part.startsWith(`${name}=`));
+          return value?.slice(name.length + 1) ?? "";
+        },
+      },
+    });
+    if (renewFirst) expect((await first.emit())["session.id"]).toBe("old-session");
+    first.handle.userContext.setEnabled(true);
+    first.handle.getCookieMgr().setEnabled(false);
+    first.handle.userContext.setEnabled(true);
+    await first.emit();
+    first.handle.getCookieMgr().setEnabled(true);
+    expect(readCookie("ai_session")).toBeNull();
+    await first.handle.shutdown();
+    expect(localStorage.getItem("opentelemetry-session")).toBe(backup);
+    const reloaded = await initializeCookieConsumer(file, {});
+    const next = await reloaded.emit();
+    expect(next["enduser.pseudo.id"]).toBe("new-user");
+    expect(next["session.id"]).not.toBe("old-session");
+  },
+);
+
 it.each(["index.js", "index.min.js"])(
   "rejects mixed cookie naming before persistence access through %s",
   async (file) => {

@@ -285,7 +285,7 @@ export function createSession(
   let manager = createManager();
   function discardRestoredSession(): void {
     if (!restoredFromBackup) return;
-    rejectedCookieValue = lastCookieValue;
+    rejectedCookieValue = lastCookieValue ?? rejectedCookieValue;
     if (lastCookieValue !== undefined) {
       try {
         cookies?.cancelPending?.(cookieName, lastCookieValue);
@@ -309,6 +309,19 @@ export function createSession(
   }
   function refreshOwner(): void {
     const owner = readOwner();
+    if (restoredFromBackup && owner === undefined && lastCookieValue !== undefined) {
+      // An earlier identity-disabled activity may already have renewed this backup. Suspend
+      // that exact renewal too, so reload cannot treat it as an owner-validated cookie.
+      rejectedCookieValue = lastCookieValue;
+      try {
+        cookies?.cancelPending?.(cookieName, lastCookieValue);
+      } catch {
+        // Keep the rejection for a later conditional cleanup if a custom manager fails.
+      }
+      lastCookieValue = undefined;
+      lastCookieWrite = undefined;
+      removeRejectedCookie();
+    }
     if (restoredFromBackup && typeof owner === "string" && owner !== sessionOwner) {
       ignoreBackup = true;
       discardRestoredSession();

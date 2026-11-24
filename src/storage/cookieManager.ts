@@ -78,10 +78,12 @@ export function createCookieManager(
     string,
     { value: string; formatted: string; remove: boolean; scope?: string }
   >();
+  const pendingCleanup = new Map<string, { value: string; replace?: () => boolean }>();
   let enabled = settings.enabled !== false;
   let everEnabled = enabled;
   let stopped = false;
   let replaying = false;
+  let mutationVersion = 0;
   let inFlightReplay:
     | {
         name: string;
@@ -107,6 +109,7 @@ export function createCookieManager(
   }
 
   function write(name: string, formatted: string, remove: boolean): boolean {
+    mutationVersion++;
     return attempt(() => {
       const hook = remove ? settings.delCookie : settings.setCookie;
       if (hook) hook(name, formatted);
@@ -147,12 +150,15 @@ export function createCookieManager(
     remove: boolean,
     scope?: string,
   ): boolean {
+    mutationVersion++;
+    const pendingRemoval = pendingCleanup.get(name);
     if (enabled) {
       // A newer explicit operation supersedes even an in-flight or failed replay.
       pending.delete(name);
       const replay = inFlightReplay?.name === name ? inFlightReplay : undefined;
       const cleanup = replay?.cleanup;
       const accepted = write(name, formatted, remove);
+      if (accepted && pendingCleanup.get(name) === pendingRemoval) pendingCleanup.delete(name);
       if (accepted && replay?.cancelledValue !== undefined) {
         // If the outer hook later writes the cancelled value, replay the newest accepted operation.
         replay.replacement = () => write(name, formatted, remove);
@@ -163,6 +169,7 @@ export function createCookieManager(
       return accepted;
     }
     if (settings.disableCookieDefer) return false;
+    pendingCleanup.delete(name);
     if (!remove && inFlightReplay?.name === name) inFlightReplay.cleanup = undefined;
     // Delete before re-inserting so flush order also reflects the latest operation per name.
     pending.delete(name);
@@ -196,11 +203,20 @@ export function createCookieManager(
     if (!enabled || stopped) return false;
     // A re-entrant caller cannot establish the final cookie value before the replay returns.
     if (inFlightReplay?.name === name) return false;
+    const cleanup = pendingCleanup.get(name);
+    const version = mutationVersion;
     const current = read(name);
+    // Hooks can change access or write a newer cookie before returning their earlier observation.
+    if (!enabled || stopped || version !== mutationVersion) return false;
     // Failed/ignored reads are not evidence that an accepted old write still owns the cookie.
     if (!current.success) return false;
-    if (current.value !== value) return true;
-    return replace ? replace() : write(name, deletion(), true);
+    const replacement = replace ?? (cleanup?.value === value ? cleanup.replace : undefined);
+    const success =
+      current.value !== value || (replacement ? replacement() : write(name, deletion(), true));
+    if (success && cleanup?.value === value && pendingCleanup.get(name) === cleanup) {
+      pendingCleanup.delete(name);
+    }
+    return success;
   }
 
   return {
@@ -211,6 +227,7 @@ export function createCookieManager(
     cancelPending(name, value) {
       const operation = pending.get(name);
       if (operation && !operation.remove && operation.value === value) {
+        mutationVersion++;
         pending.delete(name);
         if (inFlightReplay?.name === name) {
           inFlightReplay.cancelledValue = value;
@@ -236,11 +253,17 @@ export function createCookieManager(
       ),
     setEnabled(value) {
       if (stopped || typeof value !== "boolean") return;
+      if (enabled !== value) mutationVersion++;
       enabled = value;
       everEnabled ||= value;
       if (enabled && !replaying) {
         replaying = true;
         try {
+          // Retry interrupted conditional cleanup before replaying newer deferred operations.
+          for (const [name, cleanup] of Array.from(pendingCleanup)) {
+            if (stopped || !enabled) break;
+            if (pendingCleanup.get(name) === cleanup) removeIfValue(name, cleanup.value);
+          }
           // Snapshot for a bounded pass; keep failures and unattempted operations for recovery.
           for (const [name, operation] of Array.from(pending)) {
             if (stopped || !enabled) break;
@@ -253,6 +276,12 @@ export function createCookieManager(
             // unless a newer same-name write superseded it while the hook was running.
             replay?.cleanup?.();
             if (replay?.cancelledValue !== undefined) {
+              if (!stopped) {
+                pendingCleanup.set(name, {
+                  value: replay.cancelledValue,
+                  replace: replay.replacement,
+                });
+              }
               removeIfValue(name, replay.cancelledValue, replay.replacement);
             }
             // Hooks (including diagnostics) can re-enter, replace, purge, or stop the manager.
@@ -318,7 +347,9 @@ export function createCookieManager(
     },
     purge(name, path) {
       // Cleanup bypasses enabled, ignored/blocked lists and shutdown, and cannot resurrect a write.
+      mutationVersion++;
       pending.delete(name);
+      pendingCleanup.delete(name);
       if (!validScope(name, path) || !validPrefixScope(name, path)) return false;
       const formatted = deletion(attributes(settings.domain, path || settings.path || "/"));
       if (inFlightReplay?.name === name) {
@@ -327,9 +358,11 @@ export function createCookieManager(
       return write(name, formatted, true);
     },
     shutdown() {
+      mutationVersion++;
       stopped = true;
       enabled = false;
       pending.clear();
+      pendingCleanup.clear();
       replayFailureHandler = undefined;
     },
   };

@@ -434,7 +434,12 @@ it.each([false, true])(
     expect(values.get(key)).toContain("backup|");
     failing = false;
     session.backup();
-    expect(values.has(key)).toBe(false);
+    if (nested) {
+      // The cancelled outer replay must restore the newer nested write, not delete it.
+      const current = decode(values.get(key)!);
+      expect(current.id).not.toBe("backup");
+      expect(JSON.parse(storage.setItem.mock.calls.at(-1)![1]).id).toBe(current.id);
+    } else expect(values.has(key)).toBe(false);
     session.shutdown();
     cookies.shutdown();
   },

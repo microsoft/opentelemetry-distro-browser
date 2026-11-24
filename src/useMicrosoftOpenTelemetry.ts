@@ -269,10 +269,7 @@ export async function useMicrosoftOpenTelemetry(
           cookieNames.session,
           () => configuration.snapshot().session,
           cookieNames.sessionBackup,
-          () => {
-            const owner = userContext.getSessionOwner();
-            return owner === undefined && !cookies.isAccessEnabled() ? null : owner;
-          },
+          () => userContext.getSessionOwner(),
         )
       : undefined;
   getSharedRegistry();
