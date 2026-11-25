@@ -1,5 +1,4 @@
-import { trace } from "@opentelemetry/api";
-import { logs } from "@opentelemetry/api-logs";
+import { logs, trace } from "@opentelemetry/api";
 import type { MicrosoftOpenTelemetryBrowser } from "@microsoft/opentelemetry-browser";
 
 export function startApplication(telemetry: MicrosoftOpenTelemetryBrowser): void {

@@ -53,13 +53,13 @@ Wrap the processors and their exporters before calling `useMicrosoftOpenTelemetr
 ```ts
 import { createTelemetryDebugger } from "@microsoft/opentelemetry-browser/debug";
 import { AzureMonitorSpanExporter } from "@microsoft/opentelemetry-browser";
-import { BatchSpanProcessor } from "@opentelemetry/sdk-trace-base";
+import { BatchSpanProcessor } from "@opentelemetry/sdk-trace";
 
 const debug = createTelemetryDebugger({ container, performance: true });
 const processor = debug.wrapSpanProcessor(
-  new BatchSpanProcessor(
-    debug.wrapSpanExporter(new AzureMonitorSpanExporter({ connectionString })),
-  ),
+  new BatchSpanProcessor({
+    exporter: debug.wrapSpanExporter(new AzureMonitorSpanExporter({ connectionString })),
+  }),
 );
 // Pass processor in spanProcessors. Use the corresponding log wrappers for logs.
 // After SDK shutdown, call debug.dispose() to remove the view and retained data.

@@ -8,7 +8,7 @@ import type { ReadableSpan } from "@opentelemetry/sdk-trace";
 import { ATTR_TELEMETRY_SDK_VERSION } from "@opentelemetry/semantic-conventions";
 import { describe, expect, it, vi } from "vitest";
 import { setManagedOperationName } from "../../../src/context/operationName.js";
-import { spanToEnvelope, spanToEnvelopes } from "../../../src/exporter/spanUtils.js";
+import { spanSucceeded, spanToEnvelope, spanToEnvelopes } from "../../../src/exporter/spanUtils.js";
 import { OPENTELEMETRY_BROWSER_VERSION } from "../../../src/shared/constants.js";
 import { AZURE_MONITOR_SAMPLE_RATE } from "../../../src/sampling.js";
 import { TEST_INSTRUMENTATION_KEY as instrumentationKey } from "../../fixtures/azureMonitor.js";
@@ -18,6 +18,34 @@ const spanContext = createSpanContext();
 const parentSpanContext = { ...spanContext, spanId: "0000000000000002" };
 
 describe("Azure Monitor span envelope mapping", () => {
+  describe.each([SpanKind.CLIENT, SpanKind.SERVER, SpanKind.CONSUMER])(
+    "HTTP status values (kind=%i)",
+    (kind) => {
+      it.each([
+        [200, "200", true],
+        [503, "503", false],
+        ["204", "204", true],
+        ["404", "404", false],
+        [undefined, "0", true],
+        [null, "0", true],
+        [true, "0", true],
+        [NaN, "0", true],
+        [Infinity, "0", true],
+        ["Infinity", "0", true],
+        ["invalid", "0", true],
+        [[503], "0", true],
+        [{ toString: "shadowed", valueOf: "shadowed" }, "0", true],
+      ])("maps %j without object coercion", (value, code, success) => {
+        const span = makeSpan({ kind, attributes: { "http.response.status_code": value } });
+        expect(spanSucceeded(span)).toBe(success);
+        expect(spanToEnvelope(span, instrumentationKey).data.baseData).toMatchObject({
+          success,
+          ...(kind === SpanKind.CLIENT ? { resultCode: code } : { responseCode: code }),
+        });
+      });
+    },
+  );
+
   it.each([
     SpanKind.CLIENT,
     SpanKind.SERVER,

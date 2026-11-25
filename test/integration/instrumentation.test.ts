@@ -84,7 +84,6 @@ for (const file of ["index.js", "index.min.js"]) {
     vi.stubGlobal("fetch", fetchRequest);
     const navigation = adapted(
       new NavigationInstrumentation({
-        enabled: false,
         sanitizeUrl: (url) => new URL(url).pathname,
         applyCustomLogRecordData: (record) => {
           record.attributes = { ...record.attributes, "test.registration": true };
@@ -93,7 +92,6 @@ for (const file of ["index.js", "index.min.js"]) {
     );
     const http = adapted(
       new FetchInstrumentation({
-        enabled: false,
         sanitizeUrl: (url) => new URL(url).pathname,
         ignoreUrls: [/\/excluded$/],
       }),
@@ -453,8 +451,8 @@ for (const file of ["index.js", "index.min.js"]) {
           redactQueryParams: configured ? [index === 0 ? "alpha" : "beta"] : undefined,
           // Independently constructed upstream instances must receive the same protection.
           instrumentations: [
-            adapted(new FetchInstrumentation({ enabled: false, sanitizeUrl })),
-            adapted(new XhrInstrumentation({ enabled: false, sanitizeUrl })),
+            adapted(new FetchInstrumentation({ sanitizeUrl })),
+            adapted(new XhrInstrumentation({ sanitizeUrl })),
           ],
         });
         handles.add(handle);
@@ -517,10 +515,7 @@ for (const file of ["index.js", "index.min.js"]) {
     const distro = await loadDistro();
     const pipeline = createInMemoryPipeline();
     const navigation = new NavigationInstrumentation();
-    navigation.enable({
-      loggerProvider: logs.getLoggerProvider(),
-      tracerProvider: trace.getTracerProvider(),
-    });
+    navigation.enable();
     const enable = vi.spyOn(navigation, "enable");
     try {
       await expect(

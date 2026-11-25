@@ -5,7 +5,7 @@ import { createServer } from "node:http";
 import { createRequire } from "node:module";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { context, diag, logs, propagation, SpanKind, trace } from "@opentelemetry/api";
+import * as mainApi from "@opentelemetry/api";
 import { startBrowserSdk } from "@opentelemetry/browser-sdk";
 import { OTLPLogExporter } from "@opentelemetry/exporter-logs-otlp-http";
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
@@ -32,6 +32,7 @@ const pkg = JSON.parse(await readFile(new URL("package.json", root), "utf8"));
 const require = createRequire(import.meta.url);
 const esmBundle = "dist/esm/index";
 const sharedApiPackages = ["@opentelemetry/api"];
+const { context, diag, logs, propagation, SpanKind, trace } = mainApi;
 
 function findUndeclaredRequireCalls(code) {
   const source = ts.createSourceFile("bundle.js", code, ts.ScriptTarget.Latest, true);
@@ -511,11 +512,19 @@ test("browser bundles use only ES2022 built-ins apart from documented exceptions
   }
 });
 
-async function exerciseNpmPackage(distro) {
+function disableApi(api) {
+  api.trace.disable();
+  api.logs.disable();
+  api.propagation.disable();
+  api.context.disable();
+  api.diag.disable();
+}
+
+async function exerciseNpmPackage(distro, correspondingApi = mainApi) {
   const spans = new InMemorySpanExporter();
   const records = new InMemoryLogRecordExporter();
-  const tracer = trace.getTracer("package-consumer");
-  const logger = logs.getLogger("package-consumer");
+  const tracer = correspondingApi.trace.getTracer("package-consumer");
+  const logger = correspondingApi.logs.getLogger("package-consumer");
   const options = {
     spanProcessors: [new SimpleSpanProcessor({ exporter: spans })],
     logRecordProcessors: [new SimpleLogRecordProcessor({ exporter: records })],
@@ -532,11 +541,7 @@ async function exerciseNpmPackage(distro) {
     try {
       await telemetry.shutdown();
     } finally {
-      trace.disable();
-      logs.disable();
-      propagation.disable();
-      context.disable();
-      diag.disable();
+      disableApi(correspondingApi);
     }
   }
 }
@@ -722,10 +727,10 @@ test("the built package redacts only upstream fetch/XHR URLs before OTLP export"
 test("ESM and CommonJS clear dependency URLs that cannot be redacted without a browser base", async () => {
   assert.equal(typeof document, "undefined");
   assert.equal(typeof location, "undefined");
-  for (const distro of [
-    await import(pkg.name),
-    await import(new URL("dist/esm/index.min.js", root).href),
-    require(pkg.name),
+  for (const [distro, api] of [
+    [await import(pkg.name), mainApi],
+    [await import(new URL("dist/esm/index.min.js", root).href), mainApi],
+    [require(pkg.name), require("@opentelemetry/api")],
   ]) {
     const exporter = new InMemorySpanExporter();
     const telemetry = await distro.useMicrosoftOpenTelemetry({
@@ -748,7 +753,7 @@ test("ESM and CommonJS clear dependency URLs that cannot be redacted without a b
           ["", ""],
           [" \t ", " \t "],
         ]) {
-          trace
+          api.trace
             .getTracer(`@opentelemetry/browser-instrumentation/${name}`)
             .startSpan("request", {
               kind: SpanKind.CLIENT,
@@ -762,11 +767,7 @@ test("ESM and CommonJS clear dependency URLs that cannot be redacted without a b
       }
     } finally {
       await telemetry.shutdown();
-      trace.disable();
-      logs.disable();
-      propagation.disable();
-      context.disable();
-      diag.disable();
+      disableApi(api);
     }
   }
 });
@@ -890,7 +891,7 @@ test("the minified artifact keeps the API package external", async () => {
 test("the CommonJS initializer configures both traces and logs", async () => {
   const distro = require(pkg.name);
   assert.equal(distro.OPENTELEMETRY_BROWSER_VERSION, pkg.version);
-  await exerciseNpmPackage(distro);
+  await exerciseNpmPackage(distro, require("@opentelemetry/api"));
 });
 
 test("the CommonJS instrumentations subpath constructs selected instrumentations", async () => {
@@ -921,9 +922,12 @@ test("version-only and bare imports can tree-shake all SDKs", async () => {
 });
 
 test("the root entry ships the combined initializer's declarations", async () => {
-  const declaration = await readFile(new URL(pkg.exports["."].import.types, root), "utf8");
-  for (const name of ["OPENTELEMETRY_BROWSER_VERSION", "useMicrosoftOpenTelemetry"])
-    assert.match(declaration, new RegExp(`export\\s*\\{[^}]*\\b${name}\\b`));
+  for (const declarationPath of [pkg.exports["."].import.types, pkg.exports["."].require.types]) {
+    const declaration = await readFile(new URL(declarationPath, root), "utf8");
+    for (const name of ["OPENTELEMETRY_BROWSER_VERSION", "useMicrosoftOpenTelemetry"])
+      assert.match(declaration, new RegExp(`export\\s*\\{[^}]*\\b${name}\\b`));
+    assert.doesNotMatch(declaration, /@opentelemetry\/(?:api-logs|sdk-trace-base|sdk-trace-web)/);
+  }
 });
 
 test("the package metadata remains exported", () => {

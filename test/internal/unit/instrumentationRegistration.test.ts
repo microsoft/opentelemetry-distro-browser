@@ -287,39 +287,42 @@ it("rejects one Web Vitals object registered twice before it can enable twice", 
 });
 
 it.each([
-  ["fetch", () => adapted(new FetchInstrumentation())],
-  ["xhr", () => adapted(new XhrInstrumentation())],
-  ["console", () => adapted(new ConsoleInstrumentation())],
-  ["errors", () => adapted(new ErrorsInstrumentation())],
-  ["user-action", () => adapted(new UserActionInstrumentation())],
-] as const)("adds and removes %s, releasing it to another instance", async (_kind, create) => {
-  const instrumentation = create();
-  const first = await initialize([], { spanProcessors: [{} as never] });
-  const second = await initialize([], { spanProcessors: [{} as never] });
+  ["fetch", () => adapted(new FetchInstrumentation()), 1],
+  ["xhr", () => adapted(new XhrInstrumentation()), 1],
+  ["console", () => adapted(new ConsoleInstrumentation()), 1],
+  ["errors", () => adapted(new ErrorsInstrumentation()), 1],
+  ["user-action", () => adapted(new UserActionInstrumentation()), 2],
+] as const)(
+  "adds and removes %s, releasing it to another instance",
+  async (_kind, create, replacementDisableCount) => {
+    const instrumentation = create();
+    const first = await initialize([], { spanProcessors: [{} as never] });
+    const second = await initialize([], { spanProcessors: [{} as never] });
 
-  await first.handle.instrumentations.add("dynamic", instrumentation);
-  expect(first.handle.instrumentations.get("dynamic")).toBe(instrumentation);
-  const disable = vi.spyOn(instrumentation, "disable");
-  await first.handle.instrumentations.remove("dynamic");
-  expect(disable).toHaveBeenCalledOnce();
-  expect(first.handle.instrumentations.get("dynamic")).toBeUndefined();
+    await first.handle.instrumentations.add("dynamic", instrumentation);
+    expect(first.handle.instrumentations.get("dynamic")).toBe(instrumentation);
+    const disable = vi.spyOn(instrumentation, "disable");
+    await first.handle.instrumentations.remove("dynamic");
+    expect(disable).toHaveBeenCalledOnce();
+    expect(first.handle.instrumentations.get("dynamic")).toBeUndefined();
 
-  const claims = claimInstrumentationOwnership([instrumentation]);
-  claims.get(instrumentation)!();
-  await expect(second.handle.instrumentations.add("other", instrumentation)).rejects.toThrow(
-    "Construct a fresh native instrumentation",
-  );
-  const replacement = create();
-  const replacementDisable = vi.spyOn(replacement, "disable");
-  await second.handle.instrumentations.add("other", replacement);
-  const beforeShutdown = disable.mock.calls.length;
-  await first.handle.shutdown();
-  expect(disable).toHaveBeenCalledTimes(beforeShutdown);
-  expect(second.handle.instrumentations.get("other")).toBe(replacement);
-  await second.handle.shutdown();
-  expect(disable).toHaveBeenCalledTimes(beforeShutdown);
-  expect(replacementDisable).toHaveBeenCalledOnce();
-});
+    const claims = claimInstrumentationOwnership([instrumentation]);
+    claims.get(instrumentation)!();
+    await expect(second.handle.instrumentations.add("other", instrumentation)).rejects.toThrow(
+      "Construct a fresh native instrumentation",
+    );
+    const replacement = create();
+    const replacementDisable = vi.spyOn(replacement, "disable");
+    await second.handle.instrumentations.add("other", replacement);
+    const beforeShutdown = disable.mock.calls.length;
+    await first.handle.shutdown();
+    expect(disable).toHaveBeenCalledTimes(beforeShutdown);
+    expect(second.handle.instrumentations.get("other")).toBe(replacement);
+    await second.handle.shutdown();
+    expect(disable).toHaveBeenCalledTimes(beforeShutdown);
+    expect(replacementDisable).toHaveBeenCalledTimes(replacementDisableCount);
+  },
+);
 
 it.each([
   ["custom", "instrumentation", () => createInstrumentation()],
@@ -588,12 +591,15 @@ it("keeps a manually enabled user-action candidate paused after replacement", as
     );
     expect(handle.instrumentations.get("errors")).toBe(old);
     await handle.instrumentations.replace("errors", replacement);
-    const emit = sdk.loggerProvider.getLogger.mock.results.at(-1)!.value.emit;
+    const preEnableEmit = sdk.loggerProvider.getLogger.mock.results.at(-1)!.value.emit;
     button.click();
-    expect(emit).not.toHaveBeenCalled();
+    expect(preEnableEmit).not.toHaveBeenCalled();
     await handle.instrumentations.setEnabled("errors", true);
+    const replacementEmit = sdk.loggerProvider.getLogger.mock.results.at(-1)!.value.emit;
+    expect(replacementEmit).not.toBe(preEnableEmit);
     button.click();
-    expect(emit).toHaveBeenCalledOnce();
+    expect(preEnableEmit).not.toHaveBeenCalled();
+    expect(replacementEmit).toHaveBeenCalledOnce();
   } finally {
     button.remove();
     candidate.disable();
@@ -689,9 +695,9 @@ it("retains a candidate whose rollback cleanup fails until shutdown cleans it su
   expect(cleanup).toHaveBeenCalledTimes(2);
   const claims = claimInstrumentationOwnership([candidate]);
   claims.get(candidate)!();
-  await expect(second.handle.instrumentations.add("foreign", candidate)).rejects.toThrow(
-    "Construct a fresh native instrumentation",
-  );
+  await second.handle.instrumentations.add("foreign", candidate);
+  expect(second.handle.instrumentations.get("foreign")).toBe(candidate);
+  await second.handle.instrumentations.remove("foreign");
   await second.handle.instrumentations.add("foreign", adapted(new ErrorsInstrumentation()));
 });
 
@@ -783,7 +789,7 @@ it.each(["bind", "enable"] as const)(
     }
 
     await expect(handle.instrumentations.add("candidate", candidate)).rejects.toThrow(
-      "Telemetry instance is stopped.",
+      /Telemetry instance is stopped\.|Native browser instrumentation failed to initialize\./,
     );
     await shutdown;
     expect(handle.instrumentations.get("candidate")).toBeUndefined();
@@ -963,8 +969,14 @@ it("continues cleanup and preserves a single instrumentation failure", async () 
   expect(sdk.shutdown).toHaveBeenCalledOnce();
 });
 
-it("releases ownership after a bounded shutdown cleanup retry succeeds", async () => {
+it("quarantines terminal native errors after bounded shutdown cleanup", async () => {
   const instrumentation = adapted(new ErrorsInstrumentation());
+  const diagnostic = vi
+    .spyOn(
+      (instrumentation as unknown as { _diag: { error: (...args: unknown[]) => void } })._diag,
+      "error",
+    )
+    .mockImplementation(() => {});
   const first = await initialize([instrumentation]);
   const second = await initialize([]);
   const failure = new Error("transient shutdown removal failed");
@@ -982,14 +994,30 @@ it("releases ownership after a bounded shutdown cleanup retry succeeds", async (
   const disable = vi.spyOn(instrumentation, "disable");
   handles.delete(first.handle);
 
-  await expect(first.handle.shutdown()).rejects.toBe(failure);
+  await expect(first.handle.shutdown()).rejects.toMatchObject({
+    name: "AggregateError",
+    message: "Instrumentation cleanup failed",
+    errors: [
+      expect.objectContaining({
+        message: "Native browser instrumentation failed to disable.",
+      }),
+      expect.objectContaining({
+        message: "Native browser instrumentation failed to disable.",
+      }),
+    ],
+  });
+  expect(diagnostic).toHaveBeenCalledWith(
+    "disable failed, so this instrumentation stays off; some listeners may still be attached: transient shutdown removal failed",
+    failure,
+  );
   expect(disable).toHaveBeenCalledTimes(2);
   expect(removed).toContain("error");
   expect(removed).toContain("unhandledrejection");
-  const claims = claimInstrumentationOwnership([instrumentation]);
-  claims.get(instrumentation)!();
+  expect(() => claimInstrumentationOwnership([instrumentation])).toThrow(
+    "browser-instrumentation-owned",
+  );
   await expect(second.handle.instrumentations.add("recovered", instrumentation)).rejects.toThrow(
-    "Construct a fresh native instrumentation",
+    "browser-instrumentation-owned",
   );
   const replacement = adapted(new ErrorsInstrumentation());
   await second.handle.instrumentations.add("recovered", replacement);
@@ -1017,6 +1045,12 @@ it("keeps ownership quarantined when both terminal cleanup attempts fail", async
 
 it("does not release startup-only navigation after a flag-clearing partial cleanup failure", async () => {
   const instrumentation = adapted(new NavigationInstrumentation());
+  const diagnostic = vi
+    .spyOn(
+      (instrumentation as unknown as { _diag: { error: (...args: unknown[]) => void } })._diag,
+      "error",
+    )
+    .mockImplementation(() => {});
   const add = vi.spyOn(window, "addEventListener");
   const { handle } = await initialize([instrumentation]);
   const listener = add.mock.calls.find(([name]) => name === "popstate")?.[1];
@@ -1033,10 +1067,19 @@ it("does not release startup-only navigation after a flag-clearing partial clean
   });
   handles.delete(handle);
   try {
-    await expect(handle.shutdown()).rejects.toBe(failure);
+    await expect(handle.shutdown()).rejects.toThrow(
+      "Native browser instrumentation failed to disable.",
+    );
+    expect(diagnostic).toHaveBeenCalledWith(
+      "disable failed, so this instrumentation stays off; some listeners may still be attached: navigation removal failed",
+      failure,
+    );
     expect(() => claimInstrumentationOwnership([instrumentation])).toThrow(
       "browser-instrumentation-owned",
     );
+    const replacement = adapted(new NavigationInstrumentation());
+    const restarted = await initialize([replacement]);
+    expect(restarted.handle.instrumentations.get("navigation")).toBe(replacement);
   } finally {
     if (listener) nativeRemove("popstate", listener);
   }
@@ -1044,25 +1087,61 @@ it("does not release startup-only navigation after a flag-clearing partial clean
 
 it("retains and explicitly removes errors handlers after a partial upstream removal failure", async () => {
   const errors = adapted(new ErrorsInstrumentation());
+  const diagnostic = vi
+    .spyOn((errors as unknown as { _diag: { error: (...args: unknown[]) => void } })._diag, "error")
+    .mockImplementation(() => {});
   const { handle } = await initialize([errors]);
   const handler = (errors as unknown as { _onErrorHandler?: EventListener })._onErrorHandler;
   expect(handler).toBeTypeOf("function");
   const remove = vi.spyOn(window, "removeEventListener");
+  const failure = new Error("partial errors removal failed");
   remove.mockImplementationOnce(() => {
-    throw new Error("partial errors removal failed");
+    throw failure;
   });
 
-  await expect(handle.instrumentations.setEnabled("errors", false)).rejects.toThrow(
-    "partial errors removal failed",
+  await expect(handle.instrumentations.setEnabled("errors", false)).rejects.toMatchObject({
+    name: "AggregateError",
+    message: "Instrumentation rollback failed; shutdown is required.",
+    errors: [
+      expect.objectContaining({
+        message: "Native browser instrumentation failed to disable.",
+      }),
+      expect.objectContaining({
+        message: "Native browser instrumentation failed to initialize.",
+      }),
+    ],
+  });
+  expect(diagnostic).toHaveBeenCalledWith(
+    "disable failed, so this instrumentation stays off; some listeners may still be attached: partial errors removal failed",
+    failure,
   );
   expect(remove).toHaveBeenCalledWith("unhandledrejection", handler);
   await expect(handle.instrumentations.setEnabled("errors", true)).rejects.toThrow(
     "Instrumentation rollback failed; shutdown is required.",
   );
 
-  await handle.shutdown();
+  handles.delete(handle);
+  await expect(handle.shutdown()).rejects.toMatchObject({
+    name: "AggregateError",
+    message: "Instrumentation cleanup failed",
+    errors: [
+      expect.objectContaining({
+        message: "Native browser instrumentation failed to disable.",
+      }),
+      expect.objectContaining({
+        message: "Native browser instrumentation failed to disable.",
+      }),
+    ],
+  });
   expect(remove).toHaveBeenCalledWith("error", handler);
   expect(remove).toHaveBeenCalledWith("unhandledrejection", handler);
+  const restarted = await initialize([]);
+  await expect(restarted.handle.instrumentations.add("foreign", errors)).rejects.toThrow(
+    "browser-instrumentation-owned",
+  );
+  const replacement = adapted(new ErrorsInstrumentation());
+  await restarted.handle.instrumentations.add("foreign", replacement);
+  expect(restarted.handle.instrumentations.get("foreign")).toBe(replacement);
 });
 
 it("does not re-enable errors when shutdown reenters through listener registration", async () => {
@@ -1084,7 +1163,7 @@ it("does not re-enable errors when shutdown reenters through listener registrati
   });
 
   await expect(handle.instrumentations.setEnabled("errors", true)).rejects.toThrow(
-    "Telemetry instance is stopped.",
+    "Native browser instrumentation failed to initialize.",
   );
   await shutdown;
   expect(add).toHaveBeenCalledWith("error", expect.any(Function));

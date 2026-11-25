@@ -394,7 +394,11 @@ it.each([
     const bindTrace = vi.spyOn(instrumentation, "setTracerProvider");
     const bindLogs = vi.spyOn(instrumentation, "setLoggerProvider");
     try {
-      await expect(start([instrumentation])).rejects.toThrow("browser-instrumentation-active");
+      await expect(start([instrumentation])).rejects.toThrow(
+        kind === "navigation"
+          ? "Construct native instrumentations without enabling them before registration."
+          : "browser-instrumentation-active",
+      );
       expect(bindTrace).not.toHaveBeenCalled();
       expect(bindLogs).not.toHaveBeenCalled();
     } finally {
@@ -424,7 +428,10 @@ it.each(consoleMethods)(
     const instrumentation = adapted(new ConsoleInstrumentation());
     Object.defineProperty(console, locked, { ...descriptor, writable: false });
     try {
-      await expect(start([instrumentation])).rejects.toThrow("browser-patch-unavailable");
+      await expect(start([instrumentation])).rejects.toThrow(
+        "Native browser instrumentation failed to initialize.",
+      );
+      expect(diag.error).toHaveBeenCalledWith(expect.stringContaining("browser-patch-unavailable"));
       consoleMethods.forEach((method, index) => expect(console[method]).toBe(originals[index]));
     } finally {
       Object.defineProperty(console, locked, descriptor);

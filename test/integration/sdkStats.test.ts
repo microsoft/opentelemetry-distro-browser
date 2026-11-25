@@ -14,7 +14,11 @@ import {
   type ReadWriteLogRecord,
 } from "@opentelemetry/sdk-logs";
 import { afterEach, expect, inject, it, vi } from "vitest";
-import type { BrowserInstrumentation, MicrosoftOpenTelemetryBrowser } from "../../src/types.js";
+import type {
+  BrowserInstrumentation,
+  BrowserNativeInstrumentation,
+  MicrosoftOpenTelemetryBrowser,
+} from "../../src/types.js";
 import type { AzureMonitorEnvelope } from "../../src/exporter/telemetryModels.js";
 import { assertAzureMonitorEnvelope, TEST_INSTRUMENTATION_KEY } from "../fixtures/azureMonitor.js";
 import {
@@ -27,10 +31,29 @@ import { Sender } from "../../src/exporter/sender.js";
 import { rememberSdkIngestionUrl } from "../../src/shared/globalOwnership.js";
 import { SDK_STATS_ENDPOINT, withoutSdkStats } from "../fixtures/sdkStats.js";
 import { loadBrowserScript } from "../fixtures/browserBundle.js";
+import { adaptNativeInstrumentation } from "../../src/instrumentation/browserInstrumentation/nativeInstrumentation.js";
 
 const SECOND_KEY = "22222222-2222-2222-2222-222222222222";
 const handles: Pick<MicrosoftOpenTelemetryBrowser, "shutdown">[] = [];
 let referrerPolicy: HTMLMetaElement | undefined;
+
+function adapted<T extends object>(instrumentation: T): T & BrowserInstrumentation {
+  return adaptNativeInstrumentation(
+    instrumentation as unknown as BrowserNativeInstrumentation,
+  ) as T & BrowserInstrumentation;
+}
+
+function native<T extends object>(
+  instrumentation: T,
+): T & {
+  enable(deps?: { loggerProvider?: object }): void;
+  disable(): void;
+} {
+  return instrumentation as T & {
+    enable(deps?: { loggerProvider?: object }): void;
+    disable(): void;
+  };
+}
 
 function stubResourceTimingIdleCallbacks(): void {
   // These tests cover filtering, not the upstream scheduler's handling of exhausted deadlines.
@@ -227,7 +250,7 @@ it.each(
           /* @vite-ignore */ moduleUrl.href
         );
         initialize = distro.useMicrosoftOpenTelemetry;
-        instrumentations = [new ConsoleInstrumentation({ enabled: false, logMethods: ["warn"] })];
+        instrumentations = [adapted(new ConsoleInstrumentation({ logMethods: ["warn"] }))];
       }
       const pipeline = createInMemoryPipeline();
       handle = await initialize({
@@ -303,9 +326,9 @@ it.each(
       }
     } finally {
       await handle?.shutdown();
-      outer?.instrumentation.disable();
+      if (outer) native(outer.instrumentation).disable();
       await outer?.provider.shutdown();
-      standalone.disable();
+      native(standalone).disable();
       await provider.shutdown();
       for (const script of scripts) script.remove();
       if (file === "iife.min") delete window.Microsoft;
@@ -346,7 +369,7 @@ it.each(
       return nativeFetch(localUrl, init);
     });
     vi.stubGlobal("fetch", transport);
-    const instrumentation = new FetchInstrumentation({ enabled: false });
+    const instrumentation = new FetchInstrumentation();
     const pipeline = createInMemoryPipeline();
     const start = async (id: string, key: string, instrumented: boolean) => {
       const handle = await distro.useMicrosoftOpenTelemetry({
@@ -493,7 +516,6 @@ it("excludes real ingestion resource timing without filtering custom processor b
     session: { enabled: false },
     instrumentations: [
       new ResourceTimingInstrumentation({
-        enabled: false,
         initiatorTypes: ["fetch"],
         ignoreUrls: [new RegExp(`^(?!.*\\/ingest\\/${runId}).*$`)],
         forceProcessingAfter: 0,
@@ -538,12 +560,13 @@ it.each([
     const firstOrigin = new URL(inject("ingestionEndpoint")).origin;
     const secondOrigin = firstOrigin.replace("127.0.0.1", "localhost");
     const start = async (origin: string, key: string) => {
-      const instrumentation = new ResourceTimingInstrumentation({
-        enabled: false,
-        initiatorTypes: ["fetch"],
-        ignoreUrls: [new RegExp(`^(?!.*\\/ingest\\/${runId}).*$`)],
-        forceProcessingAfter: 0,
-      });
+      const instrumentation = adapted(
+        new ResourceTimingInstrumentation({
+          initiatorTypes: ["fetch"],
+          ignoreUrls: [new RegExp(`^(?!.*\\/ingest\\/${runId}).*$`)],
+          forceProcessingAfter: 0,
+        }),
+      );
       const bind = vi.spyOn(instrumentation, "setLoggerProvider");
       const observed: ReadWriteLogRecord[] = [];
       const handle = await distro.useMicrosoftOpenTelemetry({
@@ -659,9 +682,8 @@ it.each(["index.js", "index.min.js"])(
       processors: [new BatchLogRecordProcessor({ exporter })],
     });
     handles.push(provider);
-    const instrumentation = new ConsoleInstrumentation({ enabled: false, logMethods: ["warn"] });
-    instrumentation.setLoggerProvider(provider);
-    instrumentation.enable();
+    const instrumentation = new ConsoleInstrumentation({ logMethods: ["warn"] });
+    native(instrumentation).enable({ loggerProvider: provider });
     vi.spyOn(diag, "warn").mockImplementation((...args) => console.warn(...args));
     try {
       const wrappedWarn = console.warn;
@@ -693,7 +715,7 @@ it.each(["index.js", "index.min.js"])(
         expect(console.warn).toBe(wrappedWarn);
       }
     } finally {
-      instrumentation.disable();
+      native(instrumentation).disable();
     }
   },
 );

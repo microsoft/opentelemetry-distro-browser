@@ -6,6 +6,10 @@ All notable changes to this package are documented in this file.
 
 ### Fixed
 
+- Release owned trace and log globals when first initialization fails, including failures in
+  registration diagnostics, while preserving foreign providers installed before rollback.
+- Treat structured and non-finite HTTP status attributes as absent during Azure Monitor conversion,
+  preserving valid telemetry in the same export batch while retaining numeric-string support.
 - Capture startup errors and unhandled rejections when the CDN loader's `errors` instrumentation
   is enabled. Previously only errors raised after initialization were reported.
 - Reject mixed pre-diagnostics and current distribution registry protocols in either initialization
@@ -21,6 +25,9 @@ All notable changes to this package are documented in this file.
   registration through a native lifecycle bridge. Native objects lock providers and configuration
   at first enable; later registrations require fresh objects. Classic distribution-owned
   instrumentations retain their existing configuration and lifecycle methods.
+- Rebaseline minified, gzip and Brotli bundle budgets against the measured SDK 3 dependency cohort.
+  Keep absolute gates blocking, preserve debug/snippet and root gzip ceilings, and document the
+  production measurements and tree-shaking checks in the packaging guide.
 
 ### Added
 

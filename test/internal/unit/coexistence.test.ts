@@ -197,7 +197,7 @@ it.each(["trace", "logs", "context", "propagation"] as const)(
 
 it("diagnoses an incompatible logs registry without invoking it or adopting its providers", async () => {
   const foreign = vi.fn(() => undefined);
-  realm[apiKey] = { logs: foreign };
+  realm[apiKey] = { version: "1.10.0", logs: foreign };
   const warning = vi.spyOn(diag, "warn").mockImplementation(() => {});
   const pipeline = createInMemoryPipeline();
   const instrumentation = probe();
@@ -215,7 +215,7 @@ it("diagnoses an incompatible logs registry without invoking it or adopting its 
   expect(getRegisteredGlobal("logs")).toBe((realm[apiKey] as { logs?: unknown }).logs);
 });
 
-it.each(["1.8.0", "1.9.0", "1.9.2", "1.10.0"])(
+it.each(["1.8.0", "1.9.0", "1.9.2"])(
   "cleans up pipelines when the loaded API cannot register page context in a %s registry",
   async (version) => {
     realm[apiKey] = { version };
@@ -895,34 +895,40 @@ it.each(["none", "existing instance", "foreign replacement"] as const)(
   },
 );
 
-it("removes the new trace proxy when its registration diagnostic throws", async () => {
-  const failure = new Error("trace registration diagnostic failed");
-  vi.spyOn(diag, "debug").mockImplementation((message) => {
-    if (typeof message === "string" && message.includes("Registered a global for trace")) {
-      throw failure;
-    }
-  });
-  const pipeline = createInMemoryPipeline();
-  const spanShutdown = vi.spyOn(pipeline.spanProcessor, "shutdown");
-  const logShutdown = vi.spyOn(pipeline.logProcessor, "shutdown");
-  await expect(
-    useMicrosoftOpenTelemetry({
-      ...pipeline.options,
+it.each(["trace", "logs"] as const)(
+  "removes the new %s registration when its diagnostic throws",
+  async (signal) => {
+    const failure = new Error(`${signal} registration diagnostic failed`);
+    vi.spyOn(diag, "debug").mockImplementation((message) => {
+      if (typeof message === "string" && message.includes(`Registered a global for ${signal}`)) {
+        throw failure;
+      }
+    });
+    const pipeline = createInMemoryPipeline();
+    const spanShutdown = vi.spyOn(pipeline.spanProcessor, "shutdown");
+    const logShutdown = vi.spyOn(pipeline.logProcessor, "shutdown");
+    await expect(
+      useMicrosoftOpenTelemetry({
+        ...pipeline.options,
+        pageView: { enabled: false },
+      }),
+    ).rejects.toBe(failure);
+    expect(getRegisteredGlobal("trace")).toBeUndefined();
+    expect(getRegisteredGlobal("logs")).toBeUndefined();
+    expect(spanShutdown).toHaveBeenCalledOnce();
+    expect(logShutdown).toHaveBeenCalledOnce();
+    vi.mocked(diag.debug).mockRestore();
+    const next = createInMemoryPipeline();
+    const handle = await useMicrosoftOpenTelemetry({
+      ...next.options,
       pageView: { enabled: false },
-    }),
-  ).rejects.toBe(failure);
-  expect(getRegisteredGlobal("trace")).toBeUndefined();
-  expect(getRegisteredGlobal("logs")).toBeUndefined();
-  expect(spanShutdown).toHaveBeenCalledOnce();
-  expect(logShutdown).toHaveBeenCalledOnce();
-  vi.mocked(diag.debug).mockRestore();
-  const next = createInMemoryPipeline();
-  const handle = await useMicrosoftOpenTelemetry({ ...next.options, pageView: { enabled: false } });
-  cleanup.push(() => handle.shutdown());
-  trace.getTracer("retry").startSpan("retry").end();
-  await handle.forceFlush();
-  expect(next.spanExporter.getFinishedSpans()).toHaveLength(1);
-});
+    });
+    cleanup.push(() => handle.shutdown());
+    trace.getTracer("retry").startSpan("retry").end();
+    await handle.forceFlush();
+    expect(next.spanExporter.getFinishedSpans()).toHaveLength(1);
+  },
+);
 
 it.each(["setTracerProvider", "setLoggerProvider", "getConfig", "enable"] as const)(
   "rolls back all first-start globals when instrumentation %s throws",

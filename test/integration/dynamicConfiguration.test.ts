@@ -90,7 +90,6 @@ it("applies HTTP configuration without recording or propagating its fetch on eit
   const sibling = await start({
     instrumentations: [
       new FetchInstrumentation({
-        enabled: false,
         requestHook: siblingHook,
         propagateTraceHeaderCorsUrls: [/.*/],
       }),
@@ -99,7 +98,6 @@ it("applies HTTP configuration without recording or propagating its fetch on eit
   const owner = await start({
     instrumentations: [
       new FetchInstrumentation({
-        enabled: false,
         requestHook: ownerHook,
         propagateTraceHeaderCorsUrls: [/.*/],
       }),
@@ -1009,7 +1007,7 @@ it("does not reopen an explicitly paused fetch instrumentation after a received 
   const channel = `cfg-sync-${crypto.randomUUID()}`;
   const receiver = await start({
     extensionConfig: { AppInsightsCfgSyncPlugin: { customEvtName: channel } },
-    instrumentations: [new FetchInstrumentation({ enabled: false })],
+    instrumentations: [new FetchInstrumentation()],
   });
   await receiver.handle.instrumentations.setEnabled("fetch", false);
   dispatchConfiguration(channel, { disableFetchTracking: true });

@@ -1587,7 +1587,7 @@ it.each([undefined, 0, 100])(
 it.each([false, true])(
   "does not collect stats failure diagnostics with a logs-only pipeline: %s",
   async (logsOnly) => {
-    const instrumentation = new ConsoleInstrumentation({ enabled: false, logMethods: ["warn"] });
+    const instrumentation = new ConsoleInstrumentation({ logMethods: ["warn"] });
     const handle = await useMicrosoftOpenTelemetry({
       azureMonitor: { connectionString, sdkStats: { enabled: true } },
       spanProcessors: logsOnly ? [] : undefined,

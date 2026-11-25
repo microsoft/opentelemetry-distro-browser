@@ -72,7 +72,7 @@ async function start(
 }
 
 function network(kind: "fetch" | "xhr", config = {}) {
-  const options = { enabled: false, propagateTraceHeaderCorsUrls: [endpoint], ...config };
+  const options = { propagateTraceHeaderCorsUrls: [endpoint], ...config };
   return adapted(
     kind === "fetch" ? new FetchInstrumentation(options) : new XhrInstrumentation(options),
   );
@@ -414,11 +414,11 @@ it.each(["console", "errors", "user-action"] as const)(
     const makeInstrumentation = () => {
       switch (kind) {
         case "console":
-          return adapted(new ConsoleInstrumentation({ enabled: false, logMethods: ["info"] }));
+          return adapted(new ConsoleInstrumentation({ logMethods: ["info"] }));
         case "errors":
-          return adapted(new ErrorsInstrumentation({ enabled: false }));
+          return adapted(new ErrorsInstrumentation());
         case "user-action":
-          return adapted(new UserActionInstrumentation({ enabled: false }));
+          return adapted(new UserActionInstrumentation());
       }
     };
     const instrumentation = makeInstrumentation();
@@ -460,7 +460,7 @@ it.each(["console", "errors", "user-action"] as const)(
 );
 
 it("rejects runtime control of navigation, page views, custom and unknown instrumentations", async () => {
-  const navigation = adapted(new NavigationInstrumentation({ enabled: false }));
+  const navigation = adapted(new NavigationInstrumentation());
   const custom = {
     instrumentationName: "custom-instrumentation",
     setTracerProvider() {},
@@ -494,7 +494,6 @@ it("fans out console calls once with independent method filters and serializers"
   const first = await start("first", [
     adapted(
       new ConsoleInstrumentation({
-        enabled: false,
         logMethods: ["info"],
         messageSerializer: () => "first",
       }),
@@ -504,7 +503,6 @@ it("fans out console calls once with independent method filters and serializers"
   const second = await start("second", [
     adapted(
       new ConsoleInstrumentation({
-        enabled: false,
         logMethods: ["info", "debug"],
         messageSerializer: () => "second",
       }),
@@ -532,7 +530,6 @@ it("does not let a failing console subscriber break the application or other sub
   const first = await start("first", [
     adapted(
       new ConsoleInstrumentation({
-        enabled: false,
         logMethods: ["info"],
         messageSerializer: () => {
           throw new Error("serializer");
@@ -541,9 +538,11 @@ it("does not let a failing console subscriber break the application or other sub
     ),
   ]);
   const second = await start("second", [
-    adapted(new ConsoleInstrumentation({ enabled: false, logMethods: ["info"] })),
+    adapted(new ConsoleInstrumentation({ logMethods: ["info"] })),
   ]);
-  const error = vi.spyOn(diag, "error").mockImplementation(() => {});
+  // Native component diagnostics go directly to the registered logger, not diag.error.
+  const error = vi.fn();
+  diag.setLogger({ error, warn: vi.fn(), info: vi.fn(), debug: vi.fn(), verbose: vi.fn() });
   expect(() => console.info("still delivered")).not.toThrow();
   await first.handle.forceFlush();
   await second.handle.forceFlush();
@@ -552,8 +551,9 @@ it("does not let a failing console subscriber break the application or other sub
     "still delivered",
   ]);
   expect(error).toHaveBeenCalledWith(
-    "Browser instrumentation subscriber failed",
-    expect.any(Error),
+    "@opentelemetry/browser-instrumentation/console",
+    "failed to record console call",
+    expect.objectContaining({ message: "serializer" }),
   );
 });
 
@@ -564,7 +564,6 @@ it("shares History between page views and upstream navigation with per-instance 
     [
       adapted(
         new NavigationInstrumentation({
-          enabled: false,
           sanitizeUrl: () => "https://first.test/",
         }),
       ),
@@ -577,7 +576,6 @@ it("shares History between page views and upstream navigation with per-instance 
     [
       adapted(
         new NavigationInstrumentation({
-          enabled: false,
           sanitizeUrl: () => "https://second.test/",
         }),
       ),
@@ -768,7 +766,9 @@ it("rolls back partial XHR patching and permits a fresh instance after a method 
   Object.defineProperty(prototype, "send", { ...descriptor, writable: false });
   const instrumentation = network("xhr");
   try {
-    await expect(start("failed", [instrumentation])).rejects.toThrow("browser-patch-unavailable");
+    await expect(start("failed", [instrumentation])).rejects.toThrow(
+      "Native browser instrumentation failed to initialize",
+    );
     expect(prototype.open).toBe(originalOpen);
     expect(prototype.setRequestHeader).toBe(originalHeader);
   } finally {
@@ -812,15 +812,19 @@ it("preserves startup errors when a shared instrumentation also fails cleanup", 
   expect(diagnostic).toHaveBeenCalledWith("Browser patch rollback failed", expect.any(Error));
 });
 
-it("rejects previously enabled shared instrumentations even when their config says disabled", async () => {
+it("rejects previously enabled native instrumentations and accepts a fresh instance", async () => {
   const original = fetch;
   const instrumentation = network("fetch");
   instrumentation.enable();
   instrumentation.disable();
   try {
     await expect(start("already patched", [instrumentation])).rejects.toThrow(
-      "browser-instrumentation-active",
+      "without enabling them before registration",
     );
+    const fresh = await start("fresh", [network("fetch")]);
+    await request("fetch");
+    await spans(fresh, 1);
+    await fresh.handle.shutdown();
   } finally {
     globalThis.fetch = original;
   }
@@ -829,7 +833,6 @@ it("rejects previously enabled shared instrumentations even when their config sa
 it("rejects live native console configuration updates without affecting a sibling", async () => {
   const instrumentation = adapted(
     new ConsoleInstrumentation({
-      enabled: false,
       logMethods: ["info"],
       messageSerializer: () => "first",
     }),
@@ -838,7 +841,6 @@ it("rejects live native console configuration updates without affecting a siblin
   const second = await start("second", [
     adapted(
       new ConsoleInstrumentation({
-        enabled: false,
         logMethods: ["info"],
         messageSerializer: () => "second",
       }),
@@ -1021,16 +1023,15 @@ it.each(["console", "errors", "user-action"] as const)(
     const makeInstrumentation = (): BrowserInstrumentation => {
       switch (kind) {
         case "console":
-          return adapted(new ConsoleInstrumentation({ enabled: false, logMethods: ["info"] }));
+          return adapted(new ConsoleInstrumentation({ logMethods: ["info"] }));
         case "errors":
           return adapted(
             new ErrorsInstrumentation({
-              enabled: false,
               applyCustomAttributes: () => ({ "test.error-hook": "owned" }),
             }),
           );
         case "user-action":
-          return adapted(new UserActionInstrumentation({ enabled: false }));
+          return adapted(new UserActionInstrumentation());
       }
     };
     const first = await start("first", [makeInstrumentation()]);

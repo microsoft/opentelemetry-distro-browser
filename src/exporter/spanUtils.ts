@@ -62,9 +62,14 @@ function omitCustomFields(envelope: AzureMonitorEnvelope): AzureMonitorEnvelope 
   return { ...envelope, data: { ...envelope.data, baseData } };
 }
 
+function getStatusCode(value: unknown): number {
+  const status = typeof value === "number" ? value : typeof value === "string" ? Number(value) : 0;
+  return Number.isFinite(status) ? status : 0;
+}
+
 export function spanSucceeded(
   span: ReadableSpan,
-  statusCode = Number(span.attributes[HTTP_STATUS_CODE]) || 0,
+  statusCode = getStatusCode(span.attributes[HTTP_STATUS_CODE]),
 ): boolean {
   if (span.status.code !== SpanStatusCode.UNSET) {
     return span.status.code === SpanStatusCode.OK;
@@ -77,7 +82,7 @@ export function spanToEnvelope(
   instrumentationKey: string,
 ): AzureMonitorEnvelope<RequestData | RemoteDependencyData> {
   const spanContext = span.spanContext();
-  const statusCode = Number(span.attributes[HTTP_STATUS_CODE]) || 0;
+  const statusCode = getStatusCode(span.attributes[HTTP_STATUS_CODE]);
   const method = span.attributes[HTTP_METHOD];
   const url = span.attributes[URL_FULL];
   const duration = millisecondsToTimeSpan(hrTimeToMilliseconds(span.duration));

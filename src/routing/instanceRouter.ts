@@ -111,7 +111,7 @@ export function addInstance(instance: InstancePipelines): () => void {
       instance.loggerProvider &&
       (!logsRegistration || logsRegistration !== state.logsRegistration)
     ) {
-      if (!logsRegistration) installedLogs = logs.getLoggerProvider();
+      if (!logsRegistration) installedLogs = state.loggerRouter;
       if (!logsRegistration && logs.setGlobalLoggerProvider(state.loggerRouter)) {
         state.logsRegistration = getRegisteredGlobal("logs");
       } else if (!logsRegistration || logsRegistration !== state.foreignLoggerProvider) {

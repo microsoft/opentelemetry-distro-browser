@@ -3,7 +3,7 @@
 
 import { context, createContextKey, diag, propagation, trace } from "@opentelemetry/api";
 import { logs } from "@opentelemetry/api";
-import { BatchLogRecordProcessor } from "@opentelemetry/sdk-logs";
+import { BatchLogRecordProcessor, type LogRecordProcessor } from "@opentelemetry/sdk-logs";
 import { SimpleSpanProcessor } from "@opentelemetry/sdk-trace";
 import { afterEach, beforeEach, expect, inject, it, vi } from "vitest";
 import type { AzureMonitorEnvelope } from "../../src/exporter/telemetryModels.js";
