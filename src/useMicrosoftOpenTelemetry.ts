@@ -12,6 +12,7 @@ import { createKeyValueStorage } from "./storage/keyValueStorage.js";
 import { createSessionBufferStorage, sessionBufferStorage } from "./exporter/sessionBuffer.js";
 import { createCookieUserContext } from "./user/createCookieUserContext.js";
 import { createCookieManager } from "./storage/cookieManager.js";
+import { resolveCookieNames } from "./storage/cookieNaming.js";
 import { isNonEmptyString } from "./shared/isNonEmptyString.js";
 import type { LogRecordProcessor } from "@opentelemetry/sdk-logs";
 import type { SpanProcessor } from "@opentelemetry/sdk-trace-base";
@@ -244,12 +245,10 @@ export async function useMicrosoftOpenTelemetry(
   if (typeof storageEnabled !== "boolean" || typeof namePrefix !== "string") {
     throw new TypeError("storage.enabled must be a boolean and storage.namePrefix a string.");
   }
-  if (!/^[!#$%&'*+\-.^_`|~0-9A-Za-z]*$/.test(namePrefix)) {
-    throw new TypeError("storage.namePrefix must contain only cookie-name token characters.");
-  }
+  const cookieNames = resolveCookieNames(options, namePrefix);
   const cookies = createCookieManager(options.cookieCfg);
   cookies.setReplayFailureHandler((name, removeSuperseded) => {
-    if (name === `${namePrefix}ai_authUser`) removeSuperseded();
+    if (name === cookieNames.authenticated) removeSuperseded();
   });
   const sessionStorage = storageEnabled
     ? createKeyValueStorage(
@@ -267,8 +266,10 @@ export async function useMicrosoftOpenTelemetry(
           },
           sessionStorage,
           cookies,
-          `${namePrefix}ai_session`,
+          cookieNames.session,
           () => configuration.snapshot().session,
+          cookieNames.sessionBackup,
+          () => userContext.getSessionOwner(),
         )
       : undefined;
   getSharedRegistry();
@@ -568,13 +569,16 @@ export async function useMicrosoftOpenTelemetry(
     userContext = createCookieUserContext(
       userContextEnabled,
       cookies,
-      namePrefix,
+      cookieNames,
       () => session?.discardBackup(),
-      cookies.canRead(`${namePrefix}ai_user`),
+      cookies.canRead(cookieNames.user),
       (action) => {
         // Explicit privacy controls also clean records written by older versions. Never restore
         // legacy authentication or access Web Storage when the caller has disabled it.
+        if (action === "purge") session?.clearOwner();
         if (!sessionStorage) return;
+        // Explicit identity opt-out also removes the anonymous owner kept in session backup.
+        if (action === "purge") session?.discardBackup();
         const key = "opentelemetry-user";
         if (action === "clear") {
           const stored = sessionStorage.getItem(key);
@@ -599,6 +603,7 @@ export async function useMicrosoftOpenTelemetry(
         }
         sessionStorage.removeItem(key);
       },
+      () => session?.refreshOwner(),
     );
     // Capture explicit context, identity policy and processor configuration before yielding.
     const sessionStartup = session?.start();

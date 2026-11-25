@@ -310,6 +310,9 @@ const snippetOptionsMatchTheDistribution = (
   | "userContext"
   | "storage"
   | "cookieCfg"
+  | "namePrefix"
+  | "userCookiePostfix"
+  | "sessionCookiePostfix"
   | "pageView"
   | "redactQueryParams"
 > & {
@@ -391,6 +394,91 @@ it.each([undefined, { enabled: false }, Object.defineProperty({}, "enabled", { v
       inlineScript.remove();
       removeLoadedScript(fixtureUrl);
     }
+  },
+);
+
+it("passes AI cookie naming unchanged, including non-enumerable fields", async () => {
+  const src = createBundleUrl("return Promise.resolve({})");
+  const config = Object.defineProperties(
+    { src, connectionString: "InstrumentationKey=test" },
+    {
+      namePrefix: { value: "-fallback" },
+      userCookiePostfix: { value: "-user" },
+      sessionCookiePostfix: { value: "-session" },
+    },
+  );
+  const { inlineScript, initialization } = executeLoader(config);
+  try {
+    await initialization;
+    expect(loaderWindow.snippetOptions).toMatchObject({
+      namePrefix: "-fallback",
+      userCookiePostfix: "-user",
+      sessionCookiePostfix: "-session",
+    });
+  } finally {
+    inlineScript.remove();
+    removeLoadedScript(src);
+    URL.revokeObjectURL(src);
+  }
+});
+
+it("validates and serializes the same storage prefix snapshot for AI naming", async () => {
+  let reads = 0;
+  const storage = Object.defineProperty({}, "namePrefix", {
+    get: () => (++reads <= 2 ? "" : "shop-"),
+  });
+  const src = createBundleUrl("return Promise.resolve({})");
+  const { inlineScript, initialization } = executeLoader({
+    src,
+    connectionString: "InstrumentationKey=test",
+    namePrefix: "-session",
+    storage,
+  });
+  try {
+    await initialization;
+    expect(reads).toBe(1);
+    expect(loaderWindow.snippetOptions).toMatchObject({
+      namePrefix: "-session",
+      storage: { namePrefix: "" },
+    });
+  } finally {
+    inlineScript.remove();
+    removeLoadedScript(src);
+    URL.revokeObjectURL(src);
+  }
+});
+
+it.each(["namePrefix", "userCookiePostfix", "sessionCookiePostfix"] as const)(
+  "validates AI naming field %s and rejects mixed naming before generating a loader",
+  (key) => {
+    for (const value of [
+      42,
+      null,
+      false,
+      "invalid prefix",
+      "bad;name",
+      "bad=name",
+      "bad\nname",
+      "雪",
+    ]) {
+      expect(() => getSdkLoaderScript({ connectionString: "connection", [key]: value })).toThrow(
+        TypeError,
+      );
+    }
+    expect(() =>
+      getSdkLoaderScript({
+        connectionString: "connection",
+        [key]: "-suffix",
+        storage: { namePrefix: "prefix-" },
+      }),
+    ).toThrow("AI cookie naming cannot be combined with storage.namePrefix.");
+    expect(
+      getSdkLoaderScript({
+        connectionString: "connection",
+        [key]: "",
+        storage: { namePrefix: "prefix-" },
+      }),
+    ).toContain(`"${key}":""`);
   },
 );
 

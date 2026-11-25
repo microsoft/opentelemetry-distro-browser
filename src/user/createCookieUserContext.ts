@@ -23,29 +23,36 @@ function generateAnonymousId(): string {
 /**
  * Creates cookie-backed identity without accessing Web Storage during construction.
  * The caller supplies anonymous-cookie read permission from validated, snapshotted policy.
- * Optional legacy cleanup must honor Web Storage permission and this instance's name prefix:
+ * Cookie names are fully resolved by the caller. Optional legacy cleanup must honor Web Storage
+ * permission and this instance's storage prefix:
  * clear retains stored anonymous identity; purge removes the whole record. Never restore it.
  */
 export function createCookieUserContext(
   initialEnabled: boolean | undefined,
   cookies: MicrosoftOpenTelemetryBrowserCookieManager & {
     read?: (name: string) => CookieReadResult;
+    isAccessEnabled?: () => boolean;
   },
-  namePrefix = "",
+  { user: anonymousCookie, authenticated: authenticatedCookie } = {
+    user: "ai_user",
+    authenticated: "ai_authUser",
+  },
   onNewUser?: () => void,
   canReadAnonymousCookie = true,
   onLegacyCleanup?: (action: "clear" | "purge") => void,
+  onEnabled?: () => void,
 ): {
   context: MicrosoftOpenTelemetryBrowserUserContext;
   provider: UserContextProvider;
+  getSessionOwner(): string | null | undefined;
   shutdown(): void;
 } {
-  const anonymousCookie = `${namePrefix}ai_user`;
-  const authenticatedCookie = `${namePrefix}ai_authUser`;
   let enabled = initialEnabled !== false;
   let stopped = false;
   let anonymousValue = "";
   let anonymousIdentityEnabled = false;
+  let anonymousOwner: string | undefined;
+  let anonymousReadFailed = false;
   let newUserNotified = false;
   let authenticatedUserId: string | undefined;
   let accountId: string | undefined;
@@ -75,6 +82,7 @@ export function createCookieUserContext(
     const accepted = attempt(() => cookies.set(anonymousCookie, anonymousValue, 31536000));
     // A custom write hook can synchronously disable or shut down this context.
     anonymousIdentityEnabled = accepted && enabled && !stopped;
+    anonymousOwner = anonymousIdentityEnabled ? anonymousValue.split("|")[0] : undefined;
     // The hook may finish its write after the nested opt-out already purged the cookie.
     if (!enabled) purge(anonymousCookie);
   }
@@ -111,6 +119,7 @@ export function createCookieUserContext(
     if (isNonEmptyString(id) && Number.isFinite(acquired) && acquired >= 0) {
       anonymousValue = value;
       anonymousIdentityEnabled = true;
+      anonymousOwner = id;
     } else {
       if (
         canReadAnonymousCookie &&
@@ -129,15 +138,28 @@ export function createCookieUserContext(
   }
 
   function readAnonymous(): CookieReadResult {
-    return cookies.read
-      ? cookies.read(anonymousCookie)
-      : { success: true, value: cookies.get(anonymousCookie) };
+    // A disabled manager's pending-value read is not recovery from a failed browser read.
+    if (anonymousReadFailed && cookies.isAccessEnabled?.() === false) return { success: false };
+    try {
+      const result = cookies.read
+        ? cookies.read(anonymousCookie)
+        : { success: true as const, value: cookies.get(anonymousCookie) };
+      anonymousReadFailed = !result.success;
+      return result;
+    } catch {
+      anonymousReadFailed = true;
+      return { success: false };
+    }
   }
 
   function refreshAnonymous(result = readAnonymous()): void {
     // An unavailable read is not evidence of a new user. Leave identity unresolved so a
     // later enable or enrichment can retry without replacing cookies or discarding backups.
     if (result.success) restoreAnonymous(result.value);
+    else {
+      anonymousOwner = undefined;
+      anonymousIdentityEnabled = false;
+    }
   }
 
   if (enabled) {
@@ -202,12 +224,14 @@ export function createCookieUserContext(
     setEnabled(newEnabled) {
       if (stopped && newEnabled) return;
       enabled = newEnabled;
+      anonymousOwner = undefined;
       if (enabled) {
         try {
           refreshAnonymous();
         } catch {
           anonymousIdentityEnabled = false;
         }
+        onEnabled?.();
         saveAuthentication();
       } else {
         anonymousIdentityEnabled = false;
@@ -224,6 +248,13 @@ export function createCookieUserContext(
 
   return {
     context,
+    // Cached state and policy only, including during shutdown backup. Revoking cookie access
+    // must not turn a failed permitted identity read into permission to reuse a backup.
+    getSessionOwner: () =>
+      !enabled || !canReadAnonymousCookie
+        ? null
+        : (anonymousOwner ??
+          (!anonymousReadFailed && cookies.isAccessEnabled?.() === false ? null : undefined)),
     provider: {
       getAnonymousUserId() {
         if (stopped) return undefined;

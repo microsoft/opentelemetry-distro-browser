@@ -3,6 +3,7 @@
 
 import type { DiagLogLevel } from "@opentelemetry/api";
 import { OPENTELEMETRY_BROWSER_VERSION } from "./shared/constants.js";
+import { resolveCookieNames } from "./storage/cookieNaming.js";
 
 /**
  * Configuration for {@link getSdkLoaderScript}.
@@ -71,6 +72,12 @@ export interface SdkLoaderConfig {
   readonly userContext?: { readonly enabled?: boolean };
   /** Same as `MicrosoftOpenTelemetryBrowserOptions.storage`. */
   readonly storage?: { readonly enabled?: boolean; readonly namePrefix?: string };
+  /** Application Insights session-cookie suffix fallback, as in the distribution initializer. */
+  readonly namePrefix?: string;
+  /** Application Insights anonymous-user cookie suffix. */
+  readonly userCookiePostfix?: string;
+  /** Application Insights session-cookie suffix; empty falls back to namePrefix. */
+  readonly sessionCookiePostfix?: string;
   /** Data-only cookie settings. Hooks require direct SDK initialization. */
   readonly cookieCfg?: {
     readonly enabled?: boolean;
@@ -323,7 +330,8 @@ export function getSdkLoaderScript(config: SdkLoaderConfig): string {
   const optional = "when provided";
   checkField(src, "src", "string");
   check(isNonEmptyString(config?.connectionString), "connectionString", "a non-empty string");
-  const { samplingPercentage, azureMonitor, instrumentationOptions, resourceAttributes } = config;
+  const { samplingPercentage, azureMonitor, instrumentationOptions, resourceAttributes, storage } =
+    config;
   checkField(config.integrity, "integrity", "string");
   checkField(config.redactQueryParams, "redactQueryParams", "strings");
   check(
@@ -350,19 +358,29 @@ export function getSdkLoaderScript(config: SdkLoaderConfig): string {
     "instrumentationOptions",
     "resourceAttributes",
   ]) {
-    const value = config[name as keyof SdkLoaderConfig];
+    const value = name === "storage" ? storage : config[name as keyof SdkLoaderConfig];
     check(
       value === undefined || (isObject(value) && isJson(value)),
       name,
       `a JSON object ${optional}`,
     );
   }
+  const storageSnapshot =
+    storage === undefined
+      ? undefined
+      : { enabled: storage.enabled, namePrefix: storage.namePrefix };
   for (const [name, fields] of Object.entries(optionFields)) {
-    const value = config[name as keyof SdkLoaderConfig] as Record<string, unknown> | undefined;
+    const value = (name === "storage" ? storageSnapshot : config[name as keyof SdkLoaderConfig]) as
+      Record<string, unknown> | undefined;
     for (const [field, kind] of Object.entries(fields)) {
       checkField(value?.[field], `${name}.${field}`, kind);
     }
   }
+  const { namePrefix, userCookiePostfix, sessionCookiePostfix } = config;
+  resolveCookieNames(
+    { namePrefix, userCookiePostfix, sessionCookiePostfix },
+    storageSnapshot?.namePrefix,
+  );
   check(
     !azureMonitor || !("sdkStats" in azureMonitor),
     "azureMonitor.sdkStats",
@@ -426,6 +444,9 @@ export function getSdkLoaderScript(config: SdkLoaderConfig): string {
       redactQueryParams: config.redactQueryParams,
       session: config.session,
       userContext: config.userContext,
+      namePrefix,
+      userCookiePostfix,
+      sessionCookiePostfix,
       cookieCfg:
         config.cookieCfg === undefined
           ? undefined
@@ -437,13 +458,7 @@ export function getSdkLoaderScript(config: SdkLoaderConfig): string {
               blockedCookies: config.cookieCfg.blockedCookies,
               disableCookieDefer: config.cookieCfg.disableCookieDefer,
             },
-      storage:
-        config.storage === undefined
-          ? undefined
-          : {
-              enabled: config.storage.enabled,
-              namePrefix: config.storage.namePrefix,
-            },
+      storage: storageSnapshot,
       pageView: config.pageView,
     },
     instrumentationOptions,

@@ -119,6 +119,264 @@ it.each([false, true])(
   },
 );
 
+it("preserves a newer nested write when a cancelled replay writes afterward", () => {
+  const values = new Map<string, string>();
+  const manager = createCookieManager({
+    enabled: false,
+    getCookie: (name) => values.get(name) ?? "",
+    setCookie(name, formatted) {
+      const value = formatted.split(";")[0]!;
+      if (value === "old") {
+        manager.cancelPending(name, value);
+        manager.set(name, "newer");
+      }
+      values.set(name, value);
+    },
+    delCookie: (name) => values.delete(name),
+  });
+  manager.set("ai_session", "old");
+  manager.setEnabled(true);
+  expect(values.get("ai_session")).toBe("newer");
+});
+
+it.each(
+  ["purge", "del", "set", "set-fails"].flatMap((action) =>
+    [false, true].map((retry) => ({ action, retry })),
+  ),
+)(
+  "coordinates nested $action during a corrective cookie write (retry=$retry)",
+  ({ action, retry }) => {
+    const values = new Map<string, string>();
+    const writes: string[] = [];
+    let readsFail = retry;
+    const cookies = createCookieManager({
+      enabled: false,
+      getCookie(name) {
+        if (readsFail) throw new Error("read denied");
+        return values.get(name) ?? "";
+      },
+      setCookie(name, formatted) {
+        const value = formatted.split(";")[0]!;
+        writes.push(value);
+        if (value === "latest" && action === "set-fails") throw new Error("write denied");
+        if (writes.length === 1) {
+          cookies.cancelPending(name, value);
+          expect(cookies.set(name, "replacement")).toBe(true);
+        } else if (writes.length === 3) {
+          if (action === "purge") expect(cookies.purge(name)).toBe(true);
+          else if (action === "del") expect(cookies.del(name)).toBe(true);
+          else expect(cookies.set(name, "latest")).toBe(action !== "set-fails");
+        }
+        // Even the corrective hook can finish after its nested operation.
+        values.set(name, value);
+      },
+      delCookie: (name) => values.delete(name),
+    });
+    cookies.set("ai_session", "old");
+    cookies.setEnabled(true);
+    if (retry) {
+      expect(values.get("ai_session")).toBe("old");
+      readsFail = false;
+      cookies.setEnabled(true);
+    }
+    const expected =
+      action === "set-fails" ? "replacement" : action === "set" ? "latest" : undefined;
+    expect(values.get("ai_session")).toBe(expected);
+    const completedWrites = [...writes];
+    cookies.setEnabled(true);
+    expect(writes).toEqual(completedWrites);
+    expect(values.get("ai_session")).toBe(expected);
+    cookies.shutdown();
+  },
+);
+
+it("coordinates a newer write inside a corrective deletion hook", () => {
+  const values = new Map<string, string>();
+  const delCookie = vi.fn((name: string) => {
+    expect(cookies.set(name, "latest")).toBe(true);
+    values.delete(name);
+  });
+  const cookies = createCookieManager({
+    enabled: false,
+    getCookie: (name) => values.get(name) ?? "",
+    setCookie(name, formatted) {
+      const value = formatted.split(";")[0]!;
+      if (value === "old") cookies.cancelPending(name, value);
+      values.set(name, value);
+    },
+    delCookie,
+  });
+  cookies.set("ai_session", "old");
+  cookies.setEnabled(true);
+  expect(values.get("ai_session")).toBe("latest");
+  expect(delCookie).toHaveBeenCalledOnce();
+  cookies.setEnabled(true);
+  expect(values.get("ai_session")).toBe("latest");
+  expect(delCookie).toHaveBeenCalledOnce();
+  cookies.shutdown();
+});
+
+it.each(["disable", "shutdown", "disable-enable-disable"] as const)(
+  "does not resume corrective cookie writes after %s inside the hook",
+  (action) => {
+    const values = new Map<string, string>();
+    const writes: string[] = [];
+    const cookies = createCookieManager({
+      enabled: false,
+      getCookie: (name) => values.get(name) ?? "",
+      setCookie(name, formatted) {
+        const value = formatted.split(";")[0]!;
+        writes.push(value);
+        if (writes.length === 1) {
+          cookies.cancelPending(name, value);
+          cookies.set(name, "replacement");
+        } else if (writes.length === 3) {
+          cookies.set(name, "latest");
+          if (action === "shutdown") cookies.shutdown();
+          else {
+            cookies.setEnabled(false);
+            if (action === "disable-enable-disable") {
+              cookies.setEnabled(true);
+              cookies.setEnabled(false);
+            }
+          }
+        }
+        values.set(name, value);
+      },
+      delCookie: (name) => values.delete(name),
+    });
+    cookies.set("ai_session", "old");
+    cookies.setEnabled(true);
+    expect(cookies.isAccessEnabled()).toBe(false);
+    expect(writes).toEqual(["old", "replacement", "replacement", "latest"]);
+    expect(values.get("ai_session")).toBe("replacement");
+    cookies.setEnabled(true);
+    expect(values.get("ai_session")).toBe(action === "shutdown" ? "replacement" : "latest");
+    cookies.shutdown();
+  },
+);
+
+it("retries a failed purge inside a corrective hook at the corrected cookie's scope", () => {
+  const values = new Map<string, string>();
+  const writes: string[] = [];
+  const key = (name: string, formatted: string) =>
+    `${name}:${formatted.match(/; path=([^;]+)/)![1]}`;
+  const delCookie = vi.fn((name: string, formatted: string) => {
+    if (delCookie.mock.calls.length <= 3) throw new Error("delete denied");
+    values.delete(key(name, formatted));
+  });
+  const cookies = createCookieManager({
+    enabled: false,
+    path: "/default",
+    getCookie: (name) => values.get(`${name}:/override`) ?? "",
+    setCookie(name, formatted) {
+      const value = formatted.split(";")[0]!;
+      writes.push(value);
+      if (writes.length === 1) {
+        cookies.cancelPending(name, value);
+        cookies.set(name, "replacement", undefined, undefined, "/override");
+      } else if (writes.length === 3) {
+        expect(cookies.purge(name, "/other")).toBe(false);
+      }
+      values.set(key(name, formatted), value);
+    },
+    delCookie,
+  });
+  cookies.set("ai_session", "old", undefined, undefined, "/override");
+  cookies.setEnabled(true);
+  expect(values.get("ai_session:/override")).toBe("replacement");
+  expect(delCookie).toHaveBeenCalledTimes(3);
+  cookies.setEnabled(true);
+  expect(values.size).toBe(0);
+  expect(delCookie).toHaveBeenLastCalledWith(
+    "ai_session",
+    expect.stringMatching(/; path=\/override$/),
+  );
+  cookies.setEnabled(true);
+  expect(delCookie).toHaveBeenCalledTimes(4);
+  expect(writes).toEqual(["old", "replacement", "replacement"]);
+  cookies.shutdown();
+});
+
+it("bounds corrective re-entry and retains the latest recovery for a later retry", () => {
+  const values = new Map<string, string>();
+  const writes: string[] = [];
+  let nested = false;
+  let reenter = true;
+  let sequence = 0;
+  const cookies = createCookieManager({
+    enabled: false,
+    getCookie: (name) => values.get(name) ?? "",
+    setCookie(name, formatted) {
+      const value = formatted.split(";")[0]!;
+      writes.push(value);
+      if (writes.length === 1) {
+        cookies.cancelPending(name, value);
+        nested = true;
+        cookies.set(name, "correction-0");
+        nested = false;
+      } else if (reenter && !nested) {
+        nested = true;
+        expect(cookies.set(name, `correction-${++sequence}`)).toBe(true);
+        cookies.setEnabled(true);
+        expect(cookies.removeIfValue(name, value)).toBe(false);
+        nested = false;
+      }
+      values.set(name, value);
+    },
+    delCookie: (name) => values.delete(name),
+  });
+  cookies.set("ai_session", "old");
+  cookies.setEnabled(true);
+  expect(writes).toEqual([
+    "old",
+    "correction-0",
+    "correction-0",
+    "correction-1",
+    "correction-1",
+    "correction-2",
+  ]);
+  expect(values.get("ai_session")).toBe("correction-1");
+  reenter = false;
+  cookies.setEnabled(true);
+  expect(values.get("ai_session")).toBe("correction-2");
+  expect(writes).toHaveLength(7);
+  cookies.setEnabled(true);
+  expect(writes).toHaveLength(7);
+  cookies.shutdown();
+});
+
+it("does not restore a superseded correction over a newer deferred operation", () => {
+  const values = new Map<string, string>();
+  const writes: string[] = [];
+  const cookies = createCookieManager({
+    enabled: false,
+    getCookie: (name) => values.get(name) ?? "",
+    setCookie(name, formatted) {
+      const value = formatted.split(";")[0]!;
+      writes.push(value);
+      if (writes.length === 1) {
+        cookies.cancelPending(name, value);
+        cookies.set(name, "replacement");
+      } else if (writes.length === 3) {
+        cookies.set(name, "accepted");
+        cookies.setEnabled(false);
+        cookies.set(name, "deferred");
+        cookies.setEnabled(true);
+      }
+      values.set(name, value);
+    },
+    delCookie: (name) => values.delete(name),
+  });
+  cookies.set("ai_session", "old");
+  cookies.setEnabled(true);
+  expect(values.get("ai_session")).toBe("deferred");
+  expect(writes).toEqual(["old", "replacement", "replacement", "accepted", "deferred"]);
+  cookies.setEnabled(true);
+  expect(writes).toHaveLength(5);
+  cookies.shutdown();
+});
+
 it("queries snapshotted per-name read permission without cookie access", () => {
   const ignored = ["ignored"];
   const manager = createCookieManager({ ignoreCookies: ignored, blockedCookies: ["blocked"] });
@@ -127,6 +385,74 @@ it("queries snapshotted per-name read permission without cookie access", () => {
   expect(manager.canRead("ignored")).toBe(false);
   expect(manager.canRead("blocked")).toBe(true);
   expect(read).not.toHaveBeenCalled();
+});
+
+it("preserves the outer replay while a different cookie is conditionally cleaned up", () => {
+  const values = new Map([["other", "stale"]]);
+  const cookies = createCookieManager({
+    enabled: false,
+    getCookie: (name) => values.get(name) ?? "",
+    setCookie(name, formatted) {
+      const value = formatted.split(";")[0]!;
+      if (name === "ai_session" && value === "old") {
+        cookies.cancelPending(name, value);
+        expect(cookies.removeIfValue("other", "stale")).toBe(true);
+      }
+      values.set(name, value);
+    },
+    delCookie(name) {
+      if (name === "other") expect(cookies.set("ai_session", "latest")).toBe(true);
+      values.delete(name);
+    },
+  });
+  cookies.set("ai_session", "old");
+  cookies.setEnabled(true);
+  expect(values.get("ai_session")).toBe("latest");
+  expect(values.has("other")).toBe(false);
+  cookies.shutdown();
+});
+
+it("flushes deferred operations after a corrective hook re-enables cookies", () => {
+  const values = new Map([["ai_session", "old"]]);
+  const cookies = createCookieManager({
+    getCookie: (name) => values.get(name) ?? "",
+    setCookie: (name, formatted) => values.set(name, formatted.split(";")[0]!),
+    delCookie(name) {
+      cookies.setEnabled(false);
+      expect(cookies.set("other", "deferred")).toBe(true);
+      cookies.setEnabled(true);
+      values.delete(name);
+    },
+  });
+  expect(cookies.removeIfValue("ai_session", "old")).toBe(true);
+  expect(values.has("ai_session")).toBe(false);
+  expect(values.get("other")).toBe("deferred");
+  cookies.shutdown();
+});
+
+it("honors an already-enabled retry requested from a direct corrective hook", () => {
+  const values = new Map([["ai_session", "old"]]);
+  let fail = true;
+  const cookies = createCookieManager({
+    enabled: false,
+    getCookie: (name) => values.get(name) ?? "",
+    setCookie(name, formatted) {
+      if (fail) throw new Error("write denied");
+      values.set(name, formatted.split(";")[0]!);
+    },
+    delCookie(name) {
+      fail = false;
+      cookies.setEnabled(true);
+      values.delete(name);
+    },
+  });
+  cookies.set("other", "deferred");
+  cookies.setEnabled(true);
+  expect(values.has("other")).toBe(false);
+  expect(cookies.removeIfValue("ai_session", "old")).toBe(true);
+  expect(values.get("other")).toBe("deferred");
+  expect(values.has("ai_session")).toBe(false);
+  cookies.shutdown();
 });
 
 it("flushes explicit deletes for ignored and blocked cookies", () => {
@@ -178,6 +504,397 @@ it("formats expiry at enqueue rather than extending it on enable", () => {
   now.mockReturnValue(Date.UTC(2026, 0, 2));
   manager.setEnabled(true);
   expect(setCookie.mock.calls[0]?.[1]).toContain("expires=Thu, 01 Jan 2026 00:01:00 GMT");
+});
+
+it("cancels only the matching pending write without touching browser cookies or newer operations", () => {
+  const values = new Map([["ai_session", "current"]]);
+  const getCookie = vi.fn((name: string) => values.get(name) ?? "");
+  const setCookie = vi.fn((name: string, value: string) => {
+    values.set(name, value.split(";")[0]!);
+  });
+  const delCookie = vi.fn((name: string) => values.delete(name));
+  const manager = createCookieManager({ enabled: false, getCookie, setCookie, delCookie });
+  manager.set("ai_session", "old");
+  manager.cancelPending("ai_session", "old");
+  expect(manager.get("ai_session")).toBe("");
+  manager.set("ai_session", "newer");
+  manager.cancelPending("ai_session", "old");
+  expect(manager.get("ai_session")).toBe("newer");
+  manager.del("other");
+  manager.cancelPending("other", "");
+  for (const operation of [getCookie, setCookie, delCookie]) {
+    expect(operation).not.toHaveBeenCalled();
+  }
+  expect(values.get("ai_session")).toBe("current");
+  manager.setEnabled(true);
+  expect(values.get("ai_session")).toBe("newer");
+  expect(delCookie).toHaveBeenCalledExactlyOnceWith("other", expect.any(String));
+  setCookie.mockClear();
+  delCookie.mockClear();
+  getCookie.mockClear();
+  manager.cancelPending("ai_session", "newer");
+  for (const operation of [getCookie, setCookie, delCookie]) {
+    expect(operation).not.toHaveBeenCalled();
+  }
+  expect(values.get("ai_session")).toBe("newer");
+});
+
+it("removes an accepted stale value only while it still owns the current cookie", () => {
+  const values = new Map([["ai_session", "newer"]]);
+  const delCookie = vi.fn((name: string) => values.delete(name));
+  let fails = false;
+  const manager = createCookieManager({
+    getCookie(name) {
+      if (fails) throw new Error("unavailable");
+      return values.get(name) ?? "";
+    },
+    delCookie,
+  });
+  manager.removeIfValue("ai_session", "old");
+  expect(values.get("ai_session")).toBe("newer");
+  values.set("ai_session", "old");
+  fails = true;
+  manager.removeIfValue("ai_session", "old");
+  expect(delCookie).not.toHaveBeenCalled();
+  fails = false;
+  manager.removeIfValue("ai_session", "old");
+  expect(values.has("ai_session")).toBe(false);
+  expect(delCookie).toHaveBeenCalledExactlyOnceWith("ai_session", expect.any(String));
+});
+
+it.each(["disable", "shutdown", "disable-enable"] as const)(
+  "does not conditionally delete after a read hook changes access with %s",
+  (action) => {
+    const values = new Map([["ai_session", "old"]]);
+    let revoke = true;
+    const delCookie = vi.fn((name: string) => values.delete(name));
+    const cookies = createCookieManager({
+      getCookie(name) {
+        if (revoke) {
+          if (action === "shutdown") cookies.shutdown();
+          else {
+            cookies.setEnabled(false);
+            if (action === "disable-enable") cookies.setEnabled(true);
+          }
+        }
+        return values.get(name) ?? "";
+      },
+      delCookie,
+    });
+    expect(cookies.removeIfValue("ai_session", "old")).toBe(false);
+    expect(values.get("ai_session")).toBe("old");
+    expect(delCookie).not.toHaveBeenCalled();
+    revoke = false;
+    cookies.setEnabled(true);
+    expect(cookies.removeIfValue("ai_session", "old")).toBe(action !== "shutdown");
+    expect(delCookie).toHaveBeenCalledTimes(action === "shutdown" ? 0 : 1);
+    cookies.shutdown();
+  },
+);
+
+it.each(["disable", "shutdown", "disable-enable"] as const)(
+  "does not replay a replacement after its conditional read changes access with %s",
+  (action) => {
+    const values = new Map<string, string>();
+    const writes: string[] = [];
+    let revoke = true;
+    const delCookie = vi.fn((name: string) => values.delete(name));
+    const cookies = createCookieManager({
+      enabled: false,
+      getCookie(name) {
+        if (revoke) {
+          if (action === "shutdown") cookies.shutdown();
+          else {
+            cookies.setEnabled(false);
+            if (action === "disable-enable") cookies.setEnabled(true);
+          }
+        }
+        return values.get(name) ?? "";
+      },
+      setCookie(name, formatted) {
+        const value = formatted.split(";")[0]!;
+        writes.push(value);
+        if (value === "old") {
+          cookies.cancelPending(name, value);
+          cookies.set(name, "newer");
+        }
+        values.set(name, value);
+      },
+      delCookie,
+    });
+    cookies.set("ai_session", "old");
+    cookies.setEnabled(true);
+    expect(writes).toEqual(["old", "newer"]);
+    expect(delCookie).not.toHaveBeenCalled();
+    revoke = false;
+    cookies.setEnabled(true);
+    expect(values.get("ai_session")).toBe(action === "shutdown" ? "old" : "newer");
+    cookies.shutdown();
+  },
+);
+
+it("does not conditionally delete a newer write made by its read hook", () => {
+  const values = new Map([["ai_session", "old"]]);
+  const delCookie = vi.fn((name: string) => values.delete(name));
+  const cookies = createCookieManager({
+    getCookie(name) {
+      const observed = values.get(name) ?? "";
+      cookies.set(name, "newer");
+      return observed;
+    },
+    setCookie: (name, value) => values.set(name, value.split(";")[0]!),
+    delCookie,
+  });
+  expect(cookies.removeIfValue("ai_session", "old")).toBe(false);
+  expect(values.get("ai_session")).toBe("newer");
+  expect(delCookie).not.toHaveBeenCalled();
+  cookies.shutdown();
+});
+
+it.each(["set", "defer", "purge"] as const)(
+  "does not retry interrupted cleanup after a newer %s supersedes it",
+  (action) => {
+    const values = new Map<string, string>();
+    let revoke = true;
+    const cookies = createCookieManager({
+      enabled: false,
+      getCookie(name) {
+        if (revoke) cookies.setEnabled(false);
+        return values.get(name) ?? "";
+      },
+      setCookie(name, formatted) {
+        const value = formatted.split(";")[0]!;
+        if (value === "old") {
+          cookies.cancelPending(name, value);
+          cookies.set(name, "replacement");
+        }
+        values.set(name, value);
+      },
+      delCookie: (name) => values.delete(name),
+    });
+    cookies.set("ai_session", "old");
+    cookies.setEnabled(true);
+    revoke = false;
+    if (action === "set") cookies.setEnabled(true);
+    if (action === "purge") cookies.purge("ai_session");
+    else cookies.set("ai_session", "latest");
+    cookies.setEnabled(true);
+    expect(values.get("ai_session")).toBe(action === "purge" ? undefined : "latest");
+    cookies.shutdown();
+  },
+);
+
+it.each(
+  [undefined, "/purged"].flatMap((path) =>
+    [2, 3].map((failedDeletes) => ({ path, failedDeletes })),
+  ),
+)(
+  "supersedes a cancelled replay replacement with purge (path=$path, failed deletes=$failedDeletes)",
+  ({ path, failedDeletes }) => {
+    const values = new Map<string, string>();
+    const writes: string[] = [];
+    const delCookie = vi.fn((name: string, _formatted: string) => {
+      if (delCookie.mock.calls.length <= failedDeletes) throw new Error("delete denied");
+      values.delete(name);
+    });
+    const cookies = createCookieManager({
+      enabled: false,
+      domain: "example.test",
+      path: "/default",
+      getCookie: (name) => values.get(name) ?? "",
+      setCookie(name, formatted) {
+        const value = formatted.split(";")[0]!;
+        writes.push(value);
+        if (value === "old") {
+          cookies.cancelPending(name, value);
+          expect(cookies.set(name, "newer", undefined, undefined, path)).toBe(true);
+          expect(cookies.purge(name, path)).toBe(false);
+        }
+        // The outer hook completes after its nested replacement and failed purge.
+        values.set(name, value);
+      },
+      delCookie,
+    });
+    cookies.set("ai_session", "old", undefined, undefined, path);
+    cookies.setEnabled(true);
+    expect(writes).toEqual(["old", "newer"]);
+    expect(values.get("ai_session")).toBe(failedDeletes === 3 ? "old" : undefined);
+    expect(delCookie).toHaveBeenCalledTimes(3);
+    cookies.setEnabled(true);
+    expect(values.has("ai_session")).toBe(false);
+    expect(delCookie).toHaveBeenCalledTimes(failedDeletes === 3 ? 4 : 3);
+    cookies.setEnabled(true);
+    expect(delCookie).toHaveBeenCalledTimes(failedDeletes === 3 ? 4 : 3);
+    expect(writes).toEqual(["old", "newer"]);
+    for (const [name, formatted] of delCookie.mock.calls) {
+      expect(name).toBe("ai_session");
+      expect(formatted).toContain(`; domain=example.test; path=${path ?? "/default"}`);
+    }
+    cookies.shutdown();
+  },
+);
+
+it.each(
+  [false, true].flatMap((replacement) =>
+    ["/default", "/override"].map((path) => ({ replacement, path })),
+  ),
+)(
+  "preserves cancelled-write cleanup when a purge targets a different path (replacement=$replacement, replay path=$path)",
+  ({ replacement, path }) => {
+    const values = new Map([["ai_session:/other", "other"]]);
+    const writes: string[] = [];
+    const cookieKey = (name: string, formatted: string) =>
+      `${name}:${formatted.match(/; path=([^;]+)/)![1]}`;
+    const cookies = createCookieManager({
+      enabled: false,
+      path: "/default",
+      getCookie: (name) => values.get(`${name}:${path}`) ?? "",
+      setCookie(name, formatted) {
+        const value = formatted.split(";")[0]!;
+        writes.push(value);
+        if (value === "old") {
+          cookies.cancelPending(name, value);
+          if (replacement) {
+            expect(cookies.set(name, "newer", undefined, undefined, path)).toBe(true);
+          }
+          expect(cookies.purge(name, "/other")).toBe(true);
+        }
+        values.set(cookieKey(name, formatted), value);
+      },
+      delCookie: (name, formatted) => values.delete(cookieKey(name, formatted)),
+    });
+    cookies.set("ai_session", "old", undefined, undefined, path);
+    cookies.setEnabled(true);
+    expect(writes).toEqual(replacement ? ["old", "newer"] : ["old"]);
+    expect(values.size).toBe(0);
+    cookies.setEnabled(true);
+    expect(values.size).toBe(0);
+    cookies.shutdown();
+  },
+);
+
+it("preserves a later accepted write during failed post-replay purge cleanup", () => {
+  const values = new Map<string, string>();
+  const writes: string[] = [];
+  const delCookie = vi.fn((name: string) => {
+    if (delCookie.mock.calls.length === 2) expect(cookies.set(name, "old")).toBe(true);
+    if (delCookie.mock.calls.length <= 2) throw new Error("delete denied");
+    values.delete(name);
+  });
+  const cookies = createCookieManager({
+    enabled: false,
+    getCookie: (name) => values.get(name) ?? "",
+    setCookie(name, formatted) {
+      const value = formatted.split(";")[0]!;
+      writes.push(value);
+      if (writes.length === 1) {
+        cookies.cancelPending(name, value);
+        expect(cookies.set(name, "newer")).toBe(true);
+        expect(cookies.purge(name)).toBe(false);
+      }
+      values.set(name, value);
+    },
+    delCookie,
+  });
+  cookies.set("ai_session", "old");
+  cookies.setEnabled(true);
+  expect(values.get("ai_session")).toBe("old");
+  expect(writes).toEqual(["old", "newer", "old", "old"]);
+  expect(delCookie).toHaveBeenCalledTimes(2);
+  cookies.setEnabled(true);
+  expect(values.get("ai_session")).toBe("old");
+  expect(writes).toEqual(["old", "newer", "old", "old"]);
+  cookies.shutdown();
+});
+
+it.each([false, true])(
+  "only accepts a successful newer write after a cancelled replay purge (write fails=%s)",
+  (writeFails) => {
+    const values = new Map<string, string>();
+    const writes: string[] = [];
+    const delCookie = vi.fn((name: string) => {
+      if (delCookie.mock.calls.length <= 2) throw new Error("delete denied");
+      values.delete(name);
+    });
+    const cookies = createCookieManager({
+      enabled: false,
+      getCookie: (name) => values.get(name) ?? "",
+      setCookie(name, formatted) {
+        const value = formatted.split(";")[0]!;
+        writes.push(value);
+        if (value === "latest" && writeFails) throw new Error("write denied");
+        if (value === "old") {
+          cookies.cancelPending(name, value);
+          expect(cookies.set(name, "newer")).toBe(true);
+          expect(cookies.purge(name)).toBe(false);
+          expect(cookies.set(name, "latest")).toBe(!writeFails);
+        }
+        values.set(name, value);
+      },
+      delCookie,
+    });
+    cookies.set("ai_session", "old");
+    cookies.setEnabled(true);
+    cookies.setEnabled(true);
+    expect(values.get("ai_session")).toBe(writeFails ? undefined : "latest");
+    expect(writes).toEqual(
+      writeFails ? ["old", "newer", "latest"] : ["old", "newer", "latest", "latest"],
+    );
+    cookies.shutdown();
+  },
+);
+
+it.each([false, true])(
+  "cancels an in-flight old replay without undoing a newer cookie (newer=%s)",
+  (newer) => {
+    const values = new Map<string, string>();
+    const manager = createCookieManager({
+      enabled: false,
+      getCookie: (name) => values.get(name) ?? "",
+      setCookie(name, formatted) {
+        const value = formatted.split(";")[0]!;
+        if (value === "old") {
+          manager.cancelPending(name, value);
+          values.set(name, value);
+          if (newer) manager.set(name, "newer");
+        } else values.set(name, value);
+      },
+      delCookie: (name) => values.delete(name),
+    });
+    manager.set("ai_session", "old");
+    manager.setEnabled(true);
+    expect(values.get("ai_session")).toBe(newer ? "newer" : undefined);
+  },
+);
+
+it("retains conditional replacement cleanup when a newer explicit write fails", () => {
+  const values = new Map<string, string>();
+  let readsFail = true;
+  const cookies = createCookieManager({
+    enabled: false,
+    getCookie(name) {
+      if (readsFail) throw new Error("unavailable");
+      return values.get(name) ?? "";
+    },
+    setCookie(name, formatted) {
+      const value = formatted.split(";")[0]!;
+      if (value === "failed") throw new Error("write unavailable");
+      if (value === "old") {
+        cookies.cancelPending(name, value);
+        cookies.set(name, "replacement");
+      }
+      values.set(name, value);
+    },
+    delCookie: (name) => values.delete(name),
+  });
+  cookies.set("ai_session", "old");
+  cookies.setEnabled(true);
+  expect(values.get("ai_session")).toBe("old");
+  expect(cookies.set("ai_session", "failed")).toBe(false);
+  readsFail = false;
+  cookies.setEnabled(true);
+  expect(values.get("ai_session")).toBe("replacement");
+  cookies.shutdown();
 });
 
 it("retains failed deferred writes and deletes for a later enable without generic cleanup", () => {

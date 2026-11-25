@@ -4,6 +4,7 @@
 import { diag } from "@opentelemetry/api";
 import { afterEach, expect, it, vi } from "vitest";
 import { createCookieManager } from "../../../src/storage/cookieManager.js";
+import { resolveCookieNames } from "../../../src/storage/cookieNaming.js";
 import { createKeyValueStorage } from "../../../src/storage/keyValueStorage.js";
 import { createSession } from "../../../src/session/createSession.js";
 import type { MicrosoftOpenTelemetryBrowserCookieManager } from "../../../src/types.js";
@@ -83,7 +84,7 @@ it.each(["hook", "browser"] as const)(
       setCookie: write,
     });
     const onNewUser = vi.fn();
-    const { context, provider } = createCookieUserContext(true, cookies, "", onNewUser);
+    const { context, provider } = createCookieUserContext(true, cookies, undefined, onNewUser);
     expect(provider.getAnonymousUserId()).toBeUndefined();
     context.setEnabled(true);
     expect(write).not.toHaveBeenCalled();
@@ -103,7 +104,7 @@ it.each([false, true])(
     const { context, provider, shutdown } = createCookieUserContext(
       enabled,
       cookies,
-      "app-",
+      resolveCookieNames({}, "app-"),
       undefined,
       true,
       cleanup,
@@ -132,6 +133,43 @@ it.each([false, true])(
   },
 );
 
+it.each(["result", "throw"] as const)(
+  "retains an unresolved owner after a failed %s read through disabled synthetic reads",
+  (failure) => {
+    let access = true;
+    let failing = true;
+    const cookies = {
+      ...fakeManager().cookies,
+      isAccessEnabled: () => access,
+      read: vi.fn(() => {
+        if (failing) {
+          if (failure === "throw") throw new Error("unavailable");
+          return { success: false as const };
+        }
+        return {
+          success: true as const,
+          value: encode({ anonymousId: "user", acquisitionTimestamp: 42 }),
+        };
+      }),
+    };
+    const identity = createCookieUserContext(false, cookies);
+    identity.context.setEnabled(true);
+    expect(identity.getSessionOwner()).toBeUndefined();
+    access = false;
+    failing = false;
+    cookies.read.mockClear();
+    identity.context.setEnabled(true);
+    expect(identity.getSessionOwner()).toBeUndefined();
+    expect(cookies.read).not.toHaveBeenCalled();
+    access = true;
+    expect(identity.provider.getAnonymousUserId()).toBe("user");
+    expect(identity.getSessionOwner()).toBe("user");
+    identity.context.setEnabled(false);
+    expect(identity.getSessionOwner()).toBeNull();
+    identity.shutdown();
+  },
+);
+
 it.each(["clear", "purge"] as const)(
   "contains legacy %s cleanup failures independently of cookie cleanup failures",
   (action) => {
@@ -143,7 +181,7 @@ it.each(["clear", "purge"] as const)(
     const { context, provider } = createCookieUserContext(
       true,
       cookies,
-      "",
+      undefined,
       undefined,
       true,
       cleanup,
@@ -205,7 +243,7 @@ it.each([
   const { context, provider } = createCookieUserContext(
     enabled,
     cookies,
-    prefix,
+    resolveCookieNames({}, prefix),
     undefined,
     true,
     cleanup,
@@ -261,7 +299,7 @@ it.each([false, true])(
     const { context, shutdown } = createCookieUserContext(
       enabled,
       fakeManager().cookies,
-      "app-",
+      resolveCookieNames({}, "app-"),
       undefined,
       true,
       cleanup,
@@ -283,13 +321,13 @@ it("does not restore a previous login after an oversized cookie replacement", ()
   const prefix = "oversized-auth-test-";
   const cookies = createCookieManager();
   try {
-    const first = createCookieUserContext(true, cookies, prefix);
+    const first = createCookieUserContext(true, cookies, resolveCookieNames({}, prefix));
     first.context.setAuthenticatedUserContext("previous-user", "previous-account", true);
     expect(cookies.get(`${prefix}${authenticatedCookie}`)).not.toBe("");
     const replacement = "雪".repeat(1000);
     first.context.setAuthenticatedUserContext(replacement, "new-account", true);
     expect(first.provider.getAuthenticatedUserId()).toBe(replacement);
-    const restored = createCookieUserContext(true, cookies, prefix);
+    const restored = createCookieUserContext(true, cookies, resolveCookieNames({}, prefix));
     expect(restored.provider.getAuthenticatedUserId()).toBeUndefined();
     expect(restored.provider.getAccountId()).toBeUndefined();
   } finally {
@@ -383,8 +421,8 @@ it("restores an Application Insights auth cookie whose delimiter was URI-encoded
 
 it("isolates prefixed cookies and leaves other applications untouched", () => {
   const { cookies, values } = fakeManager();
-  const first = createCookieUserContext(true, cookies, "first-");
-  const second = createCookieUserContext(true, cookies, "second-");
+  const first = createCookieUserContext(true, cookies, resolveCookieNames({}, "first-"));
+  const second = createCookieUserContext(true, cookies, resolveCookieNames({}, "second-"));
   first.context.setAuthenticatedUserContext("first", undefined, true);
   second.context.setAuthenticatedUserContext("second", "account", true);
   first.context.setEnabled(false);
@@ -821,7 +859,7 @@ it.each([false, true])(
       setCookie,
     });
     const onNewUser = vi.fn();
-    const { context, provider } = createCookieUserContext(true, cookies, "", onNewUser);
+    const { context, provider } = createCookieUserContext(true, cookies, undefined, onNewUser);
     context.setAuthenticatedUserContext("current-login", undefined, true);
     expect(provider.getAnonymousUserId()).toBeUndefined();
     expect(onNewUser).not.toHaveBeenCalled();
@@ -843,7 +881,7 @@ it.each(["", "%", legacyEncode({ anonymousId: "invalid" })])(
     const onNewUser = vi.fn(() => {
       expect(cookies.set).not.toHaveBeenCalled();
     });
-    createCookieUserContext(true, cookies, "", onNewUser);
+    createCookieUserContext(true, cookies, undefined, onNewUser);
     expect(onNewUser).toHaveBeenCalledExactlyOnceWith();
     expect(cookies.set).toHaveBeenCalledTimes(1);
   },
@@ -853,7 +891,7 @@ it("does not notify a new user for an existing valid anonymous cookie", () => {
   const { cookies, values } = fakeManager();
   values.set(anonymousCookie, encode({ anonymousId: "existing-user", acquisitionTimestamp: 42 }));
   const onNewUser = vi.fn();
-  const { provider } = createCookieUserContext(true, cookies, "", onNewUser);
+  const { provider } = createCookieUserContext(true, cookies, undefined, onNewUser);
   expect(provider.getAnonymousUserId()).toBe("existing-user");
   expect(onNewUser).not.toHaveBeenCalled();
   expect(cookies.set).not.toHaveBeenCalled();
@@ -889,7 +927,7 @@ it.each(["", "app-"])(
       const session = createSession({}, storage, cookies, sessionCookie);
       const onNewUser = vi.fn(() => session.discardBackup());
       // Internal permission comes from the same validated snapshot as the cookie manager.
-      createCookieUserContext(true, cookies, prefix, onNewUser, false);
+      createCookieUserContext(true, cookies, resolveCookieNames({}, prefix), onNewUser, false);
       try {
         await session.start();
         expect(session.getSessionId()).toBe("existing-session");
@@ -912,7 +950,7 @@ it("still detects a missing anonymous cookie when writes are blocked but reads a
     setCookie: vi.fn(),
   });
   const onNewUser = vi.fn();
-  const { provider } = createCookieUserContext(true, cookies, "", onNewUser, true);
+  const { provider } = createCookieUserContext(true, cookies, undefined, onNewUser, true);
   expect(onNewUser).toHaveBeenCalledExactlyOnceWith();
   expect(provider.getAnonymousUserId()).toBeUndefined();
   expect(onNewUser).toHaveBeenCalledTimes(1);
@@ -927,7 +965,7 @@ it.each(["disabled", "unavailable", "throws"])(
       return false;
     });
     const onNewUser = vi.fn();
-    const { provider } = createCookieUserContext(true, cookies, "", onNewUser);
+    const { provider } = createCookieUserContext(true, cookies, undefined, onNewUser);
     provider.getAnonymousUserId();
     expect(onNewUser).not.toHaveBeenCalled();
   },
@@ -936,7 +974,7 @@ it.each(["disabled", "unavailable", "throws"])(
 it("does not access cookies or notify new users while user context is disabled", () => {
   const { cookies } = fakeManager();
   const onNewUser = vi.fn();
-  const { context, provider } = createCookieUserContext(false, cookies, "", onNewUser);
+  const { context, provider } = createCookieUserContext(false, cookies, undefined, onNewUser);
   expect(provider.getAnonymousUserId()).toBeUndefined();
   expect(onNewUser).not.toHaveBeenCalled();
   expect(cookies.isEnabled).not.toHaveBeenCalled();
@@ -1041,7 +1079,7 @@ it("bounds new-user notification across failed retries and contains callback fai
   const onNewUser = vi.fn(() => {
     throw new Error("backup cleanup failed");
   });
-  const { provider } = createCookieUserContext(true, cookies, "", onNewUser);
+  const { provider } = createCookieUserContext(true, cookies, undefined, onNewUser);
   expect(provider.getAnonymousUserId()).toBeUndefined();
   expect(provider.getAnonymousUserId()).toBeUndefined();
   expect(onNewUser).toHaveBeenCalledTimes(1);

@@ -16,6 +16,10 @@ All notable changes to this package are documented in this file.
 
 ### Added
 
+- Support startup-only Application Insights cookie naming through `namePrefix`,
+  `userCookiePostfix` and `sessionCookiePostfix`, including the generated loader. Preserve
+  existing `storage.namePrefix` behavior and reject mixed nonempty naming styles. Keep
+  suffixed session backups isolated from each other and from Application Insights backup values.
 - Add an optional `/debug` entry with an in-page telemetry inspector, bounded snapshots, export
   results, and opt-in SDK User Timing marks and measures.
 - Add opt-in fetch and XHR header capture with sensitive-header exclusions, failed HTTP status
