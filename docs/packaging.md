@@ -77,12 +77,12 @@ in each Node job's check summary and uploads all three files as build artifacts.
 
 Every executable published entry point has absolute minified, gzip and Brotli budgets:
 
-| Entry point          |  Minified |     Gzip |   Brotli |
-| -------------------- | --------: | -------: | -------: |
-| `.`                  | 175.75 kB |  55.5 kB |  48.5 kB |
-| `./instrumentations` |  78.25 kB | 29.75 kB |  26.5 kB |
-| `./debug`            |     16 kB |     6 kB |     5 kB |
-| `./snippet`          | 8.0625 kB |   3.5 kB | 3.125 kB |
+| Entry point          | Minified |     Gzip |  Brotli |
+| -------------------- | -------: | -------: | ------: |
+| `.`                  | 176.5 kB |    56 kB |   49 kB |
+| `./instrumentations` | 78.25 kB | 29.75 kB | 26.5 kB |
+| `./debug`            |    16 kB |     6 kB |    5 kB |
+| `./snippet`          |     9 kB |     4 kB |  3.5 kB |
 
 The generated JSON and Markdown reports show the measured values, ceilings and result for each
 entry point. During alpha releases, violations are report-only so the baselines can stabilize.
@@ -94,10 +94,10 @@ comparison remains informational and does not replace the absolute gate.
 emits them, so it must run after a production build. Their budgets block in every release channel,
 including alpha:
 
-| Artifact                                                   |  Minified |     Gzip |   Brotli |
-| ---------------------------------------------------------- | --------: | -------: | -------: |
-| `opentelemetry-browser.{iife,umd}.min.js`                  | 204.75 kB |    66 kB | 57.25 kB |
-| `opentelemetry-browser-instrumentations.{iife,umd}.min.js` |     63 kB | 19.25 kB |  17.5 kB |
+| Artifact                                                   | Minified |     Gzip |   Brotli |
+| ---------------------------------------------------------- | -------: | -------: | -------: |
+| `opentelemetry-browser.{iife,umd}.min.js`                  |   206 kB |    66 kB | 57.75 kB |
+| `opentelemetry-browser-instrumentations.{iife,umd}.min.js` |    63 kB | 19.25 kB |  17.5 kB |
 
 Instrumentation budgets include the opt-in dependency enrichment adapter, retryable patch cleanup,
 and conservative timing-overlap tracking. The self-contained SDK bundles include the instrumentation
@@ -108,7 +108,11 @@ anonymous-user ownership validation for session backups, including opt-out and d
 the root allowance includes exact-value cleanup, bounded retries, and re-entrant write protection.
 These allowances also cover unresolved-owner tracking across cookie-access changes, suspension of
 unvalidated renewals, and retryable conditional cleanup that preserves newer writes after re-entry.
-The snippet's minified budget includes diagnostic console-level validation.
+Corrective writes and their later retries now coordinate nested operations per cookie name, with
+bounded follow-up recovery. The root and SDK ceilings include this recovery state. The snippet
+allowance covers the current loader generator, including startup buffering and diagnostic
+console-level validation. These ceilings reflect measured production minified, gzip, and Brotli
+output, with a small allowance for build variation; the blocking size gates remain enabled.
 
 Click Analytics is available only through the npm instrumentations entry, including its factory and
 behavior validators. Its implementation remains a lazy npm chunk; neither the root SDK nor either
