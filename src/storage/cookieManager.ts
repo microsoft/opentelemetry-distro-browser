@@ -87,6 +87,7 @@ export function createCookieManager(
   let inFlightReplay:
     | {
         name: string;
+        scope?: string;
         cleanup?: () => boolean;
         cancelledValue?: string;
         replacement?: () => boolean;
@@ -268,13 +269,15 @@ export function createCookieManager(
           for (const [name, operation] of Array.from(pending)) {
             if (stopped || !enabled) break;
             if (pending.get(name) !== operation) continue;
-            const replay: typeof inFlightReplay = operation.remove ? undefined : { name };
+            const replay: typeof inFlightReplay = operation.remove
+              ? undefined
+              : { name, scope: operation.scope };
             inFlightReplay = replay;
             const success = write(name, operation.formatted, operation.remove);
-            inFlightReplay = undefined;
             // A hook may finish writing after a nested purge. Honor that purge once more,
             // unless a newer same-name write superseded it while the hook was running.
             replay?.cleanup?.();
+            inFlightReplay = undefined;
             if (replay?.cancelledValue !== undefined) {
               if (!stopped) {
                 pendingCleanup.set(name, {
@@ -353,6 +356,9 @@ export function createCookieManager(
       if (!validScope(name, path) || !validPrefixScope(name, path)) return false;
       const formatted = deletion(attributes(settings.domain, path || settings.path || "/"));
       if (inFlightReplay?.name === name) {
+        // Purge supersedes prior replacement writes; remove a cancelled replay at its own scope.
+        const cancelledDeletion = deletion(inFlightReplay.scope);
+        inFlightReplay.replacement = () => write(name, cancelledDeletion, true);
         inFlightReplay.cleanup = () => write(name, formatted, true);
       }
       return write(name, formatted, true);

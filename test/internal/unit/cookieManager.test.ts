@@ -378,6 +378,166 @@ it.each(["set", "defer", "purge"] as const)(
   },
 );
 
+it.each(
+  [undefined, "/purged"].flatMap((path) =>
+    [2, 3].map((failedDeletes) => ({ path, failedDeletes })),
+  ),
+)(
+  "supersedes a cancelled replay replacement with purge (path=$path, failed deletes=$failedDeletes)",
+  ({ path, failedDeletes }) => {
+    const values = new Map<string, string>();
+    const writes: string[] = [];
+    const delCookie = vi.fn((name: string, _formatted: string) => {
+      if (delCookie.mock.calls.length <= failedDeletes) throw new Error("delete denied");
+      values.delete(name);
+    });
+    const cookies = createCookieManager({
+      enabled: false,
+      domain: "example.test",
+      path: "/default",
+      getCookie: (name) => values.get(name) ?? "",
+      setCookie(name, formatted) {
+        const value = formatted.split(";")[0]!;
+        writes.push(value);
+        if (value === "old") {
+          cookies.cancelPending(name, value);
+          expect(cookies.set(name, "newer", undefined, undefined, path)).toBe(true);
+          expect(cookies.purge(name, path)).toBe(false);
+        }
+        // The outer hook completes after its nested replacement and failed purge.
+        values.set(name, value);
+      },
+      delCookie,
+    });
+    cookies.set("ai_session", "old", undefined, undefined, path);
+    cookies.setEnabled(true);
+    expect(writes).toEqual(["old", "newer"]);
+    expect(values.get("ai_session")).toBe(failedDeletes === 3 ? "old" : undefined);
+    expect(delCookie).toHaveBeenCalledTimes(3);
+    cookies.setEnabled(true);
+    expect(values.has("ai_session")).toBe(false);
+    expect(delCookie).toHaveBeenCalledTimes(failedDeletes === 3 ? 4 : 3);
+    cookies.setEnabled(true);
+    expect(delCookie).toHaveBeenCalledTimes(failedDeletes === 3 ? 4 : 3);
+    expect(writes).toEqual(["old", "newer"]);
+    for (const [name, formatted] of delCookie.mock.calls) {
+      expect(name).toBe("ai_session");
+      expect(formatted).toContain(`; domain=example.test; path=${path ?? "/default"}`);
+    }
+    cookies.shutdown();
+  },
+);
+
+it.each(
+  [false, true].flatMap((replacement) =>
+    ["/default", "/override"].map((path) => ({ replacement, path })),
+  ),
+)(
+  "preserves cancelled-write cleanup when a purge targets a different path (replacement=$replacement, replay path=$path)",
+  ({ replacement, path }) => {
+    const values = new Map([["ai_session:/other", "other"]]);
+    const writes: string[] = [];
+    const cookieKey = (name: string, formatted: string) =>
+      `${name}:${formatted.match(/; path=([^;]+)/)![1]}`;
+    const cookies = createCookieManager({
+      enabled: false,
+      path: "/default",
+      getCookie: (name) => values.get(`${name}:${path}`) ?? "",
+      setCookie(name, formatted) {
+        const value = formatted.split(";")[0]!;
+        writes.push(value);
+        if (value === "old") {
+          cookies.cancelPending(name, value);
+          if (replacement) {
+            expect(cookies.set(name, "newer", undefined, undefined, path)).toBe(true);
+          }
+          expect(cookies.purge(name, "/other")).toBe(true);
+        }
+        values.set(cookieKey(name, formatted), value);
+      },
+      delCookie: (name, formatted) => values.delete(cookieKey(name, formatted)),
+    });
+    cookies.set("ai_session", "old", undefined, undefined, path);
+    cookies.setEnabled(true);
+    expect(writes).toEqual(replacement ? ["old", "newer"] : ["old"]);
+    expect(values.size).toBe(0);
+    cookies.setEnabled(true);
+    expect(values.size).toBe(0);
+    cookies.shutdown();
+  },
+);
+
+it("preserves a later accepted write during failed post-replay purge cleanup", () => {
+  const values = new Map<string, string>();
+  const writes: string[] = [];
+  const delCookie = vi.fn((name: string) => {
+    if (delCookie.mock.calls.length === 2) expect(cookies.set(name, "old")).toBe(true);
+    if (delCookie.mock.calls.length <= 2) throw new Error("delete denied");
+    values.delete(name);
+  });
+  const cookies = createCookieManager({
+    enabled: false,
+    getCookie: (name) => values.get(name) ?? "",
+    setCookie(name, formatted) {
+      const value = formatted.split(";")[0]!;
+      writes.push(value);
+      if (writes.length === 1) {
+        cookies.cancelPending(name, value);
+        expect(cookies.set(name, "newer")).toBe(true);
+        expect(cookies.purge(name)).toBe(false);
+      }
+      values.set(name, value);
+    },
+    delCookie,
+  });
+  cookies.set("ai_session", "old");
+  cookies.setEnabled(true);
+  expect(values.get("ai_session")).toBe("old");
+  expect(writes).toEqual(["old", "newer", "old", "old"]);
+  expect(delCookie).toHaveBeenCalledTimes(2);
+  cookies.setEnabled(true);
+  expect(values.get("ai_session")).toBe("old");
+  expect(writes).toEqual(["old", "newer", "old", "old"]);
+  cookies.shutdown();
+});
+
+it.each([false, true])(
+  "only accepts a successful newer write after a cancelled replay purge (write fails=%s)",
+  (writeFails) => {
+    const values = new Map<string, string>();
+    const writes: string[] = [];
+    const delCookie = vi.fn((name: string) => {
+      if (delCookie.mock.calls.length <= 2) throw new Error("delete denied");
+      values.delete(name);
+    });
+    const cookies = createCookieManager({
+      enabled: false,
+      getCookie: (name) => values.get(name) ?? "",
+      setCookie(name, formatted) {
+        const value = formatted.split(";")[0]!;
+        writes.push(value);
+        if (value === "latest" && writeFails) throw new Error("write denied");
+        if (value === "old") {
+          cookies.cancelPending(name, value);
+          expect(cookies.set(name, "newer")).toBe(true);
+          expect(cookies.purge(name)).toBe(false);
+          expect(cookies.set(name, "latest")).toBe(!writeFails);
+        }
+        values.set(name, value);
+      },
+      delCookie,
+    });
+    cookies.set("ai_session", "old");
+    cookies.setEnabled(true);
+    cookies.setEnabled(true);
+    expect(values.get("ai_session")).toBe(writeFails ? undefined : "latest");
+    expect(writes).toEqual(
+      writeFails ? ["old", "newer", "latest"] : ["old", "newer", "latest", "latest"],
+    );
+    cookies.shutdown();
+  },
+);
+
 it.each([false, true])(
   "cancels an in-flight old replay without undoing a newer cookie (newer=%s)",
   (newer) => {
