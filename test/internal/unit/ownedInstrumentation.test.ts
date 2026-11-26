@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-import { logs } from "@opentelemetry/api-logs";
+import { logs } from "@opentelemetry/api";
 import { context, diag, propagation, trace } from "@opentelemetry/api";
 import {
   BatchLogRecordProcessor,

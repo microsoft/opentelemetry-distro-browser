@@ -2,7 +2,7 @@ import { useMicrosoftOpenTelemetry } from "@microsoft/opentelemetry-browser";
 import { getInstrumentations } from "@microsoft/opentelemetry-browser/instrumentations";
 import { resourceFromAttributes } from "@opentelemetry/resources";
 import { ConsoleLogRecordExporter, SimpleLogRecordProcessor } from "@opentelemetry/sdk-logs";
-import { ConsoleSpanExporter, SimpleSpanProcessor } from "@opentelemetry/sdk-trace-base";
+import { ConsoleSpanExporter, SimpleSpanProcessor } from "@opentelemetry/sdk-trace";
 
 export async function initializeTelemetry(): Promise<void> {
   await useMicrosoftOpenTelemetry({
@@ -11,7 +11,7 @@ export async function initializeTelemetry(): Promise<void> {
       "service.version": "0.1.0",
     }),
     session: { enabled: true },
-    spanProcessors: [new SimpleSpanProcessor(new ConsoleSpanExporter())],
+    spanProcessors: [new SimpleSpanProcessor({ exporter: new ConsoleSpanExporter() })],
     logRecordProcessors: [
       new SimpleLogRecordProcessor({ exporter: new ConsoleLogRecordExporter() }),
     ],

@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 import type { LogRecordExporter, LogRecordProcessor } from "@opentelemetry/sdk-logs";
-import type { SpanExporter, SpanProcessor } from "@opentelemetry/sdk-trace-base";
+import type { SpanExporter, SpanProcessor } from "@opentelemetry/sdk-trace";
 
 /** Development-only viewer configuration. @public */
 export interface TelemetryDebuggerOptions {

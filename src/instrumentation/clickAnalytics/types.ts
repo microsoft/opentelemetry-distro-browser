@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-import type { LoggerProvider, LogRecord } from "@opentelemetry/api-logs";
+import type { LoggerProvider, LogRecord } from "@opentelemetry/api";
 import type { InstrumentationConfig } from "@opentelemetry/instrumentation";
 import type { BrowserInstrumentation } from "../../types.js";
 

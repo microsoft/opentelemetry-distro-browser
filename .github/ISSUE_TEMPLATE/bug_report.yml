@@ -47,8 +47,7 @@ body:
         - OS: [e.g., Windows 11]
         - Framework: [e.g., React 19, Angular 21, or vanilla TypeScript]
         - Bundler and version: [e.g., Vite 8.2]
-        - @opentelemetry/api version: [e.g., 1.9.1]
-        - @opentelemetry/api-logs version: [e.g., 0.222.0]
+        - @opentelemetry/api version: [e.g., 1.10.0]
         - Export destination: [e.g., Azure Monitor or OTLP/HTTP collector]
     validations:
       required: true

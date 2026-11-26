@@ -16,7 +16,7 @@ import {
   InMemorySpanExporter,
   type IdGenerator,
   type ReadableSpan,
-} from "@opentelemetry/sdk-trace-base";
+} from "@opentelemetry/sdk-trace";
 import { createDeterministicIdGenerator } from "./ids.js";
 
 /** Disable the instrumentation before shutting down its provider. */
@@ -26,9 +26,8 @@ export function createConsolePipeline(
 ) {
   const exporter = new InMemoryLogRecordExporter();
   const provider = new LoggerProvider({ processors: [new Processor({ exporter })] });
-  const instrumentation = new ConsoleInstrumentation({ enabled: false, logMethods: ["warn"] });
-  instrumentation.setLoggerProvider(provider);
-  instrumentation.enable();
+  const instrumentation = new ConsoleInstrumentation({ logMethods: ["warn"] });
+  instrumentation.enable({ loggerProvider: provider });
   return { exporter, provider, instrumentation };
 }
 
@@ -44,7 +43,7 @@ export function createInMemoryPipeline() {
     disableAutoFlushOnDocumentHide: true,
   };
   const spanExporter = new InMemorySpanExporter();
-  const spanProcessor = new BatchSpanProcessor(spanExporter, batchOptions);
+  const spanProcessor = new BatchSpanProcessor({ exporter: spanExporter, ...batchOptions });
   const logExporter = new InMemoryLogRecordExporter();
   const logProcessor = new BatchLogRecordProcessor({ exporter: logExporter, ...batchOptions });
   return {

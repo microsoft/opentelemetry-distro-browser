@@ -1,8 +1,13 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-import type { BrowserInstrumentation, InstrumentationOptions } from "../../types.js";
+import type {
+  BrowserInstrumentation,
+  BrowserNativeInstrumentation,
+  InstrumentationOptions,
+} from "../../types.js";
 import { createDependencyEnrichment } from "./dependencyEnrichment.js";
+import { adaptNativeInstrumentation } from "./nativeInstrumentation.js";
 import { CLICK_ANALYTICS_ENABLED } from "../../shared/buildFeatures.js";
 import type {
   ClickAnalyticsInstrumentation,
@@ -39,7 +44,7 @@ const DEFERRED = { enabled: false } as const;
  *
  * @remarks
  * An omitted `enabled` falls back to this distribution's default for that instrumentation, which
- * differs from the source module, where `InstrumentationConfig.enabled` defaults to `true`. An
+ * is a distribution selection option, not a native constructor lifecycle setting. An
  * explicit value must be exactly `true`, so a truthy-but-not-boolean value arriving from parsed
  * configuration cannot switch construction on by accident.
  */
@@ -83,7 +88,7 @@ export async function getInstrumentations(
   if (!CLICK_ANALYTICS_ENABLED && "clickAnalytics" in options) {
     throw new Error("Click Analytics is only available through the npm package.");
   }
-  const pending: Promise<BrowserInstrumentation>[] = [];
+  const pending: Promise<BrowserInstrumentation | BrowserNativeInstrumentation>[] = [];
   const enrichment = options.dependencies
     ? createDependencyEnrichment(options.dependencies)
     : undefined;
@@ -92,7 +97,9 @@ export async function getInstrumentations(
     pending.push(
       import("@opentelemetry/browser-instrumentation/experimental/fetch").then(
         ({ FetchInstrumentation }) => {
-          const instrumentation = new FetchInstrumentation({ ...options.fetch, ...DEFERRED });
+          const instrumentation = adaptNativeInstrumentation(
+            new FetchInstrumentation({ ...options.fetch }),
+          );
           return enrichment ? enrichment.fetch(instrumentation) : instrumentation;
         },
       ),
@@ -103,7 +110,9 @@ export async function getInstrumentations(
     pending.push(
       import("@opentelemetry/browser-instrumentation/experimental/xhr").then(
         ({ XhrInstrumentation }) => {
-          const instrumentation = new XhrInstrumentation({ ...options.xhr, ...DEFERRED });
+          const instrumentation = adaptNativeInstrumentation(
+            new XhrInstrumentation({ ...options.xhr }),
+          );
           return enrichment ? enrichment.xhr(instrumentation) : instrumentation;
         },
       ),
@@ -141,7 +150,8 @@ export async function getInstrumentations(
     pending.push(
       import("@opentelemetry/browser-instrumentation/experimental/navigation-timing").then(
         ({ NavigationTimingInstrumentation }) =>
-          new NavigationTimingInstrumentation({ ...options.navigationTiming, ...DEFERRED }),
+          // Selection belongs to the helper; the native constructor accepts no settings.
+          new NavigationTimingInstrumentation(),
       ),
     );
   }
@@ -189,5 +199,5 @@ export async function getInstrumentations(
     );
   }
 
-  return Promise.all(pending);
+  return Promise.all(pending).then((instances) => instances.map(adaptNativeInstrumentation));
 }

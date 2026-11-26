@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 import type { ExportResult } from "@opentelemetry/core";
-import type { ReadableSpan, SpanExporter } from "@opentelemetry/sdk-trace-base";
+import type { ReadableSpan, SpanExporter } from "@opentelemetry/sdk-trace";
 import { AzureMonitorExportClient, type AzureMonitorOptions } from "./base.js";
 import { isUnloading } from "./common.js";
 import { appendSpanEnvelopes } from "./spanUtils.js";

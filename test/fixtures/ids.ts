@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 import type { SessionIdGenerator } from "@opentelemetry/browser-sdk/session";
-import type { IdGenerator } from "@opentelemetry/sdk-trace-base";
+import type { IdGenerator } from "@opentelemetry/sdk-trace";
 
 /**
  * Independent, repeatable nonzero hex sequences for traces, spans and sessions.

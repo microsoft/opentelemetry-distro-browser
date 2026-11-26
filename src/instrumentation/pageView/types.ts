@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 import type { SpanContext } from "@opentelemetry/api";
-import { type LogRecord } from "@opentelemetry/api-logs";
+import { type LogRecord } from "@opentelemetry/api";
 import type { KeyValueStorage } from "../../storage/keyValueStorage.js";
 
 /**

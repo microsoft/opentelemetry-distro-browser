@@ -8,7 +8,7 @@ import {
   SamplingDecision,
   type Sampler,
   type SamplingResult,
-} from "@opentelemetry/sdk-trace-base";
+} from "@opentelemetry/sdk-trace";
 import { isPageContext } from "./shared/pageOperationContext.js";
 
 export const AZURE_MONITOR_SAMPLE_RATE = "microsoft.sample_rate";

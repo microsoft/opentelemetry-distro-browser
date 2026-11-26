@@ -1,8 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-import { context, diag, DiagLogLevel, propagation, trace } from "@opentelemetry/api";
-import { logs } from "@opentelemetry/api-logs";
+import { context, diag, DiagLogLevel, logs, propagation, trace } from "@opentelemetry/api";
 import { ConsoleInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/console";
 import {
   BatchLogRecordProcessor,
@@ -128,7 +127,7 @@ it.each(["normal", "throwing", "nested"] as const)(
       pageView: { enabled: false },
       session: { enabled: false },
       storage: { enabled: false },
-      instrumentations: [new ConsoleInstrumentation({ enabled: false, logMethods: ["warn"] })],
+      instrumentations: [new ConsoleInstrumentation({ logMethods: ["warn"] })],
     });
     owners.push(handle, pipeline);
     const sharedWarn = console.warn;
@@ -190,7 +189,7 @@ it.each(
     instrumentations.push(standalone);
     const standaloneWarn = console.warn;
     const pipeline = createInMemoryPipeline();
-    const shared = new ConsoleInstrumentation({ enabled: false, logMethods: ["warn"] });
+    const shared = new ConsoleInstrumentation({ logMethods: ["warn"] });
     const handle = await useMicrosoftOpenTelemetry({
       spanProcessors: [],
       logRecordProcessors: pipeline.options.logRecordProcessors,
@@ -261,7 +260,7 @@ it.each(["normal", "throwing", "nested"] as const)(
     owners.push(first.provider);
     instrumentations.push(first.instrumentation);
     const pipeline = createInMemoryPipeline();
-    const shared = new ConsoleInstrumentation({ enabled: false, logMethods: ["warn"] });
+    const shared = new ConsoleInstrumentation({ logMethods: ["warn"] });
     const handle = await useMicrosoftOpenTelemetry({
       spanProcessors: [],
       logRecordProcessors: pipeline.options.logRecordProcessors,
@@ -319,7 +318,7 @@ it("preserves an explicit console replacement installed during a diagnostic rest
   owners.push(provider);
   instrumentations.push(standalone);
   const standaloneWarn = console.warn;
-  const shared = new ConsoleInstrumentation({ enabled: false, logMethods: ["warn"] });
+  const shared = new ConsoleInstrumentation({ logMethods: ["warn"] });
   const release = claimInstrumentations([shared]);
   owners.push({ shutdown: async () => release() });
   const replacement = vi.fn();
@@ -348,8 +347,8 @@ it("preserves a shared console patch still owned by another instrumentation afte
   owners.push(provider);
   instrumentations.push(standalone);
   const standaloneWarn = console.warn;
-  const first = new ConsoleInstrumentation({ enabled: false, logMethods: ["warn"] });
-  const second = new ConsoleInstrumentation({ enabled: false, logMethods: ["warn"] });
+  const first = new ConsoleInstrumentation({ logMethods: ["warn"] });
+  const second = new ConsoleInstrumentation({ logMethods: ["warn"] });
   const release = claimInstrumentations([first, second]);
   owners.push({ shutdown: async () => release() });
   first.enable();
@@ -365,7 +364,7 @@ it("preserves a shared console patch still owned by another instrumentation afte
 });
 
 it("restores console instrumentation when a stats diagnostic logger throws", () => {
-  const instrumentation = new ConsoleInstrumentation({ enabled: false, logMethods: ["warn"] });
+  const instrumentation = new ConsoleInstrumentation({ logMethods: ["warn"] });
   instrumentation.enable();
   instrumentations.push(instrumentation);
   const wrappedWarn = console.warn;
@@ -468,9 +467,7 @@ it("keeps independent diagnostic thresholds and excludes application context and
       telemetryLogLevel: DiagLogLevel.WARN,
       logRecordProcessors: [processor],
     },
-    instrumentations: [
-      new ConsoleInstrumentation({ enabled: false, logMethods: ["warn", "error"] }),
-    ],
+    instrumentations: [new ConsoleInstrumentation({ logMethods: ["warn", "error"] })],
   });
   owners.push(handle);
   const originalWarnCount = warn.mock.calls.length;

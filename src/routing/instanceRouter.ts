@@ -2,14 +2,16 @@
 // Licensed under the MIT License.
 
 import {
+  createNoopLogger,
   context,
   createContextKey,
   diag,
+  logs,
   ProxyTracerProvider,
   trace,
+  type LoggerProvider,
   type TracerProvider,
 } from "@opentelemetry/api";
-import { createNoopLogger, logs, type LoggerProvider } from "@opentelemetry/api-logs";
 import {
   deferGlobalRollback,
   getRegisteredGlobal,
@@ -109,12 +111,9 @@ export function addInstance(instance: InstancePipelines): () => void {
       instance.loggerProvider &&
       (!logsRegistration || logsRegistration !== state.logsRegistration)
     ) {
-      if (
-        !logsRegistration &&
-        logs.setGlobalLoggerProvider(state.loggerRouter) === state.loggerRouter
-      ) {
-        installedLogs = getRegisteredGlobal("logs");
-        state.logsRegistration = installedLogs;
+      if (!logsRegistration) installedLogs = state.loggerRouter;
+      if (!logsRegistration && logs.setGlobalLoggerProvider(state.loggerRouter)) {
+        state.logsRegistration = getRegisteredGlobal("logs");
       } else if (!logsRegistration || logsRegistration !== state.foreignLoggerProvider) {
         state.foreignLoggerProvider = logsRegistration;
         diag.warn("[logger-provider-conflict] Global logs owned by another installation.");

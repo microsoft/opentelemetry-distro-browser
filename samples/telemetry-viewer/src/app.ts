@@ -1,5 +1,4 @@
-import { context, SpanStatusCode, trace } from "@opentelemetry/api";
-import { logs, SeverityNumber } from "@opentelemetry/api-logs";
+import { context, logs, SeverityNumber, SpanStatusCode, trace } from "@opentelemetry/api";
 import type { MicrosoftOpenTelemetryBrowser } from "@microsoft/opentelemetry-browser";
 
 const tracer = trace.getTracer("contoso-store", "0.1.0");

@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 import type { ReadableLogRecord } from "@opentelemetry/sdk-logs";
-import type { ReadableSpan } from "@opentelemetry/sdk-trace-base";
+import type { ReadableSpan } from "@opentelemetry/sdk-trace";
 
 /**
  * Copy a bounded tree without invoking payload getters or toJSON methods.

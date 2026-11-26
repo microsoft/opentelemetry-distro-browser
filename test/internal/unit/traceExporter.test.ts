@@ -3,7 +3,12 @@
 
 import { SpanKind, SpanStatusCode, type SpanContext } from "@opentelemetry/api";
 import { ExportResultCode } from "@opentelemetry/core";
-import type { ReadableSpan } from "@opentelemetry/sdk-trace-base";
+import {
+  InMemorySpanExporter,
+  SimpleSpanProcessor,
+  TracerProvider,
+  type ReadableSpan,
+} from "@opentelemetry/sdk-trace";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { beginUnloading, endUnloading } from "../../../src/exporter/common.js";
 import {
@@ -77,6 +82,42 @@ async function requestBody(fetch: ReturnType<typeof vi.fn>, call: number): Promi
 }
 
 describe("AzureMonitorSpanExporter", () => {
+  it.each([SpanKind.CLIENT, SpanKind.SERVER, SpanKind.CONSUMER])(
+    "exports a mixed SDK 3 batch with a structured status attribute (kind=%i)",
+    async (kind) => {
+      const memory = new InMemorySpanExporter();
+      const provider = new TracerProvider({
+        spanProcessors: [new SimpleSpanProcessor({ exporter: memory })],
+      });
+      const ingestion = createMockIngestionEndpoint();
+      vi.stubGlobal("fetch", ingestion.fetch);
+      const exporter = new AzureMonitorSpanExporter({
+        connectionString: ingestion.connectionString,
+      });
+      try {
+        const tracer = provider.getTracer("sdk3-status");
+        const status = { toString: "shadowed", valueOf: "shadowed" };
+        tracer.startSpan("valid", { kind, attributes: { "http.response.status_code": 200 } }).end();
+        tracer
+          .startSpan("structured", { kind, attributes: { "http.response.status_code": status } })
+          .end();
+        const spans = memory.getFinishedSpans();
+        expect(spans[1].attributes["http.response.status_code"]).toEqual(status);
+        await expect(exportSpans(exporter, spans)).resolves.toEqual({
+          code: ExportResultCode.SUCCESS,
+        });
+        expect(ingestion.fetch).toHaveBeenCalledOnce();
+        expect(ingestion.requests[0].envelopes).toHaveLength(2);
+        expect(
+          ingestion.requests[0].envelopes.map((envelope) => envelope.data.baseData),
+        ).toMatchObject([{ name: "valid" }, { name: "structured" }]);
+      } finally {
+        await exporter.shutdown();
+        await provider.shutdown();
+      }
+    },
+  );
+
   it("rejects a connection string with an invalid instrumentation key", () => {
     expect(
       () =>

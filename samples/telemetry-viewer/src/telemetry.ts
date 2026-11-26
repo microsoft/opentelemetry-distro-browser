@@ -5,7 +5,7 @@ import {
 import { getInstrumentations } from "@microsoft/opentelemetry-browser/instrumentations";
 import { resourceFromAttributes } from "@opentelemetry/resources";
 import { SimpleLogRecordProcessor } from "@opentelemetry/sdk-logs";
-import { SimpleSpanProcessor } from "@opentelemetry/sdk-trace-base";
+import { SimpleSpanProcessor } from "@opentelemetry/sdk-trace";
 import { ViewerLogRecordExporter, ViewerSpanExporter } from "./telemetryStore.js";
 
 export async function initializeTelemetry(): Promise<MicrosoftOpenTelemetryBrowser> {
@@ -16,7 +16,7 @@ export async function initializeTelemetry(): Promise<MicrosoftOpenTelemetryBrows
       "deployment.environment.name": "local",
     }),
     session: { enabled: true },
-    spanProcessors: [new SimpleSpanProcessor(new ViewerSpanExporter())],
+    spanProcessors: [new SimpleSpanProcessor({ exporter: new ViewerSpanExporter() })],
     logRecordProcessors: [
       new SimpleLogRecordProcessor({ exporter: new ViewerLogRecordExporter() }),
     ],

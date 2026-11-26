@@ -2,10 +2,10 @@
 // Licensed under the MIT License.
 
 import { context, diag, propagation, trace } from "@opentelemetry/api";
-import { logs } from "@opentelemetry/api-logs";
+import { logs } from "@opentelemetry/api";
 import { resourceFromAttributes } from "@opentelemetry/resources";
 import type { ReadWriteLogRecord } from "@opentelemetry/sdk-logs";
-import type { Span } from "@opentelemetry/sdk-trace-base";
+import type { Span } from "@opentelemetry/sdk-trace";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import {
   useMicrosoftOpenTelemetry,

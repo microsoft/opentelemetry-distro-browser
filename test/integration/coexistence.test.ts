@@ -2,9 +2,9 @@
 // Licensed under the MIT License.
 
 import { context, createContextKey, diag, propagation, trace } from "@opentelemetry/api";
-import { logs } from "@opentelemetry/api-logs";
+import { logs } from "@opentelemetry/api";
 import { BatchLogRecordProcessor, type LogRecordProcessor } from "@opentelemetry/sdk-logs";
-import { SimpleSpanProcessor } from "@opentelemetry/sdk-trace-base";
+import { SimpleSpanProcessor } from "@opentelemetry/sdk-trace";
 import { afterEach, beforeEach, expect, inject, it, vi } from "vitest";
 import type { AzureMonitorEnvelope } from "../../src/exporter/telemetryModels.js";
 import {
@@ -372,7 +372,9 @@ it("shares managed operation names with exporters from another distribution copy
       `InstrumentationKey=00000000-0000-0000-0000-000000000000;` + `IngestionEndpoint=${endpoint}`,
   };
   const handle = await host.useMicrosoftOpenTelemetry({
-    spanProcessors: [new SimpleSpanProcessor(new remote.AzureMonitorSpanExporter(azureMonitor))],
+    spanProcessors: [
+      new SimpleSpanProcessor({ exporter: new remote.AzureMonitorSpanExporter(azureMonitor) }),
+    ],
     logRecordProcessors: [
       new BatchLogRecordProcessor({
         exporter: new remote.AzureMonitorLogRecordExporter(azureMonitor),

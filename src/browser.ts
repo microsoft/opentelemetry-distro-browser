@@ -6,7 +6,7 @@
 // Stats and Click Analytics implementations are stripped at build time. Keep this in sync with
 // `index.ts`; `test/build/cdn.test.mjs` compares them.
 export { context, diag, metrics, propagation, trace } from "@opentelemetry/api";
-export { logs } from "@opentelemetry/api-logs";
+export { logs } from "@opentelemetry/api";
 export { OPENTELEMETRY_BROWSER_VERSION } from "./shared/constants.js";
 export { AzureMonitorLogRecordExporter } from "./exporter/log.js";
 export { AzureMonitorSpanExporter } from "./exporter/trace.js";

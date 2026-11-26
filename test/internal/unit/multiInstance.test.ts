@@ -12,11 +12,13 @@ import {
   type ContextManager,
   type TracerProvider,
 } from "@opentelemetry/api";
-import { createNoopLogger, logs, type LoggerProvider } from "@opentelemetry/api-logs";
+import { createNoopLogger, logs, type LoggerProvider } from "@opentelemetry/api";
 import { resourceFromAttributes } from "@opentelemetry/resources";
 import type { ReadWriteLogRecord } from "@opentelemetry/sdk-logs";
-import { BasicTracerProvider } from "@opentelemetry/sdk-trace-base";
-import { StackContextManager } from "@opentelemetry/sdk-trace-web";
+import {
+  TracerProvider as BasicTracerProvider,
+  StackContextManager,
+} from "@opentelemetry/sdk-trace";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { logToEnvelope } from "../../../src/exporter/logUtils.js";
 import { spanToEnvelope } from "../../../src/exporter/spanUtils.js";

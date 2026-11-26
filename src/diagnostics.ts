@@ -7,9 +7,10 @@ import {
   DiagConsoleLogger,
   DiagLogLevel,
   ROOT_CONTEXT,
+  SeverityNumber,
   type DiagLogger,
+  type Logger,
 } from "@opentelemetry/api";
-import { SeverityNumber, type Logger } from "@opentelemetry/api-logs";
 import { suppressTracing } from "@opentelemetry/core";
 import { resourceFromAttributes } from "@opentelemetry/resources";
 import { LoggerProvider, type LogRecordProcessor } from "@opentelemetry/sdk-logs";

@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 import { ROOT_CONTEXT, isSpanContextValid, trace } from "@opentelemetry/api";
-import type { LogRecord, Logger, LoggerProvider } from "@opentelemetry/api-logs";
+import type { LogRecord, Logger, LoggerProvider } from "@opentelemetry/api";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { KeyValueStorage } from "../../../src/storage/keyValueStorage.js";
 import { logToEnvelope } from "../../../src/exporter/logUtils.js";

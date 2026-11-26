@@ -3,7 +3,7 @@
 
 import { ExportResultCode, type ExportResult } from "@opentelemetry/core";
 import type { ReadableLogRecord } from "@opentelemetry/sdk-logs";
-import type { ReadableSpan } from "@opentelemetry/sdk-trace-base";
+import type { ReadableSpan } from "@opentelemetry/sdk-trace";
 import { reportError, reportWithoutTelemetry } from "../shared/globalOwnership.js";
 import { createPanel } from "./panel.js";
 import { logDetails, snapshot, spanDetails } from "./snapshot.js";

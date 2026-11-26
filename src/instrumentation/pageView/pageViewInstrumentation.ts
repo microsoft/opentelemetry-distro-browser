@@ -11,8 +11,8 @@ import {
   type Context,
   type SpanContext,
 } from "@opentelemetry/api";
-import { type LogRecord } from "@opentelemetry/api-logs";
-import { RandomIdGenerator } from "@opentelemetry/sdk-trace-base";
+import { type LogRecord } from "@opentelemetry/api";
+import { RandomIdGenerator } from "@opentelemetry/sdk-trace";
 import { InstrumentationBase, safeExecuteInTheMiddle } from "@opentelemetry/instrumentation";
 import { OPENTELEMETRY_BROWSER_VERSION } from "../../shared/constants.js";
 import { markPageContext } from "../../shared/pageOperationContext.js";

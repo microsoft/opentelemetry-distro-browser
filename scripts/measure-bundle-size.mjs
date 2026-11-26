@@ -23,14 +23,14 @@ export const entryPointBudgets = {
     brotliBytes: 5 * 1024,
   },
   ".": {
-    rawBytes: 174 * 1024,
+    rawBytes: 176 * 1024,
     gzipBytes: 55 * 1024,
-    brotliBytes: 48 * 1024,
+    brotliBytes: 48.25 * 1024,
   },
   "./instrumentations": {
-    rawBytes: 78.25 * 1024,
-    gzipBytes: 29.75 * 1024,
-    brotliBytes: 26.5 * 1024,
+    rawBytes: 84.25 * 1024,
+    gzipBytes: 31.5 * 1024,
+    brotliBytes: 28 * 1024,
   },
   // The generator validates its options and assembles optional loader steps. It runs where the
   // page is rendered; the snippet it emits only contains the steps a page enables.
@@ -43,14 +43,14 @@ export const entryPointBudgets = {
 
 // CDN bundles inline supported instrumentations but exclude npm-only Click Analytics.
 const sdkBrowserBundleBudget = {
-  rawBytes: 202.75 * 1024,
-  gzipBytes: 66 * 1024,
-  brotliBytes: 57 * 1024,
+  rawBytes: 208 * 1024,
+  gzipBytes: 66.5 * 1024,
+  brotliBytes: 58 * 1024,
 };
 const instrumentationsBrowserBundleBudget = {
-  rawBytes: 63 * 1024,
-  gzipBytes: 19.25 * 1024,
-  brotliBytes: 17.5 * 1024,
+  rawBytes: 64.75 * 1024,
+  gzipBytes: 20 * 1024,
+  brotliBytes: 18 * 1024,
 };
 
 /**
@@ -67,8 +67,7 @@ export const browserBundleBudgets = {
 };
 
 const API_IMPORTS = `
-import { context, diag, propagation, trace } from "@opentelemetry/api";
-import { logs } from "@opentelemetry/api-logs";
+import { context, diag, logs, propagation, trace } from "@opentelemetry/api";
 `;
 const API_SYMBOLS = ["context", "diag", "propagation", "trace", "logs"];
 
@@ -110,7 +109,7 @@ const apiScenario = {
   id: "api",
   label: "OpenTelemetry API only (traces and logs)",
   group: "layer",
-  entryPoint: "@opentelemetry/api + @opentelemetry/api-logs",
+  entryPoint: "@opentelemetry/api",
   code: API_IMPORTS + sink(...API_SYMBOLS),
 };
 

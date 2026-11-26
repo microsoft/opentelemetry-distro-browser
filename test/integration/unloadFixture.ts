@@ -4,9 +4,11 @@
 import { loadBrowserScript } from "../fixtures/browserBundle.js";
 import { SDK_STATS_ENDPOINT, withoutSdkStats } from "../fixtures/sdkStats.js";
 import { trace as sourceTrace } from "@opentelemetry/api";
-import { logs } from "@opentelemetry/api-logs";
+import { logs } from "@opentelemetry/api";
 import { ConsoleInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/console";
 import { useMicrosoftOpenTelemetry as initializeSource } from "../../src/index.js";
+import { adaptNativeInstrumentation } from "../../src/instrumentation/browserInstrumentation/nativeInstrumentation.js";
+import type { BrowserNativeInstrumentation } from "../../src/types.js";
 import { useMicrosoftOpenTelemetry as initializeEsm } from "../../dist/esm/index.js";
 import { useMicrosoftOpenTelemetry as initializeMinifiedEsm } from "../../dist/esm/index.min.js";
 
@@ -59,6 +61,14 @@ if (statsIngestionEndpoint) {
   trace = bundle.trace;
 }
 
+const consoleInstrumentation = inFlight
+  ? adaptNativeInstrumentation(
+      new ConsoleInstrumentation({
+        logMethods: ["error"],
+      }) as unknown as BrowserNativeInstrumentation,
+    )
+  : undefined;
+
 const telemetry = await useMicrosoftOpenTelemetry({
   azureMonitor: {
     connectionString:
@@ -76,9 +86,7 @@ const telemetry = await useMicrosoftOpenTelemetry({
     },
   },
   samplingPercentage: parameters.has("sampling") ? Number(parameters.get("sampling")) : undefined,
-  instrumentations: inFlight
-    ? [new ConsoleInstrumentation({ enabled: false, logMethods: ["error"] })]
-    : [],
+  instrumentations: consoleInstrumentation ? [consoleInstrumentation] : [],
 });
 if (inFlight) {
   logs.getLogger("browser-unload-test").emit({ body: "pending-before-navigation" });

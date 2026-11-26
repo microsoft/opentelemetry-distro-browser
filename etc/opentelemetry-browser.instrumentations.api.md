@@ -4,18 +4,26 @@
 
 ```ts
 
+import { ConsoleInstrumentation } from '@opentelemetry/browser-instrumentation/experimental/console';
 import { ConsoleInstrumentationConfig } from '@opentelemetry/browser-instrumentation/experimental/console';
+import { ErrorsInstrumentation } from '@opentelemetry/browser-instrumentation/experimental/errors';
 import { ErrorsInstrumentationConfig } from '@opentelemetry/browser-instrumentation/experimental/errors';
+import { FetchInstrumentation } from '@opentelemetry/browser-instrumentation/experimental/fetch';
 import { FetchInstrumentationConfig } from '@opentelemetry/browser-instrumentation/experimental/fetch';
 import { InstrumentationConfig } from '@opentelemetry/instrumentation';
-import { LoggerProvider } from '@opentelemetry/api-logs';
-import { LogRecord } from '@opentelemetry/api-logs';
+import { LoggerProvider } from '@opentelemetry/api';
+import { LogRecord } from '@opentelemetry/api';
+import { NavigationInstrumentation } from '@opentelemetry/browser-instrumentation/experimental/navigation';
 import { NavigationInstrumentationConfig } from '@opentelemetry/browser-instrumentation/experimental/navigation';
-import { NavigationTimingInstrumentationConfig } from '@opentelemetry/browser-instrumentation/experimental/navigation-timing';
+import { NavigationTimingInstrumentation } from '@opentelemetry/browser-instrumentation/experimental/navigation-timing';
+import { ResourceTimingInstrumentation } from '@opentelemetry/browser-instrumentation/experimental/resource-timing';
 import { ResourceTimingInstrumentationConfig } from '@opentelemetry/browser-instrumentation/experimental/resource-timing';
 import { TracerProvider } from '@opentelemetry/api';
+import { UserActionInstrumentation } from '@opentelemetry/browser-instrumentation/experimental/user-action';
 import { UserActionInstrumentationConfig } from '@opentelemetry/browser-instrumentation/experimental/user-action';
+import { WebVitalsInstrumentation } from '@opentelemetry/browser-instrumentation/experimental/web-vitals';
 import { WebVitalsInstrumentationConfig } from '@opentelemetry/browser-instrumentation/experimental/web-vitals';
+import { XhrInstrumentation } from '@opentelemetry/browser-instrumentation/experimental/xhr';
 import { XhrInstrumentationConfig } from '@opentelemetry/browser-instrumentation/experimental/xhr';
 
 // @public
@@ -37,6 +45,9 @@ export interface BrowserInstrumentation {
     setLoggerProvider?(provider: LoggerProvider): void;
     setTracerProvider(provider: TracerProvider): void;
 }
+
+// @public
+export type BrowserNativeInstrumentation = ConsoleInstrumentation | ErrorsInstrumentation | FetchInstrumentation | NavigationInstrumentation | NavigationTimingInstrumentation | ResourceTimingInstrumentation | UserActionInstrumentation | WebVitalsInstrumentation | XhrInstrumentation;
 
 // @public
 export interface ClickAnalyticsInstrumentation extends BrowserInstrumentation {
@@ -135,16 +146,34 @@ export function getInstrumentations(options?: InstrumentationOptions): Promise<B
 // @public
 export interface InstrumentationOptions {
     clickAnalytics?: ClickAnalyticsInstrumentationConfig;
-    console?: ConsoleInstrumentationConfig;
+    console?: ConsoleInstrumentationConfig & {
+        enabled?: boolean;
+    };
     dependencies?: DependencyInstrumentationOptions;
-    errors?: ErrorsInstrumentationConfig;
-    fetch?: FetchInstrumentationConfig;
-    navigation?: NavigationInstrumentationConfig;
-    navigationTiming?: NavigationTimingInstrumentationConfig;
-    resourceTiming?: ResourceTimingInstrumentationConfig;
-    userAction?: UserActionInstrumentationConfig;
-    webVitals?: WebVitalsInstrumentationConfig;
-    xhr?: XhrInstrumentationConfig;
+    errors?: ErrorsInstrumentationConfig & {
+        enabled?: boolean;
+    };
+    fetch?: FetchInstrumentationConfig & {
+        enabled?: boolean;
+    };
+    navigation?: NavigationInstrumentationConfig & {
+        enabled?: boolean;
+    };
+    navigationTiming?: {
+        enabled?: boolean;
+    };
+    resourceTiming?: ResourceTimingInstrumentationConfig & {
+        enabled?: boolean;
+    };
+    userAction?: UserActionInstrumentationConfig & {
+        enabled?: boolean;
+    };
+    webVitals?: WebVitalsInstrumentationConfig & {
+        enabled?: boolean;
+    };
+    xhr?: XhrInstrumentationConfig & {
+        enabled?: boolean;
+    };
 }
 
 // (No @packageDocumentation comment for this package)

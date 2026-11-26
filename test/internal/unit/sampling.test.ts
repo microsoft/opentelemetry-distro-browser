@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 import { ROOT_CONTEXT, SpanKind, TraceFlags, trace } from "@opentelemetry/api";
-import { SamplingDecision, type Sampler } from "@opentelemetry/sdk-trace-base";
+import { SamplingDecision, type Sampler } from "@opentelemetry/sdk-trace";
 import { describe, expect, it, vi } from "vitest";
 import {
   ApplicationInsightsSampler,

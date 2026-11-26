@@ -13,7 +13,7 @@ import {
   type TraceAPI,
   type Tracer,
 } from "@opentelemetry/api";
-import { logs, type LoggerProvider } from "@opentelemetry/api-logs";
+import { logs, type LoggerProvider } from "@opentelemetry/api";
 import { resourceFromAttributes } from "@opentelemetry/resources";
 import { getInstrumentations } from "../../src/instrumentation/browserInstrumentation/index.js";
 import { expect, inject, it, vi } from "vitest";
@@ -692,8 +692,16 @@ it.each([
         registration: "replacement",
       });
 
-      await telemetry.instrumentations.add("released-original", original);
-      await telemetry.instrumentations.remove("released-original");
+      await expect(telemetry.instrumentations.add("released-original", original)).rejects.toThrow(
+        "fresh native instrumentation",
+      );
+      const [fresh] = await instrumentations.getInstrumentations({
+        fetch: { enabled: false },
+        xhr: { propagateTraceHeaderCorsUrls: [endpoint] },
+      });
+      if (!fresh) throw new Error("Fresh XHR instrumentation was not created");
+      await telemetry.instrumentations.add("fresh-xhr", fresh);
+      await telemetry.instrumentations.remove("fresh-xhr");
       await telemetry.instrumentations.remove("bundle-xhr");
       const removedXhr = new XMLHttpRequest();
       removedXhr.open("GET", endpoint);
@@ -765,18 +773,29 @@ it.each([
         });
         if (operation === "disable") {
           await expect(telemetry.instrumentations.setEnabled("errors", false)).rejects.toThrow(
-            "partial errors removal failed",
+            "Instrumentation rollback failed; shutdown is required",
           );
           expect(removed).toContainEqual({ name: "error", listener: handler });
           expect(removed).toContainEqual({ name: "unhandledrejection", listener: handler });
+          await expect(telemetry.instrumentations.setEnabled("errors", true)).rejects.toThrow(
+            "Instrumentation rollback failed; shutdown is required",
+          );
+          await expect(
+            bundle.useMicrosoftOpenTelemetry({
+              spanProcessors: [],
+              logRecordProcessors: [],
+              pageView: { enabled: false },
+              instrumentations: selected,
+            }),
+          ).rejects.toThrow("browser-instrumentation-owned");
           shutdownAttempted = true;
-          await telemetry.shutdown();
+          await expect(telemetry.shutdown()).rejects.toThrow("Instrumentation cleanup failed");
         } else {
           shutdownAttempted = true;
-          await expect(telemetry.shutdown()).rejects.toThrow("partial errors removal failed");
+          await expect(telemetry.shutdown()).rejects.toThrow("Instrumentation cleanup failed");
         }
 
-        // Rollback can register another handler; shutdown must remove every registered pair.
+        // Shutdown must remove every registered listener pair, including any added during recovery.
         const handlers = add.mock.calls
           .filter(([name]) => name === "unhandledrejection")
           .map(([, listener]) => listener);
@@ -790,8 +809,15 @@ it.each([
           if (telemetry && !shutdownAttempted) await telemetry.shutdown();
         } finally {
           // Remove observed listeners even if an assertion fails before normal cleanup.
-          for (const [name, listener] of add.mock.calls) {
-            if (name !== "unhandledrejection" || !listener) continue;
+          const listeners = new Set(
+            add.mock.calls
+              .filter(
+                ([name, listener]) =>
+                  (name === "error" || name === "unhandledrejection") && listener,
+              )
+              .map(([, listener]) => listener!),
+          );
+          for (const listener of listeners) {
             nativeRemove("error", listener);
             nativeRemove("unhandledrejection", listener);
           }

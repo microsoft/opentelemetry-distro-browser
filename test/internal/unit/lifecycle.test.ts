@@ -2,9 +2,9 @@
 // Licensed under the MIT License.
 
 import { context, diag, propagation, trace } from "@opentelemetry/api";
-import { logs } from "@opentelemetry/api-logs";
+import { logs } from "@opentelemetry/api";
 import { ResourceTimingInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/resource-timing";
-import { StackContextManager } from "@opentelemetry/sdk-trace-web";
+import { StackContextManager } from "@opentelemetry/sdk-trace";
 import { afterEach, expect, it, vi } from "vitest";
 import {
   useMicrosoftOpenTelemetry,
@@ -453,7 +453,7 @@ it.each([false, true])(
     const originalPush = history.pushState;
     const originalReplace = history.replaceState;
     for (let i = 0; i < 3; i++) {
-      const instrumentation = new ResourceTimingInstrumentation({ enabled: false });
+      const instrumentation = new ResourceTimingInstrumentation();
       const failure: BrowserInstrumentation = {
         setTracerProvider() {},
         getConfig: () => ({}),
@@ -492,7 +492,7 @@ it("rolls back a failed second instance without disconnecting the surviving obse
   }
   vi.stubGlobal("PerformanceObserver", Observer);
   const first = await start({
-    instrumentations: [new ResourceTimingInstrumentation({ enabled: false })],
+    instrumentations: [new ResourceTimingInstrumentation()],
   });
   await expect(
     start({

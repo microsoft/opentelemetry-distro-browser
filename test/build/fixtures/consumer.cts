@@ -10,7 +10,11 @@ import {
   type MicrosoftOpenTelemetryBrowserConfigurationUpdate,
   type MicrosoftOpenTelemetryBrowserInstrumentations,
   type MicrosoftOpenTelemetryBrowserOptions,
+  type BrowserNativeInstrumentation,
 } from "@microsoft/opentelemetry-browser";
+import type { FetchInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/fetch" with {
+  "resolution-mode": "import",
+};
 import {
   getInstrumentations,
   type DependencyInstrumentationOptions,
@@ -27,11 +31,29 @@ const dependencies: DependencyInstrumentationOptions = {
   enableResourceTiming: true,
 };
 void getInstrumentations({ dependencies });
+void getInstrumentations({ navigationTiming: { enabled: true } });
+void getInstrumentations({ navigationTiming: { enabled: false } });
+// @ts-expect-error Navigation timing selection requires a boolean.
+void getInstrumentations({ navigationTiming: { enabled: "true" } });
+// @ts-expect-error The native navigation timing instrumentation has no processing options.
+void getInstrumentations({ navigationTiming: { batchSize: 5 } });
 
 void OPENTELEMETRY_BROWSER_VERSION;
 void useMicrosoftOpenTelemetry;
 void getInstrumentations;
 void createTelemetryDebugger;
+
+export function initializeNative(fetch: FetchInstrumentation): void {
+  const native: BrowserNativeInstrumentation = fetch;
+  void useMicrosoftOpenTelemetry({ instrumentations: [native] });
+}
+
+void useMicrosoftOpenTelemetry({
+  instrumentations: [
+    // @ts-expect-error Generic native implementations are outside the pinned bridge contract.
+    { instrumentationName: "custom/native", enable() {}, disable() {}, isEnabled: () => false },
+  ],
+});
 
 export const options: AzureMonitorOptions = {
   connectionString: "InstrumentationKey=00000000-0000-0000-0000-000000000000",

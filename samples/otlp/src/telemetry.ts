@@ -4,7 +4,7 @@ import { OTLPLogExporter } from "@opentelemetry/exporter-logs-otlp-http";
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
 import { resourceFromAttributes } from "@opentelemetry/resources";
 import { BatchLogRecordProcessor } from "@opentelemetry/sdk-logs";
-import { BatchSpanProcessor } from "@opentelemetry/sdk-trace-base";
+import { BatchSpanProcessor } from "@opentelemetry/sdk-trace";
 
 export async function initializeTelemetry(): Promise<void> {
   const configuredEndpoint = import.meta.env.VITE_OTLP_ENDPOINT;
@@ -20,7 +20,9 @@ export async function initializeTelemetry(): Promise<void> {
     }),
     session: { enabled: true },
     spanProcessors: [
-      new BatchSpanProcessor(new OTLPTraceExporter({ url: `${endpoint}/v1/traces` })),
+      new BatchSpanProcessor({
+        exporter: new OTLPTraceExporter({ url: `${endpoint}/v1/traces` }),
+      }),
     ],
     logRecordProcessors: [
       new BatchLogRecordProcessor({
