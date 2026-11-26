@@ -99,7 +99,6 @@
     "prepack": "npm run build"
   },
   "dependencies": {
-    "@opentelemetry/browser-api": "0.2.1",
     "@opentelemetry/browser-instrumentation": "0.12.1",
     "@opentelemetry/browser-sdk": "0.9.1",
     "@opentelemetry/core": "3.1.1",

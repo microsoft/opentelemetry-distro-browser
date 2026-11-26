@@ -12,10 +12,11 @@ in a minor release. `@opentelemetry/api` is the exception: its peer range is
 | API                     | `@opentelemetry/api`                                                                                                  | `1.10.0`  |
 | Stable SDK              | `@opentelemetry/core`, `@opentelemetry/resources`, `@opentelemetry/sdk-trace`, `@opentelemetry/sdk-logs`              | `3.1.1`   |
 | Experimental SDK        | `@opentelemetry/exporter-logs-otlp-http`, `@opentelemetry/exporter-trace-otlp-http`, `@opentelemetry/instrumentation` | `0.301.2` |
-| Browser API             | `@opentelemetry/browser-api`                                                                                          | `0.2.1`   |
 | Browser SDK             | `@opentelemetry/browser-sdk`                                                                                          | `0.9.1`   |
 | Browser instrumentation | `@opentelemetry/browser-instrumentation`                                                                              | `0.12.1`  |
 | Semantic conventions    | `@opentelemetry/semantic-conventions`                                                                                 | `1.45.0`  |
+
+The browser SDK and instrumentation packages bring in `@opentelemetry/browser-api` transitively.
 
 The different version numbers are intentional. OpenTelemetry JavaScript publishes stable SDK,
 development SDK, and instrumentation packages on related but independently numbered release

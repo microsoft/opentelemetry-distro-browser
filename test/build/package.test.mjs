@@ -96,7 +96,6 @@ test("the package targets the SDK3 dependency set", () => {
   assert.deepEqual(
     Object.fromEntries(
       [
-        "@opentelemetry/browser-api",
         "@opentelemetry/browser-instrumentation",
         "@opentelemetry/browser-sdk",
         "@opentelemetry/core",
@@ -110,7 +109,6 @@ test("the package targets the SDK3 dependency set", () => {
       ].map((name) => [name, pkg.dependencies[name]]),
     ),
     {
-      "@opentelemetry/browser-api": "0.2.1",
       "@opentelemetry/browser-instrumentation": "0.12.1",
       "@opentelemetry/browser-sdk": "0.9.1",
       "@opentelemetry/core": "3.1.1",
@@ -125,6 +123,7 @@ test("the package targets the SDK3 dependency set", () => {
   );
   for (const removed of [
     "@opentelemetry/api-logs",
+    "@opentelemetry/browser-api",
     "@opentelemetry/sdk-trace-base",
     "@opentelemetry/sdk-trace-web",
   ]) {
